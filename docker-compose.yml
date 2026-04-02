@@ -1,0 +1,7 @@
+services:
+  validator:
+    build: .
+    env_file: .env
+    volumes:
+      - ~/.bittensor/wallets:/root/.bittensor/wallets:ro
+    restart: unless-stopped
