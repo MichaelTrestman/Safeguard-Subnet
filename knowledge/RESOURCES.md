@@ -53,6 +53,17 @@ Reference materials for building an AI safety red-teaming subnet. Organized by c
 
 ---
 
+## Agentic AI Safety (the hard problem)
+
+### Adversarial Testing of AI Agents
+- **Local**: [taxonomies/agentic_ai_safety.md](taxonomies/agentic_ai_safety.md)
+- **13 resources** covering agent-specific benchmarks, attack taxonomies, and regulatory frameworks
+- **Key benchmarks**: AgentHarm (ICLR 2025), Agent-SafetyBench, WASP (NeurIPS 2025), InjecAgent (ACL 2024), R-Judge, ToolEmu
+- **Key frameworks**: OWASP Top 10 for Agentic Applications (Dec 2025), CSA Agentic AI Red Teaming Guide (May 2025), NIST AI Agent Standards Initiative (Feb 2026)
+- **Why it matters**: Agent red-teaming is fundamentally different from LLM red-teaming — goal-driven not prompt-driven, multi-step, tool-combinatoric, with real-world consequences. No current agent scores above 60% on safety. This is Safeguard's core problem space.
+
+---
+
 ## Harm & Attack Taxonomies
 
 ### Unified Harm Category Taxonomy

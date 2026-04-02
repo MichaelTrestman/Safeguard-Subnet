@@ -13,3 +13,9 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]

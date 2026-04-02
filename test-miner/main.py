@@ -14,7 +14,7 @@ import asyncio
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, Depends
-from substrateinterface import Keypair
+from bittensor_wallet.keypair import Keypair
 import bittensor as bt
 from bittensor_wallet import Wallet
 

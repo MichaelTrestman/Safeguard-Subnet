@@ -9,7 +9,7 @@ Uses 3 headers to authenticate requests between validators and miners:
 
 import time
 import hashlib
-from substrateinterface import Keypair
+from bittensor_wallet.keypair import Keypair
 
 MAX_REQUEST_AGE = 60  # seconds
 
