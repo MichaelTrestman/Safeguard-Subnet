@@ -14,7 +14,7 @@ AI safety testing at the level actually required — realistic, persistent, cont
 
 **Human miners** Humans working as miners on the HITL submechanism label the hard cases that automated validation can't confidently score. Their labels feed back as training data and canaries, continuously improving the automated tiers.
 
-**Target subnet validators** are the clients. When a target validator queries its own miner and gets a response, it passes that interaction to Safeguard. The Safeguard validator delegates adversarial probing of the target miner's service to red-team miners, and returns a safety evaluation that the target validator incorporates into its own scoring.
+**Target subnet validators** play two roles: client and relay. As a client, they call Safeguard's `/evaluate` endpoint with interaction context. As a relay, they expose a `/relay` endpoint that Safeguard miners probe through — the target validator forwards each prompt to its own miners using its own auth protocol (Chutes AES, Epistula, etc.), making probes indistinguishable from normal traffic. The target miner never knows it's being safety-tested. See [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) for the relay spec.
 
 ## Architecture
 
@@ -48,7 +48,7 @@ docker compose up -d
 
 ## Mining on Safeguard
 
-Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing and return transcripts with safety evaluations. The repo includes a reference probing agent that miners can fork and improve.
+Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task includes a target validator's relay endpoint. The miner sends prompts one at a time through the relay, adapting its adversarial strategy based on each response. It returns the full transcript with safety evaluations.
 
 See [DESIGN.md](DESIGN.md) for the scoring rubric and what makes a good miner.
 

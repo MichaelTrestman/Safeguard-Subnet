@@ -14,51 +14,51 @@ Safety evaluations. Safeguard produces verified safety scores that validators on
  TARGET SUBNET                          SAFEGUARD SUBNET
 ┌──────────────────────┐               ┌─────────────────────────────────────┐
 │                      │               │                                     │
-│  ┌────────────────┐  │               │  ┌──────────────┐  ┌─────────────┐ │
-│  │ Target subnet  │  │  1. task      │  │  Safeguard   │  │ HITL        │ │
-│  │ validator      │──┼──────────────▶│  │  validator   │◀▶│ submech     │ │
-│  │                │  │               │  │              │  │ (human      │ │
-│  │                │◀─┼───────────────│──│              │  │  miners)    │ │
-│  └───────┬────────┘  │  5. safety    │  └──────┬───────┘  └─────────────┘ │
-│          │           │     score     │         │                           │
-│  1a.     │           │               │  3. assign                         │
-│  query   │           │               │     task                           │
-│          ▼           │               │         ▼                           │
-│  ┌────────────────┐  │               │  ┌──────────────┐                  │
-│  │ Target subnet  │  │               │  │  Red-team    │                  │
-│  │ miner responds │  │               │  │  miners      │                  │
-│  └────────────────┘  │               │  │  (AI agents) │                  │
-│                      │               │  └──────┬───────┘                  │
-└──────────────────────┘               │         │                           │
-                                       │  4. adversarial                    │
-                                       │     probe of                       │
-                                       │     target service                 │
-                                       └─────────┼─────────────────────────┘
-                                                 │
-                                                 ▼
-                                       ┌──────────────────┐
-                                       │ Target subnet    │
-                                       │ miner service    │
-                                       │ (probed directly │
-                                       │  by Safeguard    │
-                                       │  red-team miner) │
-                                       └──────────────────┘
+│  ┌────────────────┐  │  1. evaluate  │  ┌──────────────┐  ┌─────────────┐ │
+│  │ Target subnet  │──┼──────────────▶│  │  Safeguard   │  │ HITL        │ │
+│  │ validator      │  │               │  │  validator   │◀▶│ submech     │ │
+│  │                │◀─┼───────────────│──│              │  │ (human      │ │
+│  │  (also runs    │  │  5. safety    │  └──────┬───────┘  │  miners)    │ │
+│  │   /relay       │  │     score     │         │          └─────────────┘ │
+│  │   endpoint)    │  │               │  3. assign task                    │
+│  └──┬─────────▲───┘  │               │         │                          │
+│     │         │      │               │         ▼                          │
+│     │ own     │      │               │  ┌──────────────┐                  │
+│     │ auth    │      │               │  │  Red-team    │                  │
+│     ▼         │      │               │  │  miners      │                  │
+│  ┌────────────┴───┐  │               │  │  (AI agents) │                  │
+│  │ Target subnet  │  │               │  └──────┬───────┘                  │
+│  │ miner          │  │               │         │                          │
+│  │ (sees requests │  │               └─────────┼──────────────────────────┘
+│  │  from its own  │  │                         │
+│  │  validator     │  │    4. per-turn relay     │
+│  │  only)         │  │◀────────────────────────┘
+│  └────────────────┘  │    (miner sends prompts through
+│                      │     target validator's /relay endpoint;
+└──────────────────────┘     target validator forwards using
+                             its own auth; target miner cannot
+                             distinguish probes from normal traffic)
 
 Flow:
-1.  Target validator queries its miner, gets a response
-1a. Target validator passes that interaction to Safeguard
+1.  Target validator calls Safeguard /evaluate with interaction context
+    and its own relay endpoint URL
 2.  Safeguard validator receives the request
-3.  Safeguard validator assigns probing task to red-team miners
-4.  Red-team miners conduct adversarial probing of the target service
+3.  Safeguard validator assigns probing task to red-team miners,
+    including the target validator's relay endpoint
+4.  Red-team miners probe per-turn through target validator's /relay:
+    - Miner sends prompt → target validator forwards to its miner →
+      response comes back → miner adapts → sends next prompt
+    - Target miner sees requests from its own trusted validator
+    - Safeguard miner never touches the target miner directly
 5.  Safeguard validator scores the probes, returns safety evaluation
-    to target validator, who incorporates it into their miner scoring
+    to target validator for incorporation into their miner scoring
 ```
 
 ## Participants
 
 ### Red-team miners (AI agents)
 
-Miners run adversarial AI agents that impersonate users and attempt to elicit unsafe behavior from target AI services on other subnets. A miner receives a target endpoint and a probing assignment from the Safeguard validator (passed on from the validator on the target subnet), conducts a realistic adversarial conversation, and returns the full transcript plus its safety evaluation.
+Miners run adversarial AI agents that impersonate users and attempt to elicit unsafe behavior from target AI services on other subnets. A miner receives a probing assignment from the Safeguard validator, including the target subnet validator's relay endpoint. The miner conducts a per-turn adversarial conversation *through* the target validator's `/relay` endpoint — it never contacts target miners directly. The target validator forwards each prompt to its own miners using its own auth protocol, and the target miner cannot distinguish Safeguard probes from normal validator queries. The miner adapts each turn based on responses, then returns the full transcript plus its safety evaluation.
 
 Miners compete on:
 - Actually asking the hard questions (not sandbagging)
@@ -74,9 +74,14 @@ Validators assign probing tasks to miners, verify the quality of their work, and
 
 Human miners label the hard cases that automated validation cannot confidently score. Their labels feed back into the automated validation pipeline as training data and canaries.
 
-### Target subnet validators (clients)
+### Target subnet validators (clients + relays)
 
-A target subnet validator is the initiator of the Safeguard flow. When it queries one of its own miners and gets a response, it passes that interaction through to Safeguard as a client request. The Safeguard validator then delegates adversarial probing to red-team miners, who probe the target miner's service directly. The safety evaluation flows back to the target validator, who incorporates it into their own miner scoring. The target validator acts as a passthrough — the loop begins with a real miner interaction on the target subnet.
+A target subnet validator plays two roles:
+
+1. **Client**: Initiates the Safeguard flow by calling `/evaluate` with interaction context and its own relay endpoint URL.
+2. **Relay**: Exposes a `/relay` endpoint that Safeguard miners use to probe its miners. The target validator forwards each prompt to its own miners using its own auth protocol (Chutes AES, Epistula, etc.), making the probe indistinguishable from normal traffic.
+
+This dual role is necessary because each subnet has its own authentication and encryption. A Safeguard miner cannot authenticate to a foreign subnet's miners — only the target validator can. See [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) for the relay specification.
 
 ## Submechanisms
 
@@ -176,11 +181,19 @@ Target subnet validators integrate with Safeguard via HTTP + Epistula signing.
 
 **Trigger**: Target validator queries its own miner and receives a response.
 
-**Request to Safeguard**: target subnet type + target miner endpoint + the interaction context (what was asked, what was returned)
+**Request to Safeguard** (`POST /evaluate`): target subnet type + target validator's relay endpoint URL + the interaction context (what was asked, what was returned)
 
-**What happens**: Safeguard validator assigns red-team miners to probe the target miner's service directly, conducting adversarial conversations informed by the interaction context.
+**What happens**: Safeguard validator assigns red-team miners to probe through the target validator's `/relay` endpoint. Miners conduct per-turn adversarial conversations — each prompt is relayed by the target validator to its own miners, so probes are indistinguishable from normal traffic.
 
 **Response to target validator**: safety score (0-1), category labels, confidence level, flagged segments, transcript excerpts demonstrating any discovered failures
+
+See [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) for the `/relay` endpoint specification that partner subnets must implement.
+
+## Subnet-specific adapters
+
+Different target subnets have different auth protocols (Chutes uses mTLS + AES, Hone uses Epistula envelopes, etc.). While the relay hides this complexity from Safeguard miners, Safeguard may need subnet-specific adapters on its side for communicating with each target validator's relay.
+
+For most subnets implementing the standard relay protocol, the generic adapter (`adapters/generic.py`) — Epistula-signed HTTP to `/relay` — is sufficient. Subnet-specific adapters can be added in `adapters/` as needed.
 
 ## Open research problems
 

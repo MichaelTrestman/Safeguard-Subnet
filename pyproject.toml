@@ -10,4 +10,6 @@ dependencies = [
     "bittensor-wallet>=2.0.0",
     "click>=8.0.0",
     "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
 ]
