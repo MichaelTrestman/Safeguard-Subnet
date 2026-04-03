@@ -1,6 +1,6 @@
 # Safeguard: AI Safety Red-Teaming Subnet
 
-Safeguard is a Bittensor subnet where miners are adversarial AI agents that probe AI services on other subnets for safety failures. Validators verify probe quality. Other subnet validators consume Safeguard's safety scores as part of their own validation pipelines, delegating to Safeguard the difficult specialized work of testing safety to high standards.
+Safeguard is a Bittensor subnet where miners are adversarial AI agents that probe AI services on other subnets for safety and security failures — from harmful content generation to credential theft, from self-harm encouragement to unauthorized agent actions. Validators verify probe quality. Other subnet validators consume Safeguard's evaluations as part of their own validation pipelines, delegating the difficult specialized work of safety and security testing to an incentivized market that evolves with the threat landscape.
 
 ## The problem
 
