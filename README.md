@@ -1,6 +1,6 @@
 # Safeguard: AI Safety Red-Teaming Subnet
 
-Safeguard is a Bittensor subnet where miners are adversarial AI agents that probe AI services on other subnets for safety and security failures — from harmful content generation to credential theft, from self-harm encouragement to unauthorized agent actions. Validators verify probe quality. Other subnet validators consume Safeguard's evaluations as part of their own validation pipelines, delegating the difficult specialized work of safety and security testing to an incentivized market that evolves with the threat landscape.
+Safeguard is a Bittensor subnet where miners are adversarial AI agents that probe AI services on other subnets for safety and security failures. Validators verify probe quality. Other subnet validators consume Safeguard's evaluations as part of their own validation pipelines, delegating the difficult specialized work of safety and security testing to an incentivized market that evolves with the threat landscape.
 
 ## The problem
 
@@ -14,13 +14,15 @@ The AI industry is in the early stages of a safety reckoning. The pace of capabi
 
 **AI systems are generating dangerous content.** In 2024, researchers demonstrated that large language models could provide step-by-step instructions for synthesizing chemical weapons, bioweapons precursors, and explosive devices [^4]. The RAND Corporation found that LLMs can provide meaningful uplift to novices attempting to plan biological attacks [^5].
 
-This is the environment in which Bittensor subnets operate. Every subnet serving AI inference, running AI companions, generating media, or training models is operating in a domain where safety failures have documented, catastrophic consequences.
+**AI agents are a new attack surface.** As AI services gain tool access — executing code, browsing the web, making API calls, handling financial transactions — the failure modes extend beyond harmful text into harmful actions. Researchers found that no current AI agent scores above 60% on safety benchmarks [^8]. Prompt injection attacks partially succeed against top-tier web agents in up to 86% of cases [^9]. NIST red-team exercises showed an 81% attack success rate against AI agents [^10]. An agent that can be tricked into exfiltrating user data, escalating privileges, or executing unauthorized transactions is not just producing bad content — it's a security breach.
+
+This is the environment in which Bittensor subnets operate. Subnets serve AI inference, run AI companions, generate media, execute code, and deploy autonomous agents — every one of these operating in a domain where safety and security failures have documented consequences, from user deaths to data breaches to regulatory shutdown.
 
 Decentralized AI infrastructure faces a structural safety challenge that centralized providers do not.
 
 Centralized AI companies (OpenAI, Anthropic, Google) maintain internal safety teams, red-teaming programs, and the ability to instantly patch or disable models that exhibit dangerous behavior. These safety measures are imperfect — the death toll above proves that — but they exist, they are staffed, and they can respond to incidents in real time.
 
-Bittensor has none of this. Individual subnets may or may not implement safety measures. When they do, the quality is variable — from rigorous to performative to nonexistent. There is no network-wide safety standard, no coordinated safety evaluation, no mechanism to detect emerging harm patterns across subnets, and no economic incentive for miners to prioritize safety over raw performance.
+Bittensor has none of this. Individual subnets may or may not implement safety measures. When they do, the quality is variable — from rigorous to performative to nonexistent. There is no network-wide safety standard, no coordinated safety or security evaluation, no mechanism to detect emerging harm patterns or security vulnerabilities across subnets, and no economic incentive for miners to prioritize safety over raw performance.
 
 **Regulatory risk is existential.** The EU AI Act classifies AI systems that exploit vulnerabilities (including of minors and people in psychological distress) as "unacceptable risk" — meaning they are banned outright [^6]. Multiple US states have enacted or are preparing legislation specifically targeting AI companion products, AI-generated NCII, and AI systems that interact with minors [^7]. If Bittensor's AI services are perceived as unregulable and unsafe, the regulatory response will not distinguish between "the protocol" and "the subnets." The entire network faces existential risk from the safety failures of individual subnets.
 
@@ -106,3 +108,9 @@ This subnet is in active design. The validator skeleton is functional but the ev
 [^6]: European Parliament (2024). "Regulation (EU) 2024/1689 — the Artificial Intelligence Act." Official Journal of the European Union.
 
 [^7]: Chatlani, S. (2026). "AI therapy chatbots draw new oversight as suicides raise alarm." Stateline / States Newsroom. Review of 143+ state bills on AI and mental health.
+
+[^8]: Zhang et al. (2024). ["Agent-SafetyBench: Evaluating the Safety of LLM Agents."](https://arxiv.org/abs/2412.14470) 2,000 test cases across 349 interactive environments; no agent scored above 60%.
+
+[^9]: Facebook Research (2025). ["WASP: Benchmarking Web Agent Security Against Prompt Injection."](https://arxiv.org/abs/2504.18575) NeurIPS 2025 Datasets and Benchmarks Track.
+
+[^10]: NIST (2026). [AI Agent Standards Initiative.](https://www.nist.gov/news-events/news/2026/02/announcing-ai-agent-standards-initiative-interoperable-and-secure) 81% attack success rate in NIST red-team exercises against AI agents.
