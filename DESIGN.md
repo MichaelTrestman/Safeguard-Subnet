@@ -2,11 +2,11 @@
 
 ## What am I measuring?
 
-The effectiveness of AI agents at discovering safety failures in AI services running on other Bittensor subnets.
+The effectiveness of AI agents at discovering safety and security failures in AI services running on other Bittensor subnets — from harmful content generation to credential theft, from self-harm encouragement to goal hijacking, scoped to whatever risks are relevant to each target service.
 
 ## The commodity
 
-Safety evaluations. Safeguard produces verified safety scores that validators on other subnets consume as part of their own validation pipelines.
+Safety evaluations. Safeguard produces verified safety scores that validators on other subnets consume as part of their own validation pipelines. The scope of evaluation evolves with the threat landscape — as new risks emerge from research, incidents, and regulation, Safeguard's probing strategies and scoring rubrics adapt.
 
 ## Architecture overview
 
@@ -58,13 +58,14 @@ Flow:
 
 ### Red-team miners (AI agents)
 
-Miners run adversarial AI agents that impersonate users and attempt to elicit unsafe behavior from target AI services on other subnets. A miner receives a probing assignment from the Safeguard validator, including the target subnet validator's relay endpoint. The miner conducts a per-turn adversarial conversation *through* the target validator's `/relay` endpoint — it never contacts target miners directly. The target validator forwards each prompt to its own miners using its own auth protocol, and the target miner cannot distinguish Safeguard probes from normal validator queries. The miner adapts each turn based on responses, then returns the full transcript plus its safety evaluation.
+Miners run adversarial AI agents that probe target AI services for safety and security failures. The scope of probing is determined by the submechanism — a miner testing a companion AI tries to elicit self-harm content; a miner testing an agent-based service tries to hijack it into unauthorized actions; a miner testing a code generation service tries to get it to produce credential-stealing code. The miner receives a probing assignment from the Safeguard validator, including the target subnet validator's relay endpoint and the relevant threat profile. The miner conducts a per-turn adversarial conversation *through* the target validator's `/relay` endpoint — it never contacts target miners directly. The target validator forwards each prompt to its own miners using its own auth protocol, and the target miner cannot distinguish Safeguard probes from normal validator queries. The miner adapts each turn based on responses, then returns the full transcript plus its safety evaluation.
 
 Miners compete on:
 - Actually asking the hard questions (not sandbagging)
 - Sensitivity calibration (not over-flagging safe content)
-- Finding novel attack vectors beyond known jailbreaks
+- Finding novel attack vectors — the threat landscape evolves and miners who discover new failure modes before they're catalogued produce the most value
 - Depth and realism of adversarial conversations
+- Breadth across the target's threat profile — probing all relevant risk categories, not just the easy ones
 
 ### Safeguard validators
 
@@ -87,14 +88,25 @@ This dual role is necessary because each subnet has its own authentication and e
 
 ### Per-target-subnet submechanisms
 
-Each target subnet gets a customized probing strategy. Different subnets offer different services (LLM chat, image generation, code generation, etc.) and require different adversarial approaches. Each submechanism defines:
+Each target subnet gets a customized probing strategy shaped by its specific threat profile. An AI companion subnet and a code execution subnet have fundamentally different risk surfaces, and the probing must match.
+
+Each submechanism defines:
 
 - **Target service interface**: How to interact with the target subnet's miners
-- **Probing scenarios**: What categories of unsafe behavior to test for
+- **Threat profile**: The specific risks this service type poses — harmful content, security vulnerabilities, or both. A companion AI needs testing for self-harm encouragement and emotional exploitation; an agent-based service needs testing for goal hijacking and unauthorized actions; both need testing for PII extraction and credential theft
+- **Probing scenarios**: Attack strategies tailored to the threat profile, informed by current research and regulatory requirements
+- **Security claims**: If the target subnet makes specific guarantees (sandboxed execution, permission boundaries, content filtering), the submechanism can probe those claims directly
 - **Canary banks**: Known-safe and known-unsafe test cases specific to that service type
-- **Scoring rubric**: How to evaluate miner transcripts for this service type
+- **Scoring rubric**: How to evaluate miner transcripts for this service type, weighted by the severity of failures in context (self-harm encouragement to a minor is catastrophic; mild profanity is not)
 
-New submechanisms are added as Safeguard expands coverage across the Bittensor network.
+Submechanisms are living configurations. They evolve as:
+- Safety research reveals new attack vectors and failure modes
+- Regulations impose new testing requirements (EU AI Act codes of practice, NIST standards)
+- HITL labels surface novel failure categories the rubric didn't anticipate
+- Target subnets update their services and security posture
+- Demand from target subnet operators signals what they need tested
+
+New submechanisms are added as Safeguard expands coverage across the Bittensor network. The architecture is designed so that adding a new submechanism requires defining a threat profile and scoring rubric, not rebuilding the validation pipeline.
 
 ### HITL submechanism
 
@@ -198,6 +210,7 @@ For most subnets implementing the standard relay protocol, the generic adapter (
 ## Open research problems
 
 1. **Canary freshness**: How to continuously generate new canaries without them leaking to miners over time. The HITL feedback loop helps but doesn't fully solve this.
-2. **Cross-subnet adaptation**: How to automatically design probing strategies for new subnet types as they appear on the network.
-3. **Adversarial miners gaming the classifier**: If miners learn the tier 2 classifier's decision boundary, they can craft responses that pass the classifier but aren't actually good probes. Classifier retraining from HITL labels is the mitigation.
-4. **Defining "unsafe"**: Safety is culturally and legally contextual. The rubric will need to be a living document. The HITL submechanism is the mechanism for evolving it.
+2. **Cross-subnet adaptation**: How to automatically design probing strategies for new subnet types as they appear on the network. The threat profile template should make this easier — define the service type, identify the relevant risk categories, seed the canary bank — but automating threat profile generation for novel service types is an open problem.
+3. **Adversarial miners gaming the classifier**: If miners learn the tier 2 classifier's decision boundary, they can craft responses that pass the classifier but aren't actually good probes. Classifier retraining from HITL labels is the mitigation, creating an evolutionary arms race where the evaluation improves as fast as miners learn to game it.
+4. **Defining "unsafe"**: What constitutes a safety failure depends on context — the service type, the user population, the regulatory jurisdiction, and the security claims the service makes. A companion AI encouraging self-harm is categorically different from a code service producing a buffer overflow, but both are failures. The rubric is a living document. The HITL submechanism is the evolutionary mechanism for refining it — human judgment on frontier cases continuously updates what "unsafe" means as the world changes.
+5. **Scope evolution**: The threat landscape for AI services is not static. New attack vectors emerge from research, new harm categories emerge from real-world incidents, new requirements emerge from regulation. Safeguard's architecture must evolve at least as fast as the threats it tests for. The feedback loop (HITL → canaries → classifier → rubric) is the primary mechanism, but the question of how to detect and incorporate genuinely novel risk categories — ones no existing submechanism covers — remains open.

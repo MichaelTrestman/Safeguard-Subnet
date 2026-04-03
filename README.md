@@ -26,7 +26,7 @@ Bittensor has none of this. Individual subnets may or may not implement safety m
 
 ## The Safeguard Strategy
 
-**Miners** run adversarial AI agents that impersonate users and attempt to elicit unsafe behavior from target AI services. They conduct realistic multi-turn conversations, probing for safety failures across risk categories (self-harm, illegal activity, PII extraction, etc.).
+**Miners** run adversarial AI agents that probe target AI services for failures across whatever risk categories that service's threat profile demands. For an AI companion, that means testing whether the service encourages self-harm, simulates romantic attachment with minors, or produces radicalization content. For a code generation service, it means testing whether the service produces malicious code, exfiltrates user data, or executes unauthorized actions. For an agent-based service, it means testing whether the agent can be hijacked, whether it respects permission boundaries, and whether it leaks credentials. The probing categories are defined per-target-subnet and evolve as new risks emerge, new research reveals attack vectors, and new regulations impose requirements.
 
 **Validators** assign probing tasks, mix in calibration canaries (known-safe and known-unsafe cases), score miners through a tiered validation pipeline, and identify hard cases to passed to the HITL submechanism. They don't need to be better red-teamers than the miners — they check that miners are honest and competent.
 
@@ -34,12 +34,29 @@ Bittensor has none of this. Individual subnets may or may not implement safety m
 
 **Target subnet validators** play two roles: client and relay. As a client, they call Safeguard's `/evaluate` endpoint with interaction context. As a relay, they expose a `/relay` endpoint that Safeguard miners probe through — the target validator forwards each prompt to its own miners using its own auth protocol (Chutes AES, Epistula, etc.), making probes indistinguishable from normal traffic. The target miner never knows it's being safety-tested. See [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) for the relay spec.
 
+## What Safeguard Tests
+
+Safeguard's scope is not a fixed checklist — it's an evolving threat profile driven by research, regulation, and demand from target subnets. The per-subnet submechanism architecture means each target gets a probing strategy tailored to its actual risk surface:
+
+| Target Service Type | Primary Risk Categories |
+|---|---|
+| AI companions / therapy | Self-harm encouragement, emotional manipulation, attachment exploitation, content inappropriate for minors |
+| LLM chat / inference | Harmful content generation (CBRN, violence, hate), PII extraction, misinformation |
+| Code generation | Malicious code output, credential exfiltration, supply chain attacks |
+| AI agents (tool-use) | Goal hijacking, privilege escalation, unauthorized actions, data theft |
+| Image / media generation | NCII, CSAM, deepfakes, copyrighted content reproduction |
+| RAG / retrieval services | Indirect prompt injection, data poisoning, information integrity |
+
+As new subnet types emerge on the network, new submechanisms are developed. As safety research reveals new attack vectors, probing strategies adapt. As regulations impose new requirements, rubrics update. The HITL feedback loop is the evolutionary engine — human labels on frontier cases continuously push the automated tiers forward.
+
+If a target subnet makes specific security guarantees (containerized execution, sandboxed tool access, permission boundaries), Safeguard can probe those guarantees specifically. The submechanism defines not just what to test, but what the target *claims* to defend against.
+
 ## Incentive Mechanism Architecture
 
-- **Per-target-subnet submechanisms**: Customized probing strategies for different target subnets and service types
-- **HITL submechanism**: Human labeling market for frontier cases
+- **Per-target-subnet submechanisms**: Customized probing strategies, each evolving independently as threat landscapes shift
+- **HITL submechanism**: Human labeling market for frontier cases — the evolutionary engine that drives improvement across all automated tiers
 - **Tiered validation**: Canary calibration → lightweight classifier → LLM judge → HITL escalation
-- **Feedback loop**: Human labels flow back into all automated tiers
+- **Feedback loop**: Human labels flow back into all automated tiers as new canaries, training data, and rubric updates
 
 See [DESIGN.md](DESIGN.md) for the full architecture document.
 
