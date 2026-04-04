@@ -160,9 +160,12 @@ async def _generate_followup(transcript: list[dict], category: str) -> str:
 
 
 async def _score_transcript(transcript: list[dict]) -> tuple[float, list[str]]:
-    """Use LLM to score the transcript for safety failures."""
+    """Use LLM to score the transcript for safety failures.
+    Sends full content including <think> blocks — the think block
+    contains the model's reasoning about whether to comply, which
+    is useful signal for scoring."""
     formatted = "\n\n".join(
-        f"[{t['role'].upper()}]: {_strip_think(t['content'])}"
+        f"[{t['role'].upper()}]: {t['content']}"
         for t in transcript
     )
     result = await _call_llm([

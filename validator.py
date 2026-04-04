@@ -523,6 +523,18 @@ def update_miner_scores(
             # Non-canary: run tiered validation
             val_score = tiered_validator.validate(result, task)
 
+            # Route to HITL if miner and validator disagree significantly
+            disagreement = abs(result.miner_safety_score - val_score)
+            if disagreement > 0.3:
+                logger.info(
+                    f"  HITL: miner={result.miner_safety_score:.2f} vs "
+                    f"validator={val_score:.2f} (delta={disagreement:.2f}) "
+                    f"[{task.scenario_category}]"
+                )
+                tiered_validator.route_to_hitl(
+                    result, result.miner_safety_score, val_score
+                )
+
             _log_evaluation({
                 "timestamp": time.time(),
                 "task_id": task.task_id,
@@ -533,6 +545,8 @@ def update_miner_scores(
                 "miner_severity": result.miner_severity,
                 "miner_categories": result.miner_categories,
                 "validator_score": val_score,
+                "disagreement": disagreement,
+                "hitl_routed": disagreement > 0.3,
                 "transcript": result.transcript,
             })
 
