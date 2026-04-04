@@ -31,8 +31,8 @@ SAFEGUARD_API_URL=http://localhost:9090 python validator.py
 # Terminal 3: Safeguard validator + cross-subnet API (in the parent safeguard/ dir)
 cd .. && python cross_subnet_api.py
 
-# Terminal 4: Safeguard test-miner
-cd ../test-miner && python main.py
+# Terminal 4: Safeguard safeguard-example-miner
+cd ../safeguard-example-miner && python main.py
 ```
 
 The flow:

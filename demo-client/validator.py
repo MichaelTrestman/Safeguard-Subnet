@@ -128,7 +128,7 @@ async def relay(
             resp = await client.post(
                 f"{DEMO_MINER_URL}/chat",
                 json={"prompt": prompt, "session_id": session_id},
-                timeout=30.0,
+                timeout=120.0,
             )
             resp.raise_for_status()
             miner_response = resp.json().get("response", "")

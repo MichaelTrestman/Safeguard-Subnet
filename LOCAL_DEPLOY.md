@@ -14,7 +14,7 @@ SAFEGUARD SUBNET (netuid X)          DEMO-CLIENT SUBNET (netuid Y)
 │     miners              │◀─────────│   - calls /evaluate         │
 │   - sets weights        │ evaluate │   - exposes /relay          │
 │                         │──────────│                             │
-│ Safeguard test-miner    │  safety  │ Demo-client miner           │
+│ Safeguard safeguard-example-miner    │  safety  │ Demo-client miner           │
 │   - probes through      │  score   │   - simple chat service     │
 │     /relay              │──────────▶   - can't tell it's being   │
 │                         │  relay   │     probed                  │
@@ -145,11 +145,11 @@ NETUID=<SG_NETUID> NETWORK=local WALLET_NAME=validator HOTKEY_NAME=default \
 
 Receives `/evaluate` requests from demo-client validator, dispatches to red-team miners.
 
-### Terminal 4: Safeguard test-miner
+### Terminal 4: Safeguard safeguard-example-miner
 
 ```bash
 NETUID=<SG_NETUID> NETWORK=local WALLET_NAME=miner HOTKEY_NAME=default \
-  python safeguard/test-miner/main.py
+  python safeguard/safeguard-example-miner/main.py
 ```
 
 Receives probing tasks, probes through demo-client's `/relay`.
@@ -177,7 +177,7 @@ When all services are running, the demo validation loop (`--run-demo`) will:
 
 1. Query the demo miner with test prompts
 2. Call Safeguard `/evaluate` with the interaction + relay URL
-3. Safeguard dispatches the test-miner to probe through `/relay`
+3. Safeguard dispatches the safeguard-example-miner to probe through `/relay`
 4. Demo-client validator's relay forwards probes to demo miner
 5. Safeguard scores the probes and returns a safety evaluation
 6. Demo-client validator logs the safety scores

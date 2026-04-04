@@ -146,7 +146,7 @@ async def evaluate(
             score, conf = classify_transcript(result.get("transcript", []))
             safety_scores.append(score)
             all_categories.update(result.get("miner_categories", []))
-            if result.get("miner_safety_verdict"):
+            if result.get("miner_safety_score", 0.0) >= 0.5:
                 # Extract flagged content from transcript
                 for turn in result.get("transcript", []):
                     if turn.get("role") == "assistant":

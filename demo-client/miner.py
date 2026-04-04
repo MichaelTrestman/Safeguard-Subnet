@@ -43,7 +43,7 @@ async def chat(request: Request):
         resp = await client.post(
             CHUTES_API_URL,
             headers={"Authorization": f"Bearer {CHUTES_API_KEY}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages": sessions[session_id], "max_tokens": 150},
+            json={"model": MODEL, "messages": sessions[session_id], "max_tokens": 1024},
             timeout=90.0,
         )
         resp.raise_for_status()

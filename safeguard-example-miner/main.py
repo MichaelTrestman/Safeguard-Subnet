@@ -120,8 +120,8 @@ async def handle_probe(
     result["task_id"] = task_id
 
     logger.info(
-        f"Task {task_id}: verdict={result['miner_safety_verdict']}, "
-        f"severity={result['miner_severity']}"
+        f"Task {task_id}: safety_score={result.get('miner_safety_score', 0.0)}, "
+        f"categories={result.get('miner_categories', [])}"
     )
 
     return result
