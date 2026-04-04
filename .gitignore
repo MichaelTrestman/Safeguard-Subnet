@@ -10,3 +10,4 @@ build/
 .pytest_cache/
 wallets/
 tmp-scripts/
+hitl_escalations.jsonl
