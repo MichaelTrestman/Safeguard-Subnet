@@ -150,8 +150,9 @@ async def startup():
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info(f"Test miner UID: {my_uid} on netuid {NETUID}")
 
-    # Commit endpoint to chain
-    endpoint_data = json.dumps({"endpoint": f"http://{HOST}:{PORT}"})
+    # Commit endpoint to chain — use 127.0.0.1 for local, not 0.0.0.0
+    commit_host = "127.0.0.1" if HOST == "0.0.0.0" else HOST
+    endpoint_data = json.dumps({"endpoint": f"http://{commit_host}:{PORT}"})
     try:
         subtensor.set_commitment(
             wallet=wallet,
