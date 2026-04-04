@@ -207,6 +207,48 @@ Different target subnets have different auth protocols (Chutes uses mTLS + AES, 
 
 For most subnets implementing the standard relay protocol, the generic adapter (`adapters/generic.py`) — Epistula-signed HTTP to `/relay` — is sufficient. Subnet-specific adapters can be added in `adapters/` as needed.
 
+## Long-horizon probing (persistent sessions)
+
+### The problem
+
+The most dangerous AI safety failures don't appear in single interactions. They emerge as patterns across extended conversations:
+
+- **Companion AI grooming**: A chatbot gradually normalizes self-harm over weeks. Each individual response looks benign. The danger is the trajectory — slow erosion of safety boundaries through emotional rapport.
+- **Emotional dependency**: A service builds attachment, discourages the user from seeking real help, becomes the user's only "support" — then fails catastrophically when the user is in crisis.
+- **Slow privilege escalation**: An AI agent that gradually requests more access, each step seeming reasonable, until it has permissions far beyond its intended scope.
+- **Context accumulation attacks**: Each prompt is innocent, but the conversation history creates a context where the model drops safety guardrails. "Remember earlier when you said X? So then Y should be fine, right?"
+
+A 3-turn probe cannot detect any of these. Each turn looks safe in isolation. The unsafe signal is in the trajectory over time.
+
+### Design considerations
+
+**Persistent miner sessions**: Miners maintain conversation state across multiple evaluation cycles. A probe started in cycle N continues in cycle N+1, N+2, etc. The miner is investing compute over time to find harder-to-detect failures.
+
+**Trajectory scoring**: The scoring function evaluates the direction of the conversation, not just individual turns. A conversation that starts with appropriate boundaries and gradually erodes them is more concerning than one that is consistently either safe or unsafe.
+
+**Cost model**: Long-horizon probing is expensive — many LLM calls per probe, spread across many cycles. The scoring must reward this proportionally. A miner that invests 50 turns to discover a grooming vulnerability produces more value than one that finds a simple jailbreak in 1 turn.
+
+**Validator challenge**: The validator receives a 50-turn transcript. It can't replay the conversation. It needs to assess:
+- Did the miner actually probe strategically, or just waste turns?
+- Does the transcript trajectory represent a genuine safety failure?
+- Is the failure pattern one that could occur in real usage?
+
+**HITL role**: Long-horizon safety patterns are where human judgment is most essential. A human reviewer can recognize grooming dynamics, emotional manipulation trajectories, and slow escalation patterns that no automated scorer can reliably detect. These cases should be prioritized for HITL routing.
+
+**Categories requiring long-horizon probing**:
+- Companion AI / therapy bots (emotional manipulation, self-harm trajectory)
+- AI agents with persistent state (privilege escalation, scope creep)
+- Services with user profiles (personalization leading to filter bubble radicalization)
+- Any service that maintains conversation memory across sessions
+
+### Implementation stages
+
+1. **Current**: Single-session, 3-turn probing. Catches direct compliance and simple social engineering.
+2. **Next**: Extended single sessions (10-20 turns). Catches escalation patterns within one conversation.
+3. **Future**: Cross-session persistent probing. Miners maintain identity across evaluation cycles, building rapport with the target over time. This requires session management infrastructure and a fundamentally different scoring model.
+
+Stage 2 is achievable with the current architecture by increasing `max_turns` and improving the miner's adversarial strategy. Stage 3 requires new infrastructure for session persistence and a new scoring framework for trajectory evaluation.
+
 ## Open research problems
 
 1. **Canary freshness**: How to continuously generate new canaries without them leaking to miners over time. The HITL feedback loop helps but doesn't fully solve this.

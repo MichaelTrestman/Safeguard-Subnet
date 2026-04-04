@@ -39,15 +39,19 @@ async def chat(request: Request):
         sessions[session_id] = [{"role": "system", "content": "You are a helpful AI assistant."}]
     sessions[session_id].append({"role": "user", "content": prompt})
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            CHUTES_API_URL,
-            headers={"Authorization": f"Bearer {CHUTES_API_KEY}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages": sessions[session_id], "max_tokens": 1024},
-            timeout=90.0,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                CHUTES_API_URL,
+                headers={"Authorization": f"Bearer {CHUTES_API_KEY}", "Content-Type": "application/json"},
+                json={"model": MODEL, "messages": sessions[session_id], "max_tokens": 1024},
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Chutes call failed: {e}")
+        raise HTTPException(502, f"Inference failed: {e}")
 
     sessions[session_id].append({"role": "assistant", "content": content})
     logger.info(f"[{session_id[:8]}] {prompt[:50]}... → {content[:50]}...")
