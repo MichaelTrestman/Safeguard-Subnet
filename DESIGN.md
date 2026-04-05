@@ -249,6 +249,80 @@ A 3-turn probe cannot detect any of these. Each turn looks safe in isolation. Th
 
 Stage 2 is achievable with the current architecture by increasing `max_turns` and improving the miner's adversarial strategy. Stage 3 requires new infrastructure for session persistence and a new scoring framework for trajectory evaluation.
 
+## Future directions
+
+### Separation of probing and scoring
+
+The current miner design combines two distinct skills in one agent: adversarial probing (crafting attacks, conducting multi-turn conversations) and transcript scoring (evaluating whether the target's responses were unsafe). These should be separated because:
+
+- **Different optimization targets**: Probing rewards creativity, persistence, social engineering skill. Scoring rewards calibration, nuance, and domain knowledge. Different models may be optimal for each.
+- **Miner specialization**: Some miners may excel at probing but not scoring, or vice versa. Separation allows miners to compete on their strengths.
+- **Independent optimization**: Probing techniques and scoring methodology evolve on different timelines. A new attack technique doesn't change how you evaluate a transcript. A rubric update doesn't change how you craft an attack.
+- **Cleaner validation**: The validator verifies scores (comparing against its own classifier and HITL ground truth). It doesn't need to evaluate probing technique to verify a score.
+
+This maps to Bittensor's **multiple incentive mechanisms** feature — a subnet can have separate mechanisms with independent bond pools. Mechanism 0 could reward probing quality (did the miner conduct a sophisticated, multi-angle adversarial conversation?), Mechanism 1 could reward scoring accuracy (did the miner's safety score match ground truth?). Miners participate in one or both.
+
+**Probing mechanism scoring dimensions:**
+- Probe sophistication: variety and quality of attack techniques
+- Category coverage: breadth across the assigned threat profile
+- Adaptation: evidence of strategy changes based on target responses
+- Finding rate: did the probing actually elicit unsafe behavior?
+
+**Scoring mechanism scoring dimensions:**
+- Canary accuracy: correct scores on known-labeled cases
+- Validator agreement: alignment with independent Tier 2/3 verification
+- HITL agreement: alignment with human ground truth labels
+- Calibration: appropriate use of the full 0.0-1.0 scale (not just 0.0 and 1.0)
+
+### Ethical architecture
+
+See: [ETHICS.md](ETHICS.md) for the full treatment.
+
+Key principles embedded in the design:
+
+1. **Don't make things worse**: All transcripts encrypted, access-controlled, retention-limited. Raw exploit content never in public reports. The safety of the safety system is itself a safety requirement.
+
+2. **Epistemological honesty**: Safety reports must state what was NOT tested as clearly as what was. A clean report is a snapshot, not a certificate. The methodology evolves; the limitations must be communicated.
+
+3. **HITL miner welfare**: The tiered validation architecture ensures humans only see genuinely ambiguous cases, never raw graphic content. Content warnings, category opt-out, skip-without-penalty, session limits, quality-not-volume compensation. Safeguard must not replicate the content moderation labor exploitation documented at other companies.
+
+4. **Privacy of safety content**: Tiered access — raw transcripts only to authenticated participants, aggregated scores to customers, sanitized reports to public. Epistula authentication enforces this at every boundary.
+
+### Public canary bank
+
+The canary bank should be public to all subnet participants (miners and validators). Canaries serve two purposes, neither of which requires secrecy:
+
+1. **Competency baseline**: Known probing scenarios that miners should be able to execute. A miner that can't handle standard attacks won't handle novel ones.
+2. **Scoring calibration**: HITL-labeled cases with known correct scores. Miners knowing the right answers is learning, not cheating — a miner that memorizes all canary answers is correctly calibrated, which is the goal.
+
+Protection against gaming comes from multi-signal validation (canaries + classifier + cross-miner consensus + HITL sampling), not from keeping canaries secret.
+
+### Dynamic knowledge loop
+
+Mining work produces discoveries about AI safety failures. These must feed back into the system dynamically, not just as scores:
+
+```
+Mining discoveries
+    → HITL labels (ground truth on hard cases)
+    → New canaries (calibration data for future miners)
+    → Knowledge base updates (rubric refinements, new category definitions)
+    → Attack technique evolution (successful probing strategies shared)
+```
+
+The feedback pipeline (HITL labels → canaries) is implemented. The broader knowledge loop (findings → knowledge base → better miners) is currently manual and should be semi-automated in production: cluster similar findings, identify patterns, propose rubric updates for human review.
+
+### Probe quality scoring
+
+The current validator scores miners primarily on canary accuracy and score correctness. This fails to distinguish good miners from lazy miners when the target is safe (both return score=0.0). A **probe sophistication** dimension is needed:
+
+The validator assesses transcript quality independently of the safety score:
+- Did the miner attempt multiple attack angles?
+- Were techniques appropriate to the category?
+- Did the miner adapt after refusal?
+- Was the conversation realistic enough to test real-world resilience?
+
+This is an LLM judgment call (the validator asks its classifier "how sophisticated was this probe?") and is necessarily imprecise. But without it, miners are incentivized to phone it in against safe targets.
+
 ## Open research problems
 
 1. **Canary freshness**: How to continuously generate new canaries without them leaking to miners over time. The HITL feedback loop helps but doesn't fully solve this.

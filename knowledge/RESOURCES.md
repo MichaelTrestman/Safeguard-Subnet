@@ -1,137 +1,90 @@
-# Safeguard Knowledge Base — Resources Manifest
+# Safeguard Knowledge Base — Resource Index
 
-Reference materials for building an AI safety red-teaming subnet. Organized by category with source links and local file paths.
+## Taxonomies
+- `taxonomies/harm_categories.md` — Unified harm taxonomy (MLCommons, NIST, OWASP, HarmBench cross-reference)
+- `taxonomies/attack_techniques.md` — Red-team attack technique library
+- `taxonomies/agentic_ai_safety.md` — Agent-specific safety considerations
+- `taxonomies/mitre_atlas.md` — MITRE ATLAS framework for adversarial ML
+- `taxonomies/academic_papers.md` — Key academic references
 
----
+## Benchmarks
+- `benchmarks/owasp_llm_top10.md` — OWASP Top 10 for LLMs
+- `benchmarks/harmbench.md` — HarmBench evaluation framework
+- `benchmarks/mlcommons_ai_safety.md` — MLCommons safety benchmark
 
-## Regulatory & Standards Frameworks
+## NIST
+- `nist/ai_rmf_summary.md` — AI Risk Management Framework
+- `nist/genai_profile_summary.md` — GenAI Profile (600-1)
 
-### NIST AI Risk Management Framework (AI 100-1)
-- **Local**: [nist/ai_rmf_summary.md](nist/ai_rmf_summary.md)
-- **Source**: https://www.nist.gov/itl/ai-risk-management-framework
-- **PDF**: https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf
-- **Playbook**: https://airc.nist.gov/AI_RMF_Playbook
-- **Why it matters**: US government standard for AI risk management. Explicitly recommends red-teaming and adversarial testing in the MEASURE function.
+## Legal and Ethics
+- `legal_and_ethics/eu_ai_act_testing.md` — EU AI Act testing requirements
+- `legal_and_ethics/us_executive_order_ai.md` — US Executive Order context (rescinded Jan 2025, frameworks remain)
+- `legal_and_ethics/industry_redteam_practices.md` — Industry red-team standards
+- `legal_and_ethics/responsible_disclosure.md` — Disclosure guidelines
 
-### NIST AI 600-1: Generative AI Profile
-- **Local**: [nist/genai_profile_summary.md](nist/genai_profile_summary.md)
-- **Source**: https://airc.nist.gov/Docs/1
-- **PDF**: https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf
-- **Why it matters**: Defines 12 GAI-specific risks. The most authoritative US government document on GenAI safety.
+## Tools and Classifiers
+- `tools_and_classifiers/safety_classifiers.md` — Safety classifier overview (LlamaGuard, WildGuard, ShieldGemma)
+- `tools_and_classifiers/redteam_frameworks.md` — Red-team framework comparison (PyRIT, Garak, ART)
+- `tools_and_classifiers/scoring_methodologies.md` — Scoring methodology reference
 
-### EU AI Act
-- **Local**: [legal_and_ethics/eu_ai_act_testing.md](legal_and_ethics/eu_ai_act_testing.md)
-- **Full text**: https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32024R1689
-- **Why it matters**: World's first comprehensive AI regulation. Mandates adversarial testing for high-risk AI and systemic-risk GPAI models.
+## Companion AI Safety
+- `companion_ai_safety/documented_harms_and_deaths.md` — Character.AI deaths, Adam Raine, lawsuits, parasocial research
+- `companion_ai_safety/legislation.md` — SB 243, GUARD Act, 78 state bills, EU provisions, CSAM crisis
 
-### White House Executive Order 14110 on AI Safety
-- **Local**: [legal_and_ethics/us_executive_order_ai.md](legal_and_ethics/us_executive_order_ai.md)
-- **Source**: https://www.whitehouse.gov/briefing-room/presidential-actions/2023/10/30/executive-order-on-the-safe-secure-and-trustworthy-development-and-use-of-artificial-intelligence/
-- **Status**: Revoked Jan 2025, but NIST frameworks and industry practices it spawned remain in effect
-- **Why it matters**: Established red-teaming as an industry expectation for frontier AI.
+## Agentic AI Security
+- `agentic_ai_security/owasp_agentic_top10_2026.md` — OWASP Top 10 for Agentic Applications (ASI01-ASI10)
+- `agentic_ai_security/mcp_security_vulnerabilities.md` — MCP attack surface, 43% flawed, real incidents
+- `agentic_ai_security/prompt_injection_in_agents.md` — ToolHijacker, Log-To-Leak, Microsoft Copilot exploit, NIST initiative
 
----
+## Incident Databases
+- `incident_databases/overview.md` — AI Incident Database, OECD AIM, MIT Risk Repository, AIAAIC
+- `incident_databases/stanford_ai_index_safety.md` — Stanford HAI 2025: incidents up 56.4%
 
-## Benchmarks & Evaluation Frameworks
+## Regulatory Updates
+- `regulatory_updates/us_state_ai_legislation_2025_2026.md` — 78 chatbot bills, SB 243, Colorado AI Act, CSAM laws, federal policy shift
+- `regulatory_updates/eu_ai_act_enforcement_timeline.md` — Enforcement dates, penalties, Aug 2026 deadline
 
-### OWASP Top 10 for LLM Applications (2025)
-- **Local**: [benchmarks/owasp_llm_top10.md](benchmarks/owasp_llm_top10.md)
-- **Source**: https://genai.owasp.org/resource/owasp-top-10-for-llm-applications-2025/
-- **Why it matters**: Industry-standard vulnerability taxonomy for LLM applications. Maps directly to Safeguard probing categories.
+## Jailbreak Research
+- `jailbreak_research/reasoning_model_jailbreaks_2026.md` — Nature Comms 2026: 97% jailbreak rate, alignment regression
+- `jailbreak_research/automated_attack_tools.md` — AutoDAN-Turbo, TAP, Crescendo, GCG, Rainbow Teaming, Garak, PyRIT, DeepTeam
+- `jailbreak_research/jailbreak_defenses.md` — Circuit Breakers, shallow alignment, ProAct, defense-offense asymmetry
 
-### HarmBench
-- **Local**: [benchmarks/harmbench.md](benchmarks/harmbench.md)
-- **Paper**: https://arxiv.org/abs/2402.04249
-- **Code**: https://github.com/centerforaisafety/HarmBench
-- **Why it matters**: Standardized framework for evaluating red-team attacks AND defenses. Provides the classifier architecture referenced in Safeguard's DESIGN.md.
+## Safety Evaluation
+- `safety_evaluation/frontier_safety_policies.md` — Anthropic RSP v3, OpenAI Prep v2, DeepMind FSF v3, FLI Safety Index, AISI
+- `safety_evaluation/international_ai_safety_report_2026.md` — Bengio report: capabilities outpacing safeguards
+- `safety_evaluation/new_benchmarks_2025_2026.md` — HELM Safety, AIR-Bench, JailbreakBench, AIRTBench, RiskRubric.ai
+- `safety_evaluation/defcon_red_teaming.md` — GRT-2 findings: simple fiction framing beats sophisticated attacks
+- `safety_evaluation/frontier_model_forum.md` — CoT monitorability, bio-misuse, cyber risk, info-sharing
+- `safety_evaluation/commercial_red_teaming.md` — Haize, Gray Swan, HackerOne, Mindgard, Scale ($1.43B→$4.8B market)
 
-### MLCommons AI Safety v0.5
-- **Local**: [benchmarks/mlcommons_ai_safety.md](benchmarks/mlcommons_ai_safety.md)
-- **Source**: https://mlcommons.org/benchmarks/ai-safety/
-- **Paper**: https://arxiv.org/abs/2404.12241
-- **Why it matters**: Industry-consortium benchmark with regulatory-aligned hazard taxonomy (S1-S13).
+## Multimodal Safety
+- `multimodal_safety/deepfakes_and_voice_cloning.md` — 8M deepfakes, voice cloning threshold, $200M fraud Q1 2025, CSAM 6,345% increase
 
----
+## Supply Chain
+- `supply_chain/overview.md` — LiteLLM attack (3.4M downloads/day), deepfake fraud, CISA guidance
+- `supply_chain/hugging_face_model_security.md` — 352K unsafe models, nullifAI, pickle/ONNX backdoors
 
-## Agentic AI Safety (the hard problem)
-
-### Adversarial Testing of AI Agents
-- **Local**: [taxonomies/agentic_ai_safety.md](taxonomies/agentic_ai_safety.md)
-- **13 resources** covering agent-specific benchmarks, attack taxonomies, and regulatory frameworks
-- **Key benchmarks**: AgentHarm (ICLR 2025), Agent-SafetyBench, WASP (NeurIPS 2025), InjecAgent (ACL 2024), R-Judge, ToolEmu
-- **Key frameworks**: OWASP Top 10 for Agentic Applications (Dec 2025), CSA Agentic AI Red Teaming Guide (May 2025), NIST AI Agent Standards Initiative (Feb 2026)
-- **Why it matters**: Agent red-teaming is fundamentally different from LLM red-teaming — goal-driven not prompt-driven, multi-step, tool-combinatoric, with real-world consequences. No current agent scores above 60% on safety. This is Safeguard's core problem space.
-
----
-
-## Harm & Attack Taxonomies
-
-### Unified Harm Category Taxonomy
-- **Local**: [taxonomies/harm_categories.md](taxonomies/harm_categories.md)
-- **Sources**: Cross-reference of MLCommons, NIST 600-1, OWASP, HarmBench, Microsoft, and Google taxonomies
-- **Why it matters**: Proposed unified taxonomy for Safeguard's probing categories with severity tiering.
-
-### LLM Attack Techniques Taxonomy
-- **Local**: [taxonomies/attack_techniques.md](taxonomies/attack_techniques.md)
-- **Why it matters**: Catalog of known adversarial attack techniques, organized by sophistication level. Reference for miner strategies and validator novelty scoring.
-
-### MITRE ATLAS
-- **Local**: [taxonomies/mitre_atlas.md](taxonomies/mitre_atlas.md)
-- **Source**: https://atlas.mitre.org/
-- **Navigator**: https://atlas.mitre.org/navigator
-- **Why it matters**: Industry-standard threat framework for AI/ML systems (modeled after ATT&CK). Provides structured taxonomy for threat modeling.
-
-### Key Academic Papers
-- **Local**: [taxonomies/academic_papers.md](taxonomies/academic_papers.md)
-- **Why it matters**: Foundational research on automated red-teaming, attack methods, and defense evaluation. PAIR paper is the closest academic analog to Safeguard's miner design.
-
----
-
-## Tools & Classifiers
-
-### Safety Classifiers
-- **Local**: [tools_and_classifiers/safety_classifiers.md](tools_and_classifiers/safety_classifiers.md)
-- **Key models**: LlamaGuard family, WildGuard, ShieldGemma, HarmBench Classifier
-- **Why it matters**: Candidates for Safeguard's tier 2 automated validation. Includes deployment recommendations.
-
-### Red-Teaming Frameworks
-- **Local**: [tools_and_classifiers/redteam_frameworks.md](tools_and_classifiers/redteam_frameworks.md)
-- **Key tools**: PyRIT (Microsoft), Garak (NVIDIA), ART (IBM)
-- **Why it matters**: Reference implementations for miner agent design and validator detection logic.
-
-### Scoring Methodologies
-- **Local**: [tools_and_classifiers/scoring_methodologies.md](tools_and_classifiers/scoring_methodologies.md)
-- **Why it matters**: Industry-standard metrics (ASR, IAA, F1/AUPRC) and proposed composite scoring formula for Safeguard miners.
-
----
-
-## Legal & Ethical Guidelines
-
-### Industry Red-Teaming Practices
-- **Local**: [legal_and_ethics/industry_redteam_practices.md](legal_and_ethics/industry_redteam_practices.md)
-- **Covers**: Microsoft AIRT, Anthropic, Google DeepMind, OpenAI, Meta
-- **Why it matters**: How major AI labs approach red-teaming. Validates Safeguard's design choices.
-
-### Responsible Disclosure
-- **Local**: [legal_and_ethics/responsible_disclosure.md](legal_and_ethics/responsible_disclosure.md)
-- **Why it matters**: Ethical framework for handling safety vulnerability findings. Includes Safeguard-specific disclosure process proposal.
+## Outreach
+- `outreach_strategy.md` — Positioning, principles, wave strategy, draft messages
+- `outreach_targets.md` — Tiered target list with contacts
 
 ---
 
 ## External Resources to Monitor
 
-These are living resources that should be checked periodically for updates:
-
-| Resource | URL | Check Frequency |
+| Resource | URL | Frequency |
 |---|---|---|
-| NIST AI RMF updates | https://airc.nist.gov/ | Monthly |
-| EU AI Act Codes of Practice | https://digital-strategy.ec.europa.eu/en/policies/ai-act | Monthly |
-| OWASP LLM Top 10 updates | https://genai.owasp.org/ | Quarterly |
-| MITRE ATLAS updates | https://atlas.mitre.org/ | Monthly |
-| MLCommons AI Safety | https://mlcommons.org/benchmarks/ai-safety/ | Quarterly |
-| HarmBench releases | https://github.com/centerforaisafety/HarmBench | Monthly |
-| LlamaGuard releases | https://huggingface.co/meta-llama | Monthly |
-| PyRIT releases | https://github.com/Azure/PyRIT | Monthly |
-| Garak releases | https://github.com/NVIDIA/garak | Monthly |
-| AI safety arXiv papers | https://arxiv.org/list/cs.AI/recent | Weekly |
-| UK AI Safety Institute | https://www.aisi.gov.uk/ | Monthly |
+| AI Incident Database | https://incidentdatabase.ai/ | Weekly |
+| OECD AI Incidents Monitor | https://oecd.ai/en/incidents | Monthly |
+| NIST AI RMF / CAISI | https://airc.nist.gov/ | Monthly |
+| EU AI Act updates | https://ai-act-service-desk.ec.europa.eu/ | Monthly |
+| OWASP LLM + Agentic Top 10 | https://genai.owasp.org/ | Quarterly |
+| MITRE ATLAS | https://atlas.mitre.org/ | Monthly |
+| JailbreakBench | https://jailbreakbench.github.io/ | Monthly |
+| HarmBench / Haize Leaderboard | https://www.harmbench.org/ | Monthly |
+| UK AISI | https://www.aisi.gov.uk/ | Monthly |
+| Frontier Model Forum | https://www.frontiermodelforum.org/ | Quarterly |
+| Vulnerable MCP Project | https://vulnerablemcp.info/ | Monthly |
+| Stanford AI Index | https://hai.stanford.edu/ai-index/ | Annually |
+| FLI AI Safety Index | https://futureoflife.org/ai-safety-index/ | Biannually |
+| AI safety arXiv | https://arxiv.org/list/cs.AI/recent | Weekly |

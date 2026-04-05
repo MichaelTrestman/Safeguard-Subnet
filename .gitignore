@@ -11,3 +11,6 @@ build/
 wallets/
 tmp-scripts/
 hitl_escalations.jsonl
+evaluation_log.jsonl
+hitl_labels.jsonl
+hitl_annotator_stats.json
