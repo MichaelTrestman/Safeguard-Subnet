@@ -15,3 +15,5 @@ evaluation_log.jsonl
 hitl_labels.jsonl
 hitl_annotator_stats.json
 miner_scores.json
+stack.log
+target_configs.json
