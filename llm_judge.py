@@ -7,6 +7,9 @@ Tier 3: Detailed rubric-based judgment — thorough prompt, more expensive.
 Both use the Chutes OpenAI-compatible inference endpoint.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import json
 import logging

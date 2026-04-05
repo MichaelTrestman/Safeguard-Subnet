@@ -2,6 +2,9 @@
 Demo client miner — minimal LLM chat passthrough via Chutes.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import uuid
 import logging
@@ -10,14 +13,16 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+MODEL = os.getenv("DEMO_MINER_MODEL", "Qwen/Qwen3-32B-TEE")
+_model_short = MODEL.split("/")[-1][:20]
+
+logging.basicConfig(level=logging.INFO, format=f"%(asctime)s | DC-MINER({_model_short}) | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 HOST = os.getenv("DEMO_MINER_HOST", "0.0.0.0")
 PORT = int(os.getenv("DEMO_MINER_PORT", "8070"))
 CHUTES_API_URL = os.getenv("CHUTES_API_URL", "https://llm.chutes.ai/v1/chat/completions")
 CHUTES_API_KEY = os.getenv("CHUTES_API_KEY", "")
-MODEL = os.getenv("DEMO_MINER_MODEL", "Qwen/Qwen3-32B-TEE")
 
 app = FastAPI()
 sessions: dict[str, list[dict]] = {}

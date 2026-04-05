@@ -14,3 +14,4 @@ hitl_escalations.jsonl
 evaluation_log.jsonl
 hitl_labels.jsonl
 hitl_annotator_stats.json
+miner_scores.json

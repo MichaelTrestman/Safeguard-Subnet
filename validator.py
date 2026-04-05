@@ -7,6 +7,9 @@ canary calibration + tiered classification, and sets weights.
 Submechanisms are loaded from submechanisms/ as target-subnet configs.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import sys
 import time
@@ -29,7 +32,7 @@ from llm_judge import classify_transcript, judge_transcript
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | SG-VALIDATOR | %(levelname)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
@@ -442,26 +445,28 @@ async def dispatch_task(
 
 def build_single_task(
     canary_bank: CanaryBank,
-    target_validator_endpoint: str,
-    scenario_categories: list[str],
+    target_config: dict,
     canary_probability: float = 0.3,
 ) -> ProbingTask:
     """Build one task — either a canary or a real probe, randomly."""
+    endpoint = target_config["relay"]
+    categories = target_config.get("categories", DEFAULT_SCENARIO_CATEGORIES)
+
     if random.random() < canary_probability and canary_bank.positive:
         canary = random.choice(canary_bank.sample(n_positive=1, n_negative=1))
         return ProbingTask(
             task_id=str(uuid.uuid4()),
-            target_validator_endpoint=target_validator_endpoint,
+            target_validator_endpoint=endpoint,
             scenario_category=canary.category,
             prompt=canary.prompt,
             is_canary=True,
             canary=canary,
         )
     else:
-        category = random.choice(scenario_categories)
+        category = random.choice(categories)
         return ProbingTask(
             task_id=str(uuid.uuid4()),
-            target_validator_endpoint=target_validator_endpoint,
+            target_validator_endpoint=endpoint,
             scenario_category=category,
             prompt="",
         )
@@ -481,11 +486,11 @@ def _log_evaluation(entry: dict):
 
 def update_miner_scores(
     miner_scores: dict[int, MinerScore],
-    results: list[tuple[ProbeResult, ProbingTask]],
+    results: list[tuple[ProbeResult, ProbingTask, str]],
     tiered_validator: TieredValidator,
 ):
     """Score each result and update miner scores."""
-    for result, task in results:
+    for result, task, target_name in results:
         uid = result.miner_uid
 
         if uid not in miner_scores:
@@ -511,6 +516,7 @@ def update_miner_scores(
                 "timestamp": time.time(),
                 "task_id": task.task_id,
                 "type": "canary",
+                "target_name": target_name,
                 "canary_expected_unsafe": task.canary.expected_unsafe,
                 "canary_category": task.canary.category,
                 "miner_uid": uid,
@@ -539,6 +545,7 @@ def update_miner_scores(
                 "timestamp": time.time(),
                 "task_id": task.task_id,
                 "type": "probe",
+                "target_name": target_name,
                 "category": task.scenario_category,
                 "miner_uid": uid,
                 "miner_safety_score": result.miner_safety_score,
@@ -568,14 +575,81 @@ def heartbeat_monitor(last_heartbeat, stop_event):
 # Main loop
 # ---------------------------------------------------------------------------
 
-# Default target config for testnet MVP — will be replaced by submechanism configs
-DEFAULT_TARGET_VALIDATOR_ENDPOINT = os.getenv(
-    "TARGET_VALIDATOR_ENDPOINT", "http://localhost:9000"
-)
+# ---------------------------------------------------------------------------
+# Target configs — multiple targets for comparative evaluation
+# ---------------------------------------------------------------------------
+
 DEFAULT_SCENARIO_CATEGORIES = [
     "self-harm", "illegal-activity", "fraud", "harassment",
     "pii-generation", "unauthorized-access",
 ]
+
+
+def load_target_configs() -> list[dict]:
+    """
+    Load target configurations. Checks TARGET_CONFIGS_FILE env var for a
+    JSON file, otherwise falls back to TARGET_VALIDATOR_ENDPOINT for
+    single-target mode (backward compatible).
+    """
+    config_file = os.getenv("TARGET_CONFIGS_FILE", "")
+    if config_file and Path(config_file).exists():
+        with open(config_file) as f:
+            configs = json.load(f)
+        logger.info(f"Loaded {len(configs)} target configs from {config_file}")
+        return configs
+
+    # Single-target fallback
+    endpoint = os.getenv("TARGET_VALIDATOR_ENDPOINT", "http://localhost:9000")
+    return [{"name": "default", "relay": endpoint, "categories": DEFAULT_SCENARIO_CATEGORIES}]
+
+
+MINER_SCORES_FILE = os.getenv("MINER_SCORES_FILE", "miner_scores.json")
+
+
+def save_miner_scores(scores: dict[int, MinerScore]):
+    """Persist miner scores to disk so restarts don't lose state."""
+    data = {}
+    for uid, ms in scores.items():
+        data[str(uid)] = {
+            "uid": ms.uid,
+            "canary_hits": ms.canary_hits,
+            "canary_total": ms.canary_total,
+            "false_positives": ms.false_positives,
+            "neg_canary_total": ms.neg_canary_total,
+            "categories_probed": list(ms.categories_probed),
+            "ema_score": ms.ema_score,
+        }
+    try:
+        with open(MINER_SCORES_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save miner scores: {e}")
+
+
+def load_miner_scores() -> dict[int, MinerScore]:
+    """Load persisted miner scores from disk."""
+    path = Path(MINER_SCORES_FILE)
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        scores = {}
+        for uid_str, ms_data in data.items():
+            uid = int(uid_str)
+            ms = MinerScore(uid=uid)
+            ms.canary_hits = ms_data.get("canary_hits", 0)
+            ms.canary_total = ms_data.get("canary_total", 0)
+            ms.false_positives = ms_data.get("false_positives", 0)
+            ms.neg_canary_total = ms_data.get("neg_canary_total", 0)
+            ms.categories_probed = set(ms_data.get("categories_probed", []))
+            ms.ema_score = ms_data.get("ema_score", 0.0)
+            scores[uid] = ms
+        logger.info(f"Loaded scores for {len(scores)} miners from {MINER_SCORES_FILE}")
+        return scores
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"Failed to load miner scores: {e}")
+        return {}
 
 
 @click.command()
@@ -607,7 +681,12 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
     canary_bank.load(str(canary_dir))
 
     tiered_validator = TieredValidator()
-    miner_scores: dict[int, MinerScore] = {}
+    miner_scores: dict[int, MinerScore] = load_miner_scores()
+    target_configs = load_target_configs()
+    target_index = 0  # rotate across targets each cycle
+
+    for tc in target_configs:
+        logger.info(f"Target: {tc['name']} → {tc['relay']}")
 
     try:
         wallet = Wallet(name=coldkey, hotkey=hotkey)
@@ -649,19 +728,23 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                     if not miner_endpoints:
                         logger.warning("No miner endpoints found, skipping cycle")
                     else:
-                        # 2. One task per miner, dispatched in parallel
+                        # 2. Pick target for this cycle (rotate across configs)
+                        target = target_configs[target_index % len(target_configs)]
+                        target_index += 1
+                        logger.info(f"Target: {target['name']} ({target['relay']})")
+
+                        # 3. One task per miner, dispatched in parallel
                         tasks_for_miners = {}
                         for uid, endpoint in miner_endpoints.items():
                             task = build_single_task(
                                 canary_bank,
-                                target_validator_endpoint=DEFAULT_TARGET_VALIDATOR_ENDPOINT,
-                                scenario_categories=DEFAULT_SCENARIO_CATEGORIES,
+                                target_config=target,
                             )
                             tasks_for_miners[uid] = (endpoint, task)
                             kind = "canary" if task.is_canary else task.scenario_category
                             logger.info(f"Assigning UID {uid}: {kind}")
 
-                        # 3. Dispatch all in parallel
+                        # 4. Dispatch all in parallel
                         async def _dispatch_all():
                             coros = [
                                 dispatch_task(wallet, uid, ep, task)
@@ -670,10 +753,14 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                             return await asyncio.gather(*coros)
 
                         raw_results = asyncio.run(_dispatch_all())
-                        results = [r for r in raw_results if r is not None]
+                        # Attach target_name to results for logging
+                        results = [
+                            (r[0], r[1], target["name"])
+                            for r in raw_results if r is not None
+                        ]
                         logger.info(f"Collected {len(results)}/{len(tasks_for_miners)} results")
 
-                        # 4. Score results
+                        # 5. Score results
                         update_miner_scores(
                             miner_scores, results, tiered_validator
                         )
@@ -705,6 +792,9 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                             logger.warning("Failed to set weights")
                     else:
                         logger.warning("No scored miners, skipping weight setting")
+
+                    # Persist scores to disk
+                    save_miner_scores(miner_scores)
                 else:
                     logger.debug(
                         f"Block {current_block}: Waiting ({blocks_since_last}/{tempo})"

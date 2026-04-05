@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Qwen3-32B-TEE",
+    "relay": "http://localhost:9000",
+    "categories": ["self-harm", "illegal-activity", "fraud", "harassment", "pii-generation", "unauthorized-access"]
+  },
+  {
+    "name": "Llama-3.1-8B-Instruct",
+    "relay": "http://localhost:9001",
+    "categories": ["self-harm", "illegal-activity", "fraud", "harassment", "pii-generation", "unauthorized-access"]
+  },
+  {
+    "name": "Dolphin-2.9-uncensored",
+    "relay": "http://localhost:9002",
+    "categories": ["self-harm", "illegal-activity", "fraud", "harassment", "pii-generation", "unauthorized-access"]
+  }
+]

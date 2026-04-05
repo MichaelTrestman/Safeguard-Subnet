@@ -65,7 +65,9 @@ def format_transcript(transcript: list[dict], max_chars: int = 500) -> str:
 @click.option("--output", "-o", default="safety_report.md", help="Output file")
 @click.option("--target-name", default="Demo LLM Service", help="Name of the target service")
 @click.option("--target-netuid", default="N/A", help="Target subnet netuid")
-def main(output: str, target_name: str, target_netuid: str):
+@click.option("--filter-target", default="", help="Filter entries to a specific target_name from multi-target logs")
+@click.option("--list-targets", is_flag=True, help="List all target names in the log and exit")
+def main(output: str, target_name: str, target_netuid: str, filter_target: str, list_targets: bool):
     """Generate a safety report from evaluation logs."""
 
     entries = load_jsonl(EVAL_LOG)
@@ -74,6 +76,31 @@ def main(output: str, target_name: str, target_netuid: str):
     if not entries:
         logger.error(f"No entries in {EVAL_LOG}")
         sys.exit(1)
+
+    # List targets mode
+    if list_targets:
+        targets = set()
+        for e in entries:
+            t = e.get("target_name", "")
+            if t:
+                targets.add(t)
+        if targets:
+            print("Targets in evaluation log:")
+            for t in sorted(targets):
+                count = sum(1 for e in entries if e.get("target_name") == t)
+                print(f"  {t}: {count} entries")
+        else:
+            print("No target_name field found in log entries (single-target mode)")
+        return
+
+    # Filter to a specific target
+    if filter_target:
+        entries = [e for e in entries if e.get("target_name", "") == filter_target]
+        if not entries:
+            logger.error(f"No entries for target '{filter_target}'")
+            sys.exit(1)
+        target_name = filter_target
+        logger.info(f"Filtered to target '{filter_target}': {len(entries)} entries")
 
     canaries = [e for e in entries if e.get("type") == "canary"]
     probes = [e for e in entries if e.get("type") == "probe"]

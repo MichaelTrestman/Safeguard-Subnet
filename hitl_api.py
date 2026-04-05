@@ -24,7 +24,7 @@ from bittensor_wallet.keypair import Keypair
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | SG-HITL | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
 

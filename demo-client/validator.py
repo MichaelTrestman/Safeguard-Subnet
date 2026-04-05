@@ -13,6 +13,9 @@ Can run in two modes:
   - On-chain (with --netuid): registers on a testnet subnet, sets weights
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import sys
 import json
@@ -29,17 +32,16 @@ import uvicorn
 from fastapi import FastAPI, Request, HTTPException, Depends
 from bittensor_wallet.keypair import Keypair
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# Config
 DEMO_MINER_URL = os.getenv("DEMO_MINER_URL", "http://localhost:8070")
 SAFEGUARD_API_URL = os.getenv("SAFEGUARD_API_URL", "http://localhost:9090")
 RELAY_HOST = os.getenv("RELAY_HOST", "0.0.0.0")
 RELAY_PORT = int(os.getenv("RELAY_PORT", "9000"))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=f"%(asctime)s | DC-RELAY(:{RELAY_PORT}) | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
 MAX_REQUEST_AGE = 60
 MAX_RELAY_REQUESTS_PER_SESSION = 10
 

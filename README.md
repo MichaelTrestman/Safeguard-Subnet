@@ -62,36 +62,177 @@ If a target subnet makes specific security guarantees (containerized execution, 
 
 See [DESIGN.md](DESIGN.md) for the full architecture document.
 
-## Running the validator
+## Quick Start
+
+### 1. Install
 
 ```bash
-# Install
 pip install -e .
-
-# Configure
-cp env.example .env
-# Edit .env with your network, netuid, and wallet settings
-
-# Run
-python validator.py --network finney --netuid <NETUID> --coldkey <WALLET> --hotkey <HOTKEY>
 ```
 
-Or with Docker:
+### 2. Configure
 
 ```bash
 cp env.example .env
-docker compose up -d
+```
+
+Edit `.env` with your settings. The minimum you need:
+
+```bash
+NETWORK=local              # or "test" for testnet, "finney" for mainnet
+NETUID=2                   # your Safeguard subnet netuid
+WALLET_NAME=validator      # coldkey name
+HOTKEY_NAME=default
+CHUTES_API_KEY=cpk_...     # required — used for attack generation, scoring, and validation
+```
+
+All scripts load `.env` automatically via `python-dotenv`.
+
+### 3. Register on chain
+
+```bash
+btcli subnets register --netuid $NETUID --wallet-name $WALLET_NAME --network $NETWORK
+btcli stake add --netuid $NETUID --wallet-name $WALLET_NAME --partial --network $NETWORK
+```
+
+### 4. Run the validator
+
+```bash
+python validator.py --network local --netuid 2 --coldkey validator --hotkey default
+```
+
+### Run the full local stack
+
+To start all 8 services (3 demo miners, 3 relays, SG miner, SG validator) in one terminal with unified logging:
+
+```bash
+bash run_stack_local.sh
+```
+
+All output goes to `stack.log`. Ctrl-C kills everything. To clean up leaked ports before starting:
+
+```bash
+for port in 8070 8071 8072 8080 9000 9001 9002; do lsof -ti :$port 2>/dev/null; done | sort -u | xargs kill 2>/dev/null
+```
+
+The validator discovers miners from chain commitments, assigns probing tasks each tempo, scores results through tiered validation (canary → classifier → LLM judge → HITL), and sets weights on chain. Miner scores persist to `miner_scores.json` across restarts.
+
+## Multi-Target Evaluation
+
+Safeguard can evaluate multiple AI services in a single deployment, rotating across targets each evaluation cycle. This produces comparative safety reports — "how does Model A's safety compare to Model B?"
+
+### Setup
+
+Create `target_configs.json` (see `target_configs.example.json`):
+
+```json
+[
+  {"name": "Qwen3-32B-TEE", "relay": "http://localhost:9000", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]},
+  {"name": "Llama-3.1-8B-Instruct", "relay": "http://localhost:9001", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]},
+  {"name": "Dolphin-uncensored", "relay": "http://localhost:9002", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]}
+]
+```
+
+Add to `.env`:
+
+```bash
+TARGET_CONFIGS_FILE=target_configs.json
+```
+
+Each target needs a demo-client miner + validator pair:
+
+```bash
+# Terminal 1: Qwen demo miner
+DEMO_MINER_MODEL=Qwen/Qwen3-32B-TEE DEMO_MINER_PORT=8070 python demo-client/miner.py
+
+# Terminal 2: Qwen demo-client validator (relay on 9000)
+DEMO_MINER_URL=http://localhost:8070 RELAY_PORT=9000 python demo-client/validator.py
+
+# Terminal 3: Llama demo miner
+DEMO_MINER_MODEL=meta-llama/Llama-3.1-8B-Instruct DEMO_MINER_PORT=8071 python demo-client/miner.py
+
+# Terminal 4: Llama demo-client validator (relay on 9001)
+DEMO_MINER_URL=http://localhost:8071 RELAY_PORT=9001 python demo-client/validator.py
+
+# Terminal 5: Dolphin demo miner
+DEMO_MINER_MODEL=cognitivecomputations/dolphin-2.9-llama3-8b DEMO_MINER_PORT=8072 python demo-client/miner.py
+
+# Terminal 6: Dolphin demo-client validator (relay on 9002)
+DEMO_MINER_URL=http://localhost:8072 RELAY_PORT=9002 python demo-client/validator.py
+```
+
+Without `TARGET_CONFIGS_FILE`, the validator falls back to `TARGET_VALIDATOR_ENDPOINT` (default `http://localhost:9000`) — single-target mode, fully backward compatible.
+
+### Safety Reports
+
+Generate reports from the evaluation log:
+
+```bash
+# List all targets in the log
+python report_generator.py --list-targets
+
+# Per-model reports
+python report_generator.py --filter-target "Qwen3-32B-TEE" -o report_qwen.md
+python report_generator.py --filter-target "Dolphin-uncensored" -o report_dolphin.md
+
+# All targets combined
+python report_generator.py -o report_all.md
 ```
 
 ## Mining on Safeguard
 
-Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task includes a target validator's relay endpoint. The miner sends prompts one at a time through the relay, adapting its adversarial strategy based on each response. It returns the full transcript with safety evaluations.
+Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task includes a target validator's relay endpoint and a scenario category. The miner sends prompts one at a time through the relay, adapting its adversarial strategy based on each response. It returns the full transcript with safety evaluations.
 
-See [DESIGN.md](DESIGN.md) for the scoring rubric and what makes a good miner.
+### Running the example miner
+
+```bash
+NETUID=2 NETWORK=local WALLET_NAME=miner python safeguard-example-miner/main.py
+```
+
+The miner uses a different wallet than the validator (`miner` not `validator`), so override `WALLET_NAME` on the command line rather than relying on `.env`.
+
+The miner registers its endpoint on chain at startup. The validator discovers it and begins dispatching tasks. See `safeguard-example-miner/README.md` for details.
+
+### Building your own miner
+
+Your miner must expose `POST /probe` with Epistula authentication. It receives a `ProbingTask` (target relay endpoint + scenario category), conducts an adversarial conversation through the relay, and returns a `ProbeResult` (transcript + safety score + categories). See [DESIGN.md](DESIGN.md) for the scoring rubric and what makes a good miner.
+
+### HITL Mining
+
+Human miners label hard cases that the automated tiers can't resolve. Run the HITL miner CLI:
+
+```bash
+python safeguard-hitl-miner/main.py --validator-url http://localhost:9091
+```
+
+## Architecture
+
+| Component | File | Purpose |
+|---|---|---|
+| Validator | `validator.py` | Task dispatch, tiered validation, scoring, weight setting |
+| Example miner | `safeguard-example-miner/` | Reference red-team AI agent |
+| HITL miner | `safeguard-hitl-miner/` | CLI for human safety labeling |
+| LLM judge | `llm_judge.py` | Tier 2/3 safety classification via Chutes |
+| Cross-subnet API | `cross_subnet_api.py` | `/evaluate` endpoint for target subnets |
+| HITL API | `hitl_api.py` | Serves cases to human miners, collects labels |
+| Feedback pipeline | `feedback_pipeline.py` | HITL labels → new canaries |
+| Report generator | `report_generator.py` | Evaluation log → markdown safety report |
+| Demo-client | `demo-client/` | Reference target subnet (miner + validator with relay) |
+| Knowledge base | `knowledge/` | Harm taxonomies, benchmarks, legal frameworks, research |
+
+## Key Documents
+
+| Document | What it covers |
+|---|---|
+| [DESIGN.md](DESIGN.md) | Full architecture, participants, validation, scoring, future directions |
+| [ETHICS.md](ETHICS.md) | Content privacy, HITL welfare, epistemological honesty |
+| [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) | `/relay` endpoint spec for partner subnets |
+| [HITL_DESIGN.md](HITL_DESIGN.md) | Human-in-the-loop architecture (MVP + production) |
+| [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) | Local chain deployment guide |
 
 ## Status
 
-This subnet is in active design. The validator skeleton is functional but the evaluation pipeline (classifier, LLM judge, HITL routing) and submechanism configs are under development. See DESIGN.md § Open Research Problems for the frontier questions.
+Testnet soft launch. Pipeline works end-to-end on local chain — canary system, tiered validation, relay protocol, HITL routing, safety report generation. Multi-target evaluation supported. See evaluation logs for live results.
 
 ---
 
