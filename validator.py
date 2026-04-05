@@ -191,25 +191,27 @@ class CanaryBank:
 # Miner endpoint discovery
 # ---------------------------------------------------------------------------
 
-def discover_miner_endpoints(
+def discover_miners(
     subtensor: bt.Subtensor,
     netuid: int,
     metagraph: bt.Metagraph,
-) -> dict[int, str]:
+) -> tuple[dict[int, str], dict[int, str]]:
     """
     Discover miner HTTP endpoints from chain commitments.
 
     Miners commit JSON like {"endpoint": "http://host:port"} to chain.
-    Returns {uid: endpoint_url}.
+    HITL miners commit {"type": "hitl", "endpoint": "http://host:port"}.
+
+    Returns (probe_miners, hitl_miners) as {uid: endpoint_url} dicts.
     """
-    endpoints = {}
+    probe_miners = {}
+    hitl_miners = {}
     try:
         commitments = subtensor.get_all_commitments(netuid)
     except Exception as e:
         logger.error(f"Failed to read chain commitments: {e}")
-        return endpoints
+        return probe_miners, hitl_miners
 
-    # commitments maps ss58_address -> committed_data_string
     hotkey_to_uid = {hk: i for i, hk in enumerate(metagraph.hotkeys)}
 
     for ss58, data_str in commitments.items():
@@ -219,13 +221,17 @@ def discover_miner_endpoints(
         try:
             data = json.loads(data_str)
             endpoint = data.get("endpoint", "")
-            if endpoint:
-                endpoints[uid] = endpoint
+            if not endpoint:
+                continue
+            if data.get("type") == "hitl":
+                hitl_miners[uid] = endpoint
+            else:
+                probe_miners[uid] = endpoint
         except (json.JSONDecodeError, TypeError):
             logger.debug(f"UID {uid}: could not parse commitment: {data_str!r}")
 
-    logger.info(f"Discovered {len(endpoints)} miner endpoints")
-    return endpoints
+    logger.info(f"Discovered {len(probe_miners)} probe miners, {len(hitl_miners)} HITL miners")
+    return probe_miners, hitl_miners
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +255,7 @@ class TieredValidator:
     ):
         self.classifier_threshold = classifier_threshold
         self.hitl_log_path = hitl_log_path
+        self.pending_hitl_cases: list[dict] = []  # queue for HITL dispatch
 
     def validate_canary(self, result: ProbeResult, canary: Canary) -> float:
         """
@@ -308,8 +315,8 @@ class TieredValidator:
         return judge_transcript(result.transcript)
 
     def route_to_hitl(self, result: ProbeResult, tier2_score: float, tier3_score: float):
-        """Tier 4: Log case for future HITL labeling."""
-        logger.info(f"Routing task {result.task_id} to HITL (logged)")
+        """Tier 4: Log case for future HITL labeling and queue for dispatch."""
+        logger.info(f"Routing task {result.task_id} to HITL")
         entry = {
             "task_id": result.task_id,
             "miner_uid": result.miner_uid,
@@ -325,6 +332,15 @@ class TieredValidator:
                 f.write(json.dumps(entry) + "\n")
         except OSError as e:
             logger.error(f"Failed to write HITL log: {e}")
+
+        # Queue for dispatch to HITL miners
+        self.pending_hitl_cases.append({
+            "task_id": result.task_id,
+            "transcript": result.transcript,
+            "category": result.miner_categories[0] if result.miner_categories else "unknown",
+            "miner_safety_score": result.miner_safety_score,
+            "validator_score": tier2_score,
+        })
 
     def validate(self, result: ProbeResult, task: ProbingTask) -> float:
         """Run tiered validation. Returns a score in [0, 1]."""
@@ -437,6 +453,49 @@ async def dispatch_task(
         except (KeyError, TypeError) as e:
             logger.warning(f"UID {miner_uid}: malformed response for {task.task_id}: {e}")
     return None
+
+
+HITL_TASK_TIMEOUT = 300.0  # 5 minutes for human thinking
+
+
+async def send_hitl_task(
+    wallet: Wallet,
+    hitl_endpoint: str,
+    case: dict,
+) -> dict | None:
+    """Send a HITL case to a human miner and wait for the label."""
+    body = json.dumps(case).encode()
+    headers = create_epistula_headers(wallet, body)
+    headers["Content-Type"] = "application/json"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{hitl_endpoint}/hitl_task",
+                content=body,
+                headers=headers,
+                timeout=HITL_TASK_TIMEOUT,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.ReadTimeout:
+        logger.warning(f"HITL miner at {hitl_endpoint} timed out (human didn't respond in {HITL_TASK_TIMEOUT}s)")
+        return None
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        logger.warning(f"HITL miner at {hitl_endpoint} failed: {e}")
+        return None
+
+
+HITL_LABELS_FILE = os.getenv("HITL_LABELS_FILE", "hitl_labels.jsonl")
+
+
+def _log_hitl_label(label: dict):
+    """Append a HITL label to the labels file."""
+    try:
+        with open(HITL_LABELS_FILE, "a") as f:
+            f.write(json.dumps(label) + "\n")
+    except OSError as e:
+        logger.error(f"Failed to write HITL label: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -720,22 +779,22 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                 if blocks_since_last >= tempo:
                     logger.info(f"Block {current_block}: Running evaluation cycle")
 
-                    # 1. Discover miner endpoints
-                    miner_endpoints = discover_miner_endpoints(
+                    # 1. Discover miners (probe + HITL separately)
+                    probe_miners, hitl_miners = discover_miners(
                         subtensor, netuid, metagraph
                     )
 
-                    if not miner_endpoints:
-                        logger.warning("No miner endpoints found, skipping cycle")
+                    if not probe_miners:
+                        logger.warning("No probe miner endpoints found, skipping cycle")
                     else:
                         # 2. Pick target for this cycle (rotate across configs)
                         target = target_configs[target_index % len(target_configs)]
                         target_index += 1
                         logger.info(f"Target: {target['name']} ({target['relay']})")
 
-                        # 3. One task per miner, dispatched in parallel
+                        # 3. One task per probe miner, dispatched in parallel
                         tasks_for_miners = {}
-                        for uid, endpoint in miner_endpoints.items():
+                        for uid, endpoint in probe_miners.items():
                             task = build_single_task(
                                 canary_bank,
                                 target_config=target,
@@ -760,18 +819,67 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         ]
                         logger.info(f"Collected {len(results)}/{len(tasks_for_miners)} results")
 
-                        # 5. Score results
+                        # 5. Score results (may generate HITL cases)
                         update_miner_scores(
                             miner_scores, results, tiered_validator
                         )
 
-                    # 5. Compute and set weights
-                    uids, weights = compute_weights(miner_scores, metagraph.n)
+                    # 6. Dispatch pending HITL cases to HITL miners
+                    if tiered_validator.pending_hitl_cases and hitl_miners:
+                        cases_to_send = tiered_validator.pending_hitl_cases[:]
+                        tiered_validator.pending_hitl_cases.clear()
+                        logger.info(
+                            f"Dispatching {len(cases_to_send)} HITL case(s) "
+                            f"to {len(hitl_miners)} HITL miner(s)"
+                        )
+
+                        async def _dispatch_hitl():
+                            for case in cases_to_send:
+                                for hitl_uid, hitl_ep in hitl_miners.items():
+                                    logger.info(
+                                        f"Sending HITL task {case['task_id'][:12]}... "
+                                        f"to HITL miner UID {hitl_uid}"
+                                    )
+                                    resp = await send_hitl_task(wallet, hitl_ep, case)
+                                    if resp and resp.get("status") == "labeled":
+                                        label = {
+                                            "task_id": case["task_id"],
+                                            "annotator_uid": hitl_uid,
+                                            "safety_score": resp["safety_score"],
+                                            "categories": resp.get("categories", []),
+                                            "severity": resp.get("severity", ""),
+                                            "reasoning": resp.get("reasoning", ""),
+                                            "timestamp": time.time(),
+                                        }
+                                        _log_hitl_label(label)
+                                        logger.info(
+                                            f"HITL label received: task={case['task_id'][:12]}... "
+                                            f"score={resp['safety_score']} "
+                                            f"severity={resp.get('severity', '?')}"
+                                        )
+                                    elif resp and resp.get("status") == "skipped":
+                                        logger.info(f"HITL task {case['task_id'][:12]}... skipped")
+                                    else:
+                                        logger.warning(f"HITL task {case['task_id'][:12]}... no response")
+
+                        asyncio.run(_dispatch_hitl())
+                    elif tiered_validator.pending_hitl_cases:
+                        logger.debug(
+                            f"{len(tiered_validator.pending_hitl_cases)} HITL case(s) pending "
+                            f"but no HITL miners available"
+                        )
+
+                    # 7. Compute and set weights
+                    # Mechanism 0: probe miners
+                    probe_uids = set(probe_miners.keys()) if probe_miners else set()
+                    probe_scores = {uid: ms for uid, ms in miner_scores.items() if uid in probe_uids}
+                    uids, weights = compute_weights(probe_scores, metagraph.n)
 
                     # Log cycle summary
                     for uid, ms in miner_scores.items():
+                        mtype = "HITL" if uid in (hitl_miners or {}) else "PROBE"
                         logger.info(
-                            f"  UID {uid}: canary={ms.canary_hits}/{ms.canary_total} "
+                            f"  UID {uid} [{mtype}]: canary={ms.canary_hits}/{ms.canary_total} "
                             f"FP={ms.false_positives}/{ms.neg_canary_total} "
                             f"coverage={ms.coverage:.2f} ema={ms.ema_score:.4f}"
                         )
@@ -782,16 +890,39 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                             netuid=netuid,
                             uids=uids,
                             weights=weights,
+                            mechid=0,
                             wait_for_inclusion=True,
                             wait_for_finalization=False,
                         )
                         if success:
-                            logger.info(f"Set weights: {dict(zip(uids, [f'{w:.4f}' for w in weights]))}")
+                            logger.info(f"Set weights (mech 0 probe): {dict(zip(uids, [f'{w:.4f}' for w in weights]))}")
                             last_weight_block = current_block
                         else:
-                            logger.warning("Failed to set weights")
+                            logger.warning("Failed to set weights for mechanism 0")
                     else:
-                        logger.warning("No scored miners, skipping weight setting")
+                        logger.warning("No scored probe miners, skipping mech 0 weight setting")
+
+                    # Mechanism 1: HITL miners (flat score for MVP — did they respond?)
+                    if hitl_miners:
+                        hitl_uids = list(hitl_miners.keys())
+                        # For MVP: equal weight to all responsive HITL miners
+                        hitl_weights = [1.0 / len(hitl_uids)] * len(hitl_uids)
+                        try:
+                            success = subtensor.set_weights(
+                                wallet=wallet,
+                                netuid=netuid,
+                                uids=hitl_uids,
+                                weights=hitl_weights,
+                                mechid=1,
+                                wait_for_inclusion=True,
+                                wait_for_finalization=False,
+                            )
+                            if success:
+                                logger.info(f"Set weights (mech 1 HITL): {dict(zip(hitl_uids, [f'{w:.4f}' for w in hitl_weights]))}")
+                            else:
+                                logger.warning("Failed to set weights for mechanism 1")
+                        except Exception as e:
+                            logger.debug(f"Mechanism 1 weight setting failed (may not exist yet): {e}")
 
                     # Persist scores to disk
                     save_miner_scores(miner_scores)
