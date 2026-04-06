@@ -30,7 +30,7 @@ Bittensor has none of this. Individual subnets may or may not implement safety m
 
 **Miners** run adversarial AI agents that probe target AI services for failures across whatever risk categories that service's threat profile demands. For an AI companion, that means testing whether the service encourages self-harm, simulates romantic attachment with minors, or produces radicalization content. For a code generation service, it means testing whether the service produces malicious code, exfiltrates user data, or executes unauthorized actions. For an agent-based service, it means testing whether the agent can be hijacked, whether it respects permission boundaries, and whether it leaks credentials. The probing categories are defined per-target-subnet and evolve as new risks emerge, new research reveals attack vectors, and new regulations impose requirements.
 
-**Validators** assign probing tasks, mix in calibration canaries (known-safe and known-unsafe cases), score miners through a tiered validation pipeline, and identify hard cases to passed to the HITL submechanism. They don't need to be better red-teamers than the miners — they check that miners are honest and competent.
+**Validators** assign probing tasks, mix in calibration canaries (known-safe and known-unsafe cases), score miners through a tiered validation pipeline, and identify hard cases to passed to the Human-in-the-Loop (HITL) submechanism. They don't need to be better red-teamers than the miners — they check that miners are honest and competent.
 
 **Human miners** Humans working as miners on the HITL submechanism label the hard cases that automated validation can't confidently score. Their labels feed back as training data and canaries, continuously improving the automated tiers.
 
@@ -114,21 +114,6 @@ bash run_validator.sh --network local --netuid 2 --wallet validator
 This starts the cross-subnet API (:9090) and the Safeguard validator. Demo targets and the SG miner run separately — see below. The script checks for port conflicts and prompts to kill stale processes. All output goes to `validator.log`.
 
 **Note:** If switching between networks (e.g. local → testnet), delete `miner_scores.json` first — it contains UIDs from the previous network and will cause stale score references.
-
-### Running the full stack (3 terminals)
-
-```bash
-# Terminal 1: Safeguard validator + cross-subnet API
-bash run_validator.sh
-
-# Terminal 2: Safeguard probe miner
-bash run_miner.sh
-
-# Terminal 3: Demo client subnet (target miners + relay validator)
-bash run_client_demo.sh
-```
-
-The demo-client relay registers with the Safeguard API on startup. The validator picks up registered targets from the registry each evaluation cycle.
 
 ### Manual validator startup
 
