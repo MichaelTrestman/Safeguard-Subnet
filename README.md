@@ -207,13 +207,8 @@ Client subnets consume Safeguard as a service. Their validators register with Sa
 ### Running the demo client subnet
 
 ```bash
-# Terminal 1: Safeguard validator + API
-bash run_validator.sh
 
-# Terminal 2: Safeguard probe miner
-bash run_miner.sh
-
-# Terminal 3: Client side (demo miners + validator with safety-weighted weight setting)
+# (demo miners + validator with safety-weighted weight setting)
 bash run_client_demo.sh
 ```
 
