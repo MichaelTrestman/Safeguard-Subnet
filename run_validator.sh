@@ -1,9 +1,15 @@
 #!/bin/bash
-# Run the Safeguard validator + demo target models for testing.
+# Run the Safeguard validator + cross-subnet API.
 #
 # Usage: bash run_validator.sh [--network local|test] [--netuid N] [--wallet NAME]
 #
 # Defaults: network=test, netuid=444, wallet=SuperPractice
+#
+# The cross-subnet API runs alongside the validator. Client subnet relays
+# register with it, and the validator reads the registry each cycle.
+#
+# For local dev with demo targets, run the client demo stack separately:
+#   bash run_client_demo.sh
 
 set -e
 
@@ -25,7 +31,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Port check ---
-PORTS=(8070 8071 8072 9000 9001 9002)
+PORTS=(9090)
 BUSY_PIDS=""
 for p in "${PORTS[@]}"; do
     pids=$(lsof -ti ":$p" 2>/dev/null || true)
@@ -35,8 +41,7 @@ for p in "${PORTS[@]}"; do
 done
 
 if [ -n "$BUSY_PIDS" ]; then
-    echo "Ports in use: ${PORTS[*]}"
-    echo "PIDs:$BUSY_PIDS"
+    echo "Port 9090 in use (PIDs:$BUSY_PIDS)"
     read -p "Kill them? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -66,58 +71,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- Demo miners (target models for testing) ---
+# --- Cross-subnet API (clients register here) ---
 
-DEMO_MINER_MODEL=Qwen/Qwen3-32B-TEE \
-DEMO_MINER_PORT=8070 \
-  python demo-client/miner.py >> "$LOGFILE" 2>&1 &
+NETWORK=$NETWORK NETUID=$NETUID WALLET_NAME=$WALLET HOTKEY_NAME=$HOTKEY \
+TARGET_REGISTRY_FILE=target_registry.json \
+  python cross_subnet_api.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
-echo "  DC-MINER(Qwen3-32B-TEE)        :8070  pid=$!"
+echo "  SG-API                          :9090  pid=$!"
 
-DEMO_MINER_MODEL=NousResearch/DeepHermes-3-Mistral-24B-Preview \
-DEMO_MINER_PORT=8071 \
-  python demo-client/miner.py >> "$LOGFILE" 2>&1 &
-PIDS+=($!)
-echo "  DC-MINER(DeepHermes-3-Mistral)  :8071  pid=$!"
-
-DEMO_MINER_MODEL=unsloth/gemma-3-4b-it \
-DEMO_MINER_PORT=8072 \
-  python demo-client/miner.py >> "$LOGFILE" 2>&1 &
-PIDS+=($!)
-echo "  DC-MINER(Gemma-3-4B-IT)         :8072  pid=$!"
-
-sleep 2
-
-# --- Demo-client relays ---
-
-DEMO_MINER_URL=http://localhost:8070 \
-RELAY_PORT=9000 \
-  python demo-client/validator.py >> "$LOGFILE" 2>&1 &
-PIDS+=($!)
-echo "  DC-RELAY(:9000 → :8070 Qwen)    pid=$!"
-
-DEMO_MINER_URL=http://localhost:8071 \
-RELAY_PORT=9001 \
-  python demo-client/validator.py >> "$LOGFILE" 2>&1 &
-PIDS+=($!)
-echo "  DC-RELAY(:9001 → :8071 Hermes)  pid=$!"
-
-DEMO_MINER_URL=http://localhost:8072 \
-RELAY_PORT=9002 \
-  python demo-client/validator.py >> "$LOGFILE" 2>&1 &
-PIDS+=($!)
-echo "  DC-RELAY(:9002 → :8072 Gemma)   pid=$!"
-
-sleep 2
+sleep 5  # let API start and sync metagraph
 
 # --- Safeguard validator ---
 
-TARGET_CONFIGS_FILE=target_configs.json \
+TARGET_REGISTRY_FILE=target_registry.json \
   python validator.py --network "$NETWORK" --netuid "$NETUID" --coldkey "$WALLET" --hotkey "$HOTKEY" >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
 echo "  SG-VALIDATOR                     pid=$!"
 
 echo ""
-echo "All services started. Tailing $LOGFILE..."
+echo "Services started. Tailing $LOGFILE..."
+echo "  Run demo targets separately: bash run_client_demo.sh"
+echo "  Run SG miner separately:     bash run_miner.sh"
 echo "---"
 tail -f "$LOGFILE"

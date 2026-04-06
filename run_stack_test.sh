@@ -1,11 +1,9 @@
 #!/bin/bash
 # Run the full Safeguard stack against TESTNET (netuid 444)
-# Same as run_stack_local.sh but pointed at test network.
+# Includes: cross-subnet API, demo targets, demo relays, SG miner, SG validator
 #
-# Differences from local:
-#   - NETWORK=test, NETUID=444
-#   - Wallet names match testnet registrations
-#   - No local subtensor required
+# The relays register with the cross-subnet API on startup.
+# The validator reads the registry each cycle.
 #
 # Usage: bash run_stack_test.sh
 
@@ -16,6 +14,7 @@ LOGFILE="stack_test.log"
 
 NETWORK=test
 NETUID=444
+WALLET=SuperPractice
 
 echo "Starting Safeguard stack on TESTNET (netuid $NETUID) — logging to $LOGFILE"
 echo "Press Ctrl-C to stop all services"
@@ -33,6 +32,16 @@ cleanup() {
     echo "All services stopped."
 }
 trap cleanup EXIT INT TERM
+
+# --- Cross-subnet API (clients register here) ---
+
+NETWORK=$NETWORK NETUID=$NETUID WALLET_NAME=$WALLET HOTKEY_NAME=default \
+TARGET_REGISTRY_FILE=target_registry.json \
+  python cross_subnet_api.py >> "$LOGFILE" 2>&1 &
+PIDS+=($!)
+echo "  SG-API                          :9090  pid=$!"
+
+sleep 2
 
 # --- Demo miners (target models) ---
 
@@ -56,27 +65,39 @@ echo "  DC-MINER(Gemma-3-4B-IT)         :8072  pid=$!"
 
 sleep 2  # let miners bind ports before relays start
 
-# --- Demo-client relays ---
+# --- Demo-client relays (register with Safeguard API) ---
 
 DEMO_MINER_URL=http://localhost:8070 \
 RELAY_PORT=9000 \
+RELAY_MODEL_NAME=Qwen3-32B-TEE \
+SAFEGUARD_API_URL=http://localhost:9090 \
+WALLET_NAME=$WALLET \
+HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
 echo "  DC-RELAY(:9000 → :8070 Qwen)    pid=$!"
 
 DEMO_MINER_URL=http://localhost:8071 \
 RELAY_PORT=9001 \
+RELAY_MODEL_NAME=DeepHermes-3-Mistral-24B \
+SAFEGUARD_API_URL=http://localhost:9090 \
+WALLET_NAME=$WALLET \
+HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
 echo "  DC-RELAY(:9001 → :8071 Hermes)  pid=$!"
 
 DEMO_MINER_URL=http://localhost:8072 \
 RELAY_PORT=9002 \
+RELAY_MODEL_NAME=Gemma-3-4B-IT \
+SAFEGUARD_API_URL=http://localhost:9090 \
+WALLET_NAME=$WALLET \
+HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
 echo "  DC-RELAY(:9002 → :8072 Gemma)   pid=$!"
 
-sleep 2  # let relays bind before SG miner starts
+sleep 3  # let relays register with API before miner/validator start
 
 # --- Safeguard miner ---
 
@@ -89,12 +110,12 @@ sleep 3  # let miner register endpoint before validator starts
 
 # --- Safeguard validator ---
 
-TARGET_CONFIGS_FILE=target_configs.json \
-  python validator.py --network $NETWORK --netuid $NETUID --coldkey SuperPractice --hotkey default >> "$LOGFILE" 2>&1 &
+TARGET_REGISTRY_FILE=target_registry.json \
+  python validator.py --network $NETWORK --netuid $NETUID --coldkey $WALLET --hotkey default >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
 echo "  SG-VALIDATOR                     pid=$!"
 
 echo ""
-echo "All 8 services started. Tailing $LOGFILE..."
+echo "All 9 services started. Tailing $LOGFILE..."
 echo "---"
 tail -f "$LOGFILE"

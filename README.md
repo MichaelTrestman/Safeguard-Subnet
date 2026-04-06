@@ -309,7 +309,7 @@ btcli wallet swap-coldkey execute --wallet.name OldOwner --new-coldkey NewOwner 
 | Example miner | `safeguard-example-miner/` | Reference red-team AI agent |
 | HITL miner | `safeguard-hitl-miner/` | Human safety labeling (web UI + terminal fallback) |
 | LLM judge | `llm_judge.py` | Tier 2/3 safety classification via Chutes |
-| Cross-subnet API | `cross_subnet_api.py` | `/evaluate` endpoint for target subnets |
+| Cross-subnet API | `cross_subnet_api.py` | `/register`, `/evaluate`, `/status` for client subnets |
 | HITL API | `hitl_api.py` | Serves cases to human miners, collects labels |
 | Feedback pipeline | `feedback_pipeline.py` | HITL labels → new canaries |
 | Report generator | `report_generator.py` | Evaluation log → markdown safety report |
@@ -326,9 +326,52 @@ btcli wallet swap-coldkey execute --wallet.name OldOwner --new-coldkey NewOwner 
 | [HITL_DESIGN.md](HITL_DESIGN.md) | Human-in-the-loop architecture (MVP + production) |
 | [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) | Local chain deployment guide |
 
+## Client Subnet Integration
+
+Client subnets consume Safeguard as a service. Their validators register with Safeguard's cross-subnet API, then use safety scores as a multiplicative penalty in their weight function: `weight = quality_score * safety_score`. Unsafe miners get proportionally lower emissions.
+
+### Running the demo client subnet
+
+```bash
+# Terminal 1: Safeguard side (validator + API + miner)
+bash run_validator.sh
+
+# Terminal 2: Client side (demo miners + validator with safety-weighted weight setting)
+bash run_client_demo.sh --safeguard-api http://localhost:9090
+```
+
+The demo client runs 3 miners wrapping different LLMs and a validator that:
+1. Discovers miners from netuid 445 chain commitments
+2. Queries each miner with mixed safe/adversarial prompts
+3. Sends each query+response to Safeguard `/evaluate` for a safety score
+4. Sets weights on 445: `weight = quality * safety_score`
+
+Miners wrapping safer models earn higher emissions. See `demo-client/` for the reference implementation.
+
+### Registration API
+
+Client validators register their relay endpoint for ongoing Safeguard probing:
+
+```
+POST /register  (Epistula-authenticated)
+  {"relay_endpoint": "http://...", "name": "MyModel", "subnet_type": "llm-chat"}
+
+GET /status/{client_hotkey}  — check evaluation results
+GET /registry              — list all registered targets
+DELETE /register           — deregister
+```
+
+## Future Directions
+
+- **Rethinking collusion risk.** Bittensor relies on incentives to enforce honesty, but because individual cybersecurity attacks can have high financial impact, there is a risk of extrinsic value being worth it to sacrifice to subvert...
+
+- **Shared evaluation registry.** Currently each Safeguard validator runs its own cross-subnet API with its own registry. For client subnet validators to reach consensus on safety scores, they either all query the same Safeguard validator or Safeguard publishes results to a shared data store (chain, storage subnet). The decentralized production architecture in [HITL_DESIGN.md](HITL_DESIGN.md) addresses this.
+
+- **Payment model.** Client subnets requesting safety evaluation should pay for the service. The economic design (pricing, payment mechanism, SLA guarantees) is covered in the whitepaper.
+
 ## Status
 
-Testnet soft launch. Pipeline works end-to-end on local chain — canary system, tiered validation, relay protocol, HITL routing, safety report generation. Multi-target evaluation supported. See evaluation logs for live results.
+Testnet soft launch on netuids 444 (Safeguard) and 445 (Safeguard Client). Pipeline works end-to-end — canary system, tiered validation, relay protocol, HITL routing with web UI, safety report generation, client subnet integration with safety-weighted emissions. Multi-target evaluation supported. See evaluation logs for live results.
 
 ---
 

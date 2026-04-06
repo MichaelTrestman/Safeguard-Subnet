@@ -43,6 +43,12 @@ HOTKEY_NAME = os.getenv("HOTKEY_NAME", "default")
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "9090"))
 MAX_REQUEST_AGE = 60
+REGISTRY_FILE = os.getenv("TARGET_REGISTRY_FILE", "target_registry.json")
+
+DEFAULT_SCENARIO_CATEGORIES = [
+    "self-harm", "illegal-activity", "fraud",
+    "harassment", "pii-generation", "unauthorized-access",
+]
 
 app = FastAPI(title="Safeguard Cross-Subnet API")
 
@@ -247,9 +253,141 @@ async def _dispatch_probes(
     return results
 
 
+# -- Target registry (clients register for ongoing evaluation) --
+
+_registry: dict[str, dict] = {}  # keyed by client hotkey
+
+
+def _save_registry():
+    try:
+        with open(REGISTRY_FILE, "w") as f:
+            json.dump(_registry, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save registry: {e}")
+
+
+def _load_registry():
+    global _registry
+    try:
+        with open(REGISTRY_FILE, "r") as f:
+            _registry = json.load(f)
+        logger.info(f"Loaded {len(_registry)} registered targets from {REGISTRY_FILE}")
+    except FileNotFoundError:
+        _registry = {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to load registry: {e}")
+        _registry = {}
+
+
+@app.post("/register")
+async def register(
+    request: Request,
+    caller_hotkey: str = Depends(verify_caller),
+):
+    """
+    Register a target relay for ongoing safety evaluation.
+
+    Client subnet validators call this to request Safeguard probing
+    of their AI service. The client's hotkey is their identity.
+
+    Request body:
+    {
+        "relay_endpoint": "http://client-validator:9000",
+        "name": "Qwen3-32B-TEE",
+        "subnet_type": "llm-chat",
+        "categories": ["self-harm", "fraud", ...]  // optional
+    }
+    """
+    body = await request.json()
+    relay_endpoint = body.get("relay_endpoint", "")
+    name = body.get("name", f"client-{caller_hotkey[:8]}")
+
+    if not relay_endpoint:
+        raise HTTPException(400, "Missing relay_endpoint")
+
+    categories = body.get("categories") or DEFAULT_SCENARIO_CATEGORIES
+
+    _registry[caller_hotkey] = {
+        "relay_endpoint": relay_endpoint,
+        "name": name,
+        "subnet_type": body.get("subnet_type", "llm-chat"),
+        "categories": categories,
+        "registered_at": time.time(),
+        "last_probed": None,
+        "evaluations_completed": 0,
+        "last_evaluation": None,
+    }
+    _save_registry()
+
+    logger.info(
+        f"Registered target: {name} at {relay_endpoint} "
+        f"(client={caller_hotkey[:8]}...)"
+    )
+
+    return {
+        "status": "registered",
+        "client_hotkey": caller_hotkey,
+        "name": name,
+        "next_evaluation": "queued",
+    }
+
+
+@app.get("/status/{client_hotkey}")
+async def client_status(client_hotkey: str):
+    """Check evaluation status for a registered client."""
+    entry = _registry.get(client_hotkey)
+    if not entry:
+        raise HTTPException(404, "Client not registered")
+
+    return {
+        "registered": True,
+        "relay_endpoint": entry["relay_endpoint"],
+        "name": entry["name"],
+        "evaluations_completed": entry.get("evaluations_completed", 0),
+        "last_evaluation": entry.get("last_evaluation"),
+        "registered_at": entry.get("registered_at"),
+    }
+
+
+@app.delete("/register")
+async def deregister(
+    request: Request,
+    caller_hotkey: str = Depends(verify_caller),
+):
+    """Deregister a target (stop evaluation)."""
+    if caller_hotkey in _registry:
+        name = _registry[caller_hotkey].get("name", "unknown")
+        del _registry[caller_hotkey]
+        _save_registry()
+        logger.info(f"Deregistered target: {name} (client={caller_hotkey[:8]}...)")
+        return {"status": "deregistered"}
+    raise HTTPException(404, "Client not registered")
+
+
+@app.get("/registry")
+async def list_registry():
+    """List all registered targets (public, no auth required)."""
+    return {
+        "count": len(_registry),
+        "targets": [
+            {
+                "client_hotkey": hk[:12] + "...",
+                "name": entry["name"],
+                "relay_endpoint": entry["relay_endpoint"],
+                "evaluations_completed": entry.get("evaluations_completed", 0),
+            }
+            for hk, entry in _registry.items()
+        ],
+    }
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "safeguard-cross-subnet-api"}
+    return {
+        "status": "ok",
+        "service": "safeguard-cross-subnet-api",
+        "registered_targets": len(_registry),
+    }
 
 
 @app.on_event("startup")
@@ -259,6 +397,7 @@ async def startup():
     subtensor = bt.Subtensor(network=NETWORK)
     metagraph = bt.Metagraph(netuid=NETUID, network=NETWORK)
     metagraph.sync(subtensor=subtensor)
+    _load_registry()
     logger.info(f"Cross-subnet API started on {API_HOST}:{API_PORT}")
 
 

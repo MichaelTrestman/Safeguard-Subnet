@@ -697,10 +697,33 @@ DEFAULT_SCENARIO_CATEGORIES = [
 
 def load_target_configs() -> list[dict]:
     """
-    Load target configurations. Checks TARGET_CONFIGS_FILE env var for a
-    JSON file, otherwise falls back to TARGET_VALIDATOR_ENDPOINT for
-    single-target mode (backward compatible).
+    Load target configurations. Priority order:
+    1. TARGET_REGISTRY_FILE — live registry from cross_subnet_api.py (clients register)
+    2. TARGET_CONFIGS_FILE — static JSON config file
+    3. TARGET_VALIDATOR_ENDPOINT — single endpoint fallback
     """
+    # Priority 1: live registry from cross-subnet API
+    registry_file = os.getenv("TARGET_REGISTRY_FILE", "")
+    if registry_file and Path(registry_file).exists():
+        try:
+            with open(registry_file) as f:
+                registry = json.load(f)
+            targets = [
+                {
+                    "name": entry["name"],
+                    "relay": entry["relay_endpoint"],
+                    "categories": entry.get("categories", DEFAULT_SCENARIO_CATEGORIES),
+                }
+                for entry in registry.values()
+                if entry.get("relay_endpoint")
+            ]
+            if targets:
+                logger.info(f"Loaded {len(targets)} targets from registry")
+                return targets
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to read registry {registry_file}: {e}")
+
+    # Priority 2: static config file
     config_file = os.getenv("TARGET_CONFIGS_FILE", "")
     if config_file and Path(config_file).exists():
         with open(config_file) as f:
@@ -708,7 +731,7 @@ def load_target_configs() -> list[dict]:
         logger.info(f"Loaded {len(configs)} target configs from {config_file}")
         return configs
 
-    # Single-target fallback
+    # Priority 3: single-target fallback
     endpoint = os.getenv("TARGET_VALIDATOR_ENDPOINT", "http://localhost:9000")
     return [{"name": "default", "relay": endpoint, "categories": DEFAULT_SCENARIO_CATEGORIES}]
 
@@ -794,6 +817,7 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
     miner_scores: dict[int, MinerScore] = load_miner_scores()
     target_configs = load_target_configs()
     target_index = 0  # rotate across targets each cycle
+    use_registry = bool(os.getenv("TARGET_REGISTRY_FILE", ""))
 
     for tc in target_configs:
         logger.info(f"Target: {tc['name']} → {tc['relay']}")
@@ -835,8 +859,14 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         subtensor, netuid, metagraph
                     )
 
+                    # Refresh target configs from registry each cycle
+                    if use_registry:
+                        target_configs = load_target_configs()
+
                     if not probe_miners:
                         logger.warning("No probe miner endpoints found, skipping cycle")
+                    elif not target_configs:
+                        logger.warning("No target configs available, skipping cycle")
                     else:
                         # 2. Pick target for this cycle (rotate across configs)
                         target = target_configs[target_index % len(target_configs)]

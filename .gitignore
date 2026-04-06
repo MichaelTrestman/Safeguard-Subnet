@@ -16,4 +16,10 @@ hitl_labels.jsonl
 hitl_annotator_stats.json
 miner_scores.json
 stack.log
+stack_test.log
+validator.log
+miner.log
+client_demo.log
 target_configs.json
+target_registry.json
+dev-glob.raw.txt
