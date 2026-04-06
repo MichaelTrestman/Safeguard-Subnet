@@ -14,7 +14,7 @@ LOGFILE="stack_test.log"
 
 NETWORK=test
 NETUID=444
-WALLET=SuperPractice
+WALLET=validator
 
 echo "Starting Safeguard stack on TESTNET (netuid $NETUID) — logging to $LOGFILE"
 echo "Press Ctrl-C to stop all services"

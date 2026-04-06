@@ -105,94 +105,36 @@ The validator discovers miners from chain commitments, assigns probing tasks eac
 bash run_validator.sh
 ```
 
-Defaults: `--network test --netuid 444 --wallet SuperPractice`. Override as needed:
+Defaults: `--network test --netuid 444 --wallet validator`. Override as needed:
 
 ```bash
 bash run_validator.sh --network local --netuid 2 --wallet validator
 ```
 
-This starts the validator plus 3 demo target models and relays for testing. The script checks for port conflicts and prompts to kill stale processes. All output goes to `validator.log`.
+This starts the cross-subnet API (:9090) and the Safeguard validator. Demo targets and the SG miner run separately — see below. The script checks for port conflicts and prompts to kill stale processes. All output goes to `validator.log`.
 
 **Note:** If switching between networks (e.g. local → testnet), delete `miner_scores.json` first — it contains UIDs from the previous network and will cause stale score references.
+
+### Running the full stack (3 terminals)
+
+```bash
+# Terminal 1: Safeguard validator + cross-subnet API
+bash run_validator.sh
+
+# Terminal 2: Safeguard probe miner
+bash run_miner.sh
+
+# Terminal 3: Demo client subnet (target miners + relay validator)
+bash run_client_demo.sh
+```
+
+The demo-client relay registers with the Safeguard API on startup. The validator picks up registered targets from the registry each evaluation cycle.
 
 ### Manual validator startup
 
 ```bash
-TARGET_CONFIGS_FILE=target_configs.json \
-  python validator.py --network test --netuid 444 --coldkey SuperPractice --hotkey default
-```
-
-### Full local stack (validator + miner together)
-
-For development, run everything in one terminal:
-
-```bash
-bash run_stack_local.sh   # local chain
-bash run_stack_test.sh    # testnet
-```
-
-All output goes to `stack.log` / `stack_test.log`. Ctrl-C kills everything.
-
-## Multi-Target Evaluation
-
-Safeguard can evaluate multiple AI services in a single deployment, rotating across targets each evaluation cycle. This produces comparative safety reports — "how does Model A's safety compare to Model B?"
-
-### Setup
-
-Create `target_configs.json` (see `target_configs.example.json`):
-
-```json
-[
-  {"name": "Qwen3-32B-TEE", "relay": "http://localhost:9000", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]},
-  {"name": "Llama-3.1-8B-Instruct", "relay": "http://localhost:9001", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]},
-  {"name": "Dolphin-uncensored", "relay": "http://localhost:9002", "categories": ["self-harm", "fraud", "harassment", "pii-generation"]}
-]
-```
-
-Add to `.env`:
-
-```bash
-TARGET_CONFIGS_FILE=target_configs.json
-```
-
-Each target needs a demo-client miner + validator pair:
-
-```bash
-# Terminal 1: Qwen demo miner
-DEMO_MINER_MODEL=Qwen/Qwen3-32B-TEE DEMO_MINER_PORT=8070 python demo-client/miner.py
-
-# Terminal 2: Qwen demo-client validator (relay on 9000)
-DEMO_MINER_URL=http://localhost:8070 RELAY_PORT=9000 python demo-client/validator.py
-
-# Terminal 3: Llama demo miner
-DEMO_MINER_MODEL=meta-llama/Llama-3.1-8B-Instruct DEMO_MINER_PORT=8071 python demo-client/miner.py
-
-# Terminal 4: Llama demo-client validator (relay on 9001)
-DEMO_MINER_URL=http://localhost:8071 RELAY_PORT=9001 python demo-client/validator.py
-
-# Terminal 5: Dolphin demo miner
-DEMO_MINER_MODEL=cognitivecomputations/dolphin-2.9-llama3-8b DEMO_MINER_PORT=8072 python demo-client/miner.py
-
-# Terminal 6: Dolphin demo-client validator (relay on 9002)
-DEMO_MINER_URL=http://localhost:8072 RELAY_PORT=9002 python demo-client/validator.py
-```
-
-Without `TARGET_CONFIGS_FILE`, the validator falls back to `TARGET_VALIDATOR_ENDPOINT` (default `http://localhost:9000`) — single-target mode, fully backward compatible.
-
-### Safety Reports
-
-Generate reports from the evaluation log:
-
-```bash
-# List all targets in the log
-python report_generator.py --list-targets
-
-# Per-model reports
-python report_generator.py --filter-target "Qwen3-32B-TEE" -o report_qwen.md
-python report_generator.py --filter-target "Dolphin-uncensored" -o report_dolphin.md
-
-# All targets combined
-python report_generator.py -o report_all.md
+TARGET_REGISTRY_FILE=target_registry.json \
+  python validator.py --network test --netuid 444 --coldkey validator --hotkey default
 ```
 
 ## Mining on Safeguard
@@ -248,59 +190,6 @@ The HITL miner is a FastAPI server that receives tasks from the validator via Ep
 
 When the validator detects miner-validator disagreement > 0.3 on a probe result, it escalates the case to all registered HITL miners. Your label (safety score, severity, categories, reasoning) feeds back into the canary bank and calibrates the automated validation tiers. See [HITL_DESIGN.md](HITL_DESIGN.md) for the full architecture.
 
-## Subnet Administration
-
-These commands require the subnet owner wallet.
-
-### Subnet identity
-
-```bash
-btcli subnets set-identity --netuid 444 --network test \
-  --wallet.name SafeGuardOwner \
-  --subnet-name "Safeguard" \
-  --github-repo "https://github.com/MichaelTrestman/Safeguard-Subnet" \
-  --subnet-contact "m@latent.to"
-```
-
-### Mechanisms
-
-Safeguard uses two mechanisms: mech 0 for probe miners, mech 1 for HITL miners. Each has its own emission allocation.
-
-**Add the HITL mechanism:**
-
-```bash
-# Ensure max_allowed_uids * mechanism_count <= 256
-btcli sudo set --param max_allowed_uids --value 128 --netuid 444 --network test --wallet.name SafeGuardOwner
-
-# Add mech 1
-btcli subnet mech set --netuid 444 --count 2 --network test --wallet.name SafeGuardOwner
-
-# Set emission split (e.g. 80% probe, 20% HITL)
-btcli subnet mech split-emissions --netuid 444 --split "80,20" --network test --wallet.name SafeGuardOwner
-```
-
-**Verify:**
-
-```bash
-btcli subnet mech count --netuid 444 --network test
-btcli subnet mech emissions --netuid 444 --network test
-```
-
-### Transfer subnet ownership
-
-To transfer ownership to a different coldkey (two-step process with delay):
-
-```bash
-# Announce the swap
-btcli wallet swap-coldkey announce --wallet.name OldOwner --new-coldkey NewOwner --network test
-
-# Check status / delay
-btcli wallet swap-coldkey check --wallet.name OldOwner --network test
-
-# Execute after delay period
-btcli wallet swap-coldkey execute --wallet.name OldOwner --new-coldkey NewOwner --network test
-```
-
 ## Architecture
 
 | Component | File | Purpose |
@@ -333,14 +222,17 @@ Client subnets consume Safeguard as a service. Their validators register with Sa
 ### Running the demo client subnet
 
 ```bash
-# Terminal 1: Safeguard side (validator + API + miner)
+# Terminal 1: Safeguard validator + API
 bash run_validator.sh
 
-# Terminal 2: Client side (demo miners + validator with safety-weighted weight setting)
-bash run_client_demo.sh --safeguard-api http://localhost:9090
+# Terminal 2: Safeguard probe miner
+bash run_miner.sh
+
+# Terminal 3: Client side (demo miners + validator with safety-weighted weight setting)
+bash run_client_demo.sh
 ```
 
-The demo client runs 3 miners wrapping different LLMs and a validator that:
+The client subnet runs real miners and a validator on netuid 445. Miners wrap different LLMs, and the validator:
 1. Discovers miners from netuid 445 chain commitments
 2. Queries each miner with mixed safe/adversarial prompts
 3. Sends each query+response to Safeguard `/evaluate` for a safety score

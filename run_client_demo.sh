@@ -10,7 +10,7 @@
 # Prerequisites:
 #   - Safeguard cross-subnet API running (bash run_validator.sh)
 #   - CHUTES_API_KEY set in .env
-#   - SafeGuardOwner wallet registered as validator on netuid 445
+#   - Validator wallet registered on netuid 445
 #   - miner wallet with hotkeys registered on netuid 445
 #     (register with: btcli subnet register --netuid 445 --wallet.name miner
 #      --wallet.hotkey <hotkey> --network test)
@@ -21,7 +21,7 @@ set -e
 
 NETWORK="${NETWORK:-test}"
 CLIENT_NETUID="${CLIENT_NETUID:-445}"
-VALIDATOR_WALLET="${VALIDATOR_WALLET:-SafeGuardOwner}"
+VALIDATOR_WALLET="${VALIDATOR_WALLET:-validator}"
 VALIDATOR_HOTKEY="${VALIDATOR_HOTKEY:-default}"
 MINER_WALLET="${MINER_WALLET:-miner}"
 SAFEGUARD_API="${SAFEGUARD_API:-http://localhost:9090}"

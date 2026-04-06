@@ -3,7 +3,7 @@
 #
 # Usage: bash run_validator.sh [--network local|test] [--netuid N] [--wallet NAME]
 #
-# Defaults: network=test, netuid=444, wallet=SuperPractice
+# Defaults: network=test, netuid=444, wallet=validator
 #
 # The cross-subnet API runs alongside the validator. Client subnet relays
 # register with it, and the validator reads the registry each cycle.
@@ -15,7 +15,7 @@ set -e
 
 NETWORK="${NETWORK:-test}"
 NETUID="${NETUID:-444}"
-WALLET="${WALLET:-SuperPractice}"
+WALLET="${WALLET:-validator}"
 HOTKEY="${HOTKEY:-default}"
 LOGFILE="validator.log"
 
