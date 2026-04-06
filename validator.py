@@ -257,6 +257,57 @@ class TieredValidator:
         self.hitl_log_path = hitl_log_path
         self.pending_hitl_cases: list[dict] = []  # queue for HITL dispatch
 
+    def load_unresolved_hitl_cases(self):
+        """
+        Load cases from hitl_escalations.jsonl that have no label yet in
+        hitl_labels.jsonl and add them to the pending dispatch queue.
+        """
+        # Collect task_ids that already have labels
+        labeled_ids: set[str] = set()
+        try:
+            with open(HITL_LABELS_FILE, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            labeled_ids.add(json.loads(line)["task_id"])
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+        except FileNotFoundError:
+            pass
+
+        # Collect task_ids already in the pending queue
+        pending_ids = {c["task_id"] for c in self.pending_hitl_cases}
+
+        # Load escalations that are neither labeled nor already pending
+        loaded = 0
+        try:
+            with open(self.hitl_log_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    tid = entry.get("task_id", "")
+                    if tid in labeled_ids or tid in pending_ids:
+                        continue
+                    self.pending_hitl_cases.append({
+                        "task_id": tid,
+                        "transcript": entry.get("transcript", []),
+                        "category": entry.get("miner_severity", "unknown"),
+                        "miner_safety_score": entry.get("miner_safety_score"),
+                        "validator_score": entry.get("tier2_score"),
+                    })
+                    loaded += 1
+        except FileNotFoundError:
+            pass
+
+        if loaded:
+            logger.info(f"Loaded {loaded} unresolved HITL case(s) from disk")
+
     def validate_canary(self, result: ProbeResult, canary: Canary) -> float:
         """
         Tier 1: Check miner response against known ground truth.
@@ -825,6 +876,8 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         )
 
                     # 6. Dispatch pending HITL cases to HITL miners
+                    if hitl_miners:
+                        tiered_validator.load_unresolved_hitl_cases()
                     if tiered_validator.pending_hitl_cases and hitl_miners:
                         cases_to_send = tiered_validator.pending_hitl_cases[:]
                         tiered_validator.pending_hitl_cases.clear()

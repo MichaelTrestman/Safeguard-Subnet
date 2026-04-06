@@ -95,27 +95,43 @@ btcli subnets register --netuid $NETUID --wallet-name $WALLET_NAME --network $NE
 btcli stake add --netuid $NETUID --wallet-name $WALLET_NAME --partial --network $NETWORK
 ```
 
-### 4. Run the validator
+## Validating
+
+The validator discovers miners from chain commitments, assigns probing tasks each block, scores results through tiered validation (canary → classifier → LLM judge → HITL escalation), and sets weights on chain. Miner scores persist to `miner_scores.json` across restarts.
+
+### Run the validator
 
 ```bash
-python validator.py --network local --netuid 2 --coldkey validator --hotkey default
+bash run_validator.sh
 ```
 
-### Run the full local stack
-
-To start all 8 services (3 demo miners, 3 relays, SG miner, SG validator) in one terminal with unified logging:
+Defaults: `--network test --netuid 444 --wallet SuperPractice`. Override as needed:
 
 ```bash
-bash run_stack_local.sh
+bash run_validator.sh --network local --netuid 2 --wallet validator
 ```
 
-All output goes to `stack.log`. Ctrl-C kills everything. To clean up leaked ports before starting:
+This starts the validator plus 3 demo target models and relays for testing. The script checks for port conflicts and prompts to kill stale processes. All output goes to `validator.log`.
+
+**Note:** If switching between networks (e.g. local → testnet), delete `miner_scores.json` first — it contains UIDs from the previous network and will cause stale score references.
+
+### Manual validator startup
 
 ```bash
-for port in 8070 8071 8072 8080 9000 9001 9002; do lsof -ti :$port 2>/dev/null; done | sort -u | xargs kill 2>/dev/null
+TARGET_CONFIGS_FILE=target_configs.json \
+  python validator.py --network test --netuid 444 --coldkey SuperPractice --hotkey default
 ```
 
-The validator discovers miners from chain commitments, assigns probing tasks each tempo, scores results through tiered validation (canary → classifier → LLM judge → HITL), and sets weights on chain. Miner scores persist to `miner_scores.json` across restarts.
+### Full local stack (validator + miner together)
+
+For development, run everything in one terminal:
+
+```bash
+bash run_stack_local.sh   # local chain
+bash run_stack_test.sh    # testnet
+```
+
+All output goes to `stack.log` / `stack_test.log`. Ctrl-C kills everything.
 
 ## Multi-Target Evaluation
 
@@ -183,13 +199,23 @@ python report_generator.py -o report_all.md
 
 Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task includes a target validator's relay endpoint and a scenario category. The miner sends prompts one at a time through the relay, adapting its adversarial strategy based on each response. It returns the full transcript with safety evaluations.
 
-### Running the example miner
+### Running the probe miner
 
 ```bash
-NETUID=2 NETWORK=local WALLET_NAME=miner python safeguard-example-miner/main.py
+bash run_miner.sh
 ```
 
-The miner uses a different wallet than the validator (`miner` not `validator`), so override `WALLET_NAME` on the command line rather than relying on `.env`.
+Defaults: `--network test --netuid 444 --wallet miner --port 8080`. Override as needed:
+
+```bash
+bash run_miner.sh --network local --netuid 2 --wallet miner --port 8080
+```
+
+Or start manually:
+
+```bash
+NETUID=444 NETWORK=test WALLET_NAME=miner python safeguard-example-miner/main.py
+```
 
 The miner registers its endpoint on chain at startup. The validator discovers it and begins dispatching tasks. See `safeguard-example-miner/README.md` for details.
 
@@ -199,10 +225,80 @@ Your miner must expose `POST /probe` with Epistula authentication. It receives a
 
 ### HITL Mining
 
-Human miners label hard cases that the automated tiers can't resolve. Run the HITL miner CLI:
+Human miners label hard cases that the automated tiers can't resolve. The HITL miner runs on a separate mechanism (mech 1) with its own emission allocation.
+
+**Register your HITL miner:**
 
 ```bash
-python safeguard-hitl-miner/main.py --validator-url http://localhost:9091
+btcli subnet register --netuid 444 --wallet.name hitl-miner --wallet.hotkey default --network test
+```
+
+**Run the HITL miner:**
+
+```bash
+NETUID=444 NETWORK=test WALLET_NAME=hitl-miner HOTKEY_NAME=default \
+  python safeguard-hitl-miner/main.py
+```
+
+The HITL miner is a FastAPI server that receives tasks from the validator via Epistula-signed HTTP. It registers on chain with `{"type": "hitl"}` so the validator can distinguish it from probe miners.
+
+**Web UI (recommended):** Open `http://localhost:8081` in a browser with the [polkadot.js extension](https://polkadot.js.org/extension/) installed. Import your HITL miner hotkey into the extension, connect your wallet, and label cases through the browser interface. Scores are hidden until after you submit to avoid anchoring bias.
+
+**Terminal fallback:** If no browser is connected, tasks appear in the terminal for labeling via stdin — the original CLI interface.
+
+When the validator detects miner-validator disagreement > 0.3 on a probe result, it escalates the case to all registered HITL miners. Your label (safety score, severity, categories, reasoning) feeds back into the canary bank and calibrates the automated validation tiers. See [HITL_DESIGN.md](HITL_DESIGN.md) for the full architecture.
+
+## Subnet Administration
+
+These commands require the subnet owner wallet.
+
+### Subnet identity
+
+```bash
+btcli subnets set-identity --netuid 444 --network test \
+  --wallet.name SafeGuardOwner \
+  --subnet-name "Safeguard" \
+  --github-repo "https://github.com/MichaelTrestman/Safeguard-Subnet" \
+  --subnet-contact "m@latent.to"
+```
+
+### Mechanisms
+
+Safeguard uses two mechanisms: mech 0 for probe miners, mech 1 for HITL miners. Each has its own emission allocation.
+
+**Add the HITL mechanism:**
+
+```bash
+# Ensure max_allowed_uids * mechanism_count <= 256
+btcli sudo set --param max_allowed_uids --value 128 --netuid 444 --network test --wallet.name SafeGuardOwner
+
+# Add mech 1
+btcli subnet mech set --netuid 444 --count 2 --network test --wallet.name SafeGuardOwner
+
+# Set emission split (e.g. 80% probe, 20% HITL)
+btcli subnet mech split-emissions --netuid 444 --split "80,20" --network test --wallet.name SafeGuardOwner
+```
+
+**Verify:**
+
+```bash
+btcli subnet mech count --netuid 444 --network test
+btcli subnet mech emissions --netuid 444 --network test
+```
+
+### Transfer subnet ownership
+
+To transfer ownership to a different coldkey (two-step process with delay):
+
+```bash
+# Announce the swap
+btcli wallet swap-coldkey announce --wallet.name OldOwner --new-coldkey NewOwner --network test
+
+# Check status / delay
+btcli wallet swap-coldkey check --wallet.name OldOwner --network test
+
+# Execute after delay period
+btcli wallet swap-coldkey execute --wallet.name OldOwner --new-coldkey NewOwner --network test
 ```
 
 ## Architecture
@@ -211,7 +307,7 @@ python safeguard-hitl-miner/main.py --validator-url http://localhost:9091
 |---|---|---|
 | Validator | `validator.py` | Task dispatch, tiered validation, scoring, weight setting |
 | Example miner | `safeguard-example-miner/` | Reference red-team AI agent |
-| HITL miner | `safeguard-hitl-miner/` | CLI for human safety labeling |
+| HITL miner | `safeguard-hitl-miner/` | Human safety labeling (web UI + terminal fallback) |
 | LLM judge | `llm_judge.py` | Tier 2/3 safety classification via Chutes |
 | Cross-subnet API | `cross_subnet_api.py` | `/evaluate` endpoint for target subnets |
 | HITL API | `hitl_api.py` | Serves cases to human miners, collects labels |

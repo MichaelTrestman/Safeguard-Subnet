@@ -26,10 +26,22 @@ import logging
 import asyncio
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException, Depends
+from pathlib import Path
+from fastapi import FastAPI, Request, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from bittensor_wallet.keypair import Keypair
 import bittensor as bt
 from bittensor_wallet import Wallet
+
+from auth import (
+    validate_address,
+    generate_nonce,
+    create_nonce_token,
+    verify_nonce_token,
+    verify_signature,
+    create_session_token,
+    verify_session_token,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +54,7 @@ logger = logging.getLogger(__name__)
 NETWORK = os.getenv("NETWORK", "local")
 NETUID = int(os.getenv("NETUID", "2"))
 WALLET_NAME = os.getenv("WALLET_NAME", "hitl-miner")
-HOTKEY_NAME = os.getenv("HOTKEY_NAME", "default")
+HOTKEY_NAME = os.getenv("HOTKEY_NAME", "miney")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("HITL_MINER_PORT", os.getenv("PORT", "8081")))
 MAX_REQUEST_AGE = 60
@@ -55,6 +67,18 @@ CATEGORY_OPTIONS = [
     "H5-jailbreak", "M1-misinfo", "M2-copyright", "M4-bad-advice",
 ]
 
+SAFEGUARD_FORM_CONFIG = {
+    "type": "form_config",
+    "subnet": "safeguard",
+    "score_field": {"label": "Safety score", "min_label": "safe", "max_label": "critical"},
+    "severity_options": SEVERITY_OPTIONS,
+    "category_options": CATEGORY_OPTIONS,
+    "extra_fields": [],
+    "transcript_mode": "sequential",
+}
+
+HITL_TASK_TIMEOUT = 300  # 5 minutes for human thinking
+
 app = FastAPI(title="Safeguard HITL Miner")
 
 # Initialized at startup
@@ -64,6 +88,10 @@ metagraph: bt.Metagraph = None
 
 # Serialize human input — only one case at a time
 _label_lock = asyncio.Lock()
+
+# WebSocket state
+_connected_ws: WebSocket | None = None
+_pending_tasks: dict[str, asyncio.Future] = {}  # task_id -> Future for label
 
 
 # -- Epistula verification --
@@ -261,34 +289,211 @@ async def handle_hitl_task(
     logger.info(f"Received HITL task {task_id[:12]}... from validator {validator_hotkey[:8]}...")
 
     async with _label_lock:
-        # Run blocking human input in a thread
-        label = await asyncio.to_thread(_do_label, body)
+        if _connected_ws is not None:
+            # Web client connected — relay through WebSocket
+            loop = asyncio.get_event_loop()
+            future = loop.create_future()
+            _pending_tasks[task_id] = future
 
-    if label is None:
-        logger.info(f"Task {task_id[:12]}... skipped by human")
-        return {
-            "task_id": task_id,
-            "status": "skipped",
-            "safety_score": None,
-        }
+            # Send task to web client (scores withheld to avoid anchoring)
+            await _connected_ws.send_json({
+                "type": "task",
+                "task_id": task_id,
+                "transcript": body.get("transcript", []),
+                "category": body.get("category", ""),
+            })
 
-    logger.info(
-        f"Task {task_id[:12]}... labeled: score={label['safety_score']} "
-        f"severity={label['severity']}"
-    )
-    return {
-        "task_id": task_id,
-        "status": "labeled",
-        "safety_score": label["safety_score"],
-        "categories": label["categories"],
-        "severity": label["severity"],
-        "reasoning": label["reasoning"],
-    }
+            try:
+                label = await asyncio.wait_for(future, timeout=HITL_TASK_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.info(f"Task {task_id[:12]}... timed out waiting for web client")
+                return {"task_id": task_id, "status": "timeout", "safety_score": None}
+            finally:
+                _pending_tasks.pop(task_id, None)
+
+            # Send scores to client as post-submission feedback
+            try:
+                if _connected_ws is not None:
+                    await _connected_ws.send_json({
+                        "type": "scores",
+                        "task_id": task_id,
+                        "miner_safety_score": body.get("miner_safety_score"),
+                        "validator_score": body.get("validator_score"),
+                    })
+            except Exception:
+                pass
+
+            if label.get("status") == "skipped":
+                logger.info(f"Task {task_id[:12]}... skipped by human (web)")
+            else:
+                logger.info(
+                    f"Task {task_id[:12]}... labeled (web): score={label.get('safety_score')} "
+                    f"severity={label.get('severity')}"
+                )
+            return label
+
+        else:
+            # No web client — fall back to terminal input
+            label = await asyncio.to_thread(_do_label, body)
+
+            if label is None:
+                logger.info(f"Task {task_id[:12]}... skipped by human (terminal)")
+                return {
+                    "task_id": task_id,
+                    "status": "skipped",
+                    "safety_score": None,
+                }
+
+            logger.info(
+                f"Task {task_id[:12]}... labeled (terminal): score={label['safety_score']} "
+                f"severity={label['severity']}"
+            )
+            return {
+                "task_id": task_id,
+                "status": "labeled",
+                "safety_score": label["safety_score"],
+                "categories": label["categories"],
+                "severity": label["severity"],
+                "reasoning": label["reasoning"],
+            }
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "type": "hitl", "netuid": NETUID, "network": NETWORK}
+
+
+# -- Wallet authentication (polkadot.js extension) --
+
+@app.get("/auth/nonce/{address}")
+async def get_nonce(address: str):
+    """Generate a challenge nonce for wallet authentication."""
+    if not validate_address(address):
+        raise HTTPException(400, "Invalid SS58 address format")
+
+    nonce = generate_nonce()
+    token = create_nonce_token(nonce, address)
+    return {"nonce": nonce, "token": token}
+
+
+@app.post("/auth/verify")
+async def verify_auth(request: Request):
+    """Verify a signed nonce and issue a session token."""
+    body = await request.json()
+    address = body.get("address", "")
+    nonce = body.get("nonce", "")
+    signature = body.get("signature", "")
+    token = body.get("token", "")
+
+    if not all([address, nonce, signature, token]):
+        raise HTTPException(400, "Missing required fields")
+
+    # Verify the nonce token
+    payload = verify_nonce_token(token)
+    if not payload:
+        raise HTTPException(401, "Nonce token expired or invalid")
+
+    if payload.get("nonce") != nonce or payload.get("address") != address:
+        raise HTTPException(401, "Nonce/address mismatch")
+
+    # Verify the signature
+    if not verify_signature(address, nonce, signature):
+        raise HTTPException(401, "Invalid signature")
+
+    # Own-hotkey-only restriction: normalize both addresses via Keypair re-encoding
+    if wallet:
+        incoming_normalized = Keypair(ss58_address=address).ss58_address
+        operator_normalized = wallet.hotkey.ss58_address
+        logger.info(f"Auth check: incoming={incoming_normalized} operator={operator_normalized}")
+        if incoming_normalized != operator_normalized:
+            raise HTTPException(403, "Only the miner operator's hotkey is authorized")
+
+    session_token = create_session_token(address)
+    return {"session_token": session_token}
+
+
+# -- WebSocket for web UI --
+
+@app.websocket("/ws")
+async def websocket_handler(ws: WebSocket):
+    """WebSocket endpoint for the web labeling UI."""
+    global _connected_ws
+
+    # Must accept before we can send/close — Starlette returns 403 otherwise
+    await ws.accept()
+
+    # Verify session token from query param
+    token = ws.query_params.get("token", "")
+    address = verify_session_token(token)
+    if not address:
+        logger.info("WebSocket rejected: invalid or expired session token")
+        await ws.send_json({"type": "auth_error", "detail": "Invalid or expired session token"})
+        await ws.close(code=4001, reason="Invalid or expired session token")
+        return
+
+    if wallet:
+        incoming_normalized = Keypair(ss58_address=address).ss58_address
+        operator_normalized = wallet.hotkey.ss58_address
+        logger.info(f"WS auth check: incoming={incoming_normalized} operator={operator_normalized}")
+        if incoming_normalized != operator_normalized:
+            await ws.send_json({"type": "auth_error", "detail": "Unauthorized hotkey"})
+            await ws.close(code=4001, reason="Unauthorized hotkey")
+            return
+
+    # Kick previous client if any
+    if _connected_ws is not None:
+        try:
+            await _connected_ws.close(code=4000, reason="Replaced by new connection")
+        except Exception:
+            pass
+
+    _connected_ws = ws
+    logger.info(f"Web client connected: {address[:8]}...")
+
+    try:
+        await ws.send_json({"type": "auth_ok", "address": address})
+        await ws.send_json(SAFEGUARD_FORM_CONFIG)
+
+        # Heartbeat + message loop
+        while True:
+            try:
+                data = await asyncio.wait_for(ws.receive_json(), timeout=30)
+            except asyncio.TimeoutError:
+                # Send ping
+                await ws.send_json({"type": "ping"})
+                continue
+
+            if data.get("type") == "label":
+                task_id = data.get("task_id", "")
+                future = _pending_tasks.get(task_id)
+                if future and not future.done():
+                    future.set_result({
+                        "task_id": task_id,
+                        "status": "labeled",
+                        "safety_score": data.get("safety_score"),
+                        "categories": data.get("categories", []),
+                        "severity": data.get("severity", "NONE"),
+                        "reasoning": data.get("reasoning", ""),
+                    })
+
+            elif data.get("type") == "skip":
+                task_id = data.get("task_id", "")
+                future = _pending_tasks.get(task_id)
+                if future and not future.done():
+                    future.set_result({
+                        "task_id": task_id,
+                        "status": "skipped",
+                        "safety_score": None,
+                    })
+
+            elif data.get("type") == "pong":
+                pass  # heartbeat response
+
+    except (WebSocketDisconnect, Exception) as e:
+        logger.info(f"Web client disconnected: {type(e).__name__}")
+    finally:
+        if _connected_ws is ws:
+            _connected_ws = None
 
 
 @app.on_event("startup")
@@ -327,9 +532,20 @@ async def startup():
     print(f"  Wallet: {WALLET_NAME}/{HOTKEY_NAME}")
     print(f"  Hotkey: {my_hotkey}")
     print(f"  Listening on {HOST}:{PORT}")
-    print("  Cases will appear here when the validator routes them.")
+    print()
+    print(f"  Web UI: http://localhost:{PORT}")
+    print("  Open in browser with polkadot.js extension to label via web interface,")
+    print("  or label here in the terminal when no browser is connected.")
     print("=" * 70)
     print()
+
+
+# Mount static files AFTER all route definitions so they don't shadow API routes.
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+else:
+    logger.warning(f"Static directory not found: {_static_dir}")
 
 
 if __name__ == "__main__":
