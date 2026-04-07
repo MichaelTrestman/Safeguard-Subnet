@@ -230,7 +230,7 @@ def discover_miners(
         except (json.JSONDecodeError, TypeError):
             logger.debug(f"UID {uid}: could not parse commitment: {data_str!r}")
 
-    logger.info(f"Discovered {len(probe_miners)} probe miners, {len(hitl_miners)} HITL miners")
+    logger.debug(f"Discovered {len(probe_miners)} probe miners, {len(hitl_miners)} HITL miners")
     return probe_miners, hitl_miners
 
 
@@ -842,6 +842,10 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
         logger.info(f"Subnet tempo: {tempo} blocks")
 
         last_weight_block = 0
+        probe_miners: dict[int, str] = {}
+        hitl_miners: dict[int, str] = {}
+        prev_probe_uids: set[int] = set()
+        prev_hitl_uids: set[int] = set()
 
         while True:
             try:
@@ -849,15 +853,34 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                 current_block = subtensor.get_current_block()
                 last_heartbeat[0] = time.time()
 
+                # Re-discover miners every loop iteration so newly registered
+                # miners are picked up promptly, not just at tempo boundaries.
+                probe_miners, hitl_miners = discover_miners(
+                    subtensor, netuid, metagraph
+                )
+                cur_probe_uids = set(probe_miners.keys())
+                cur_hitl_uids = set(hitl_miners.keys())
+                if cur_probe_uids != prev_probe_uids:
+                    added = sorted(cur_probe_uids - prev_probe_uids)
+                    removed = sorted(prev_probe_uids - cur_probe_uids)
+                    logger.info(
+                        f"Probe miner set changed: +{added} -{removed} "
+                        f"(total {len(cur_probe_uids)})"
+                    )
+                    prev_probe_uids = cur_probe_uids
+                if cur_hitl_uids != prev_hitl_uids:
+                    added = sorted(cur_hitl_uids - prev_hitl_uids)
+                    removed = sorted(prev_hitl_uids - cur_hitl_uids)
+                    logger.info(
+                        f"HITL miner set changed: +{added} -{removed} "
+                        f"(total {len(cur_hitl_uids)})"
+                    )
+                    prev_hitl_uids = cur_hitl_uids
+
                 blocks_since_last = current_block - last_weight_block
 
                 if blocks_since_last >= tempo:
                     logger.info(f"Block {current_block}: Running evaluation cycle")
-
-                    # 1. Discover miners (probe + HITL separately)
-                    probe_miners, hitl_miners = discover_miners(
-                        subtensor, netuid, metagraph
-                    )
 
                     # Refresh target configs from registry each cycle
                     if use_registry:
