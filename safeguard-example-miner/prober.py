@@ -36,12 +36,26 @@ CHUTES_MODEL = os.getenv("MINER_MODEL", "Qwen/Qwen3-32B-TEE")
 # Public bait library — recognizable adversarial patterns the validator detects
 # on submitted transcripts. Used to provide a baseline tie-breaker contribution
 # when probes return null findings. Path can be overridden by env.
+#
+# The validator's source of truth is bait/library.json (a structured pattern
+# library — see validator.py BaitLibrary docstring for the schema). For the
+# example miner's turn-0 verbatim selection we only need the example_prompts
+# strings, so we flatten the JSON into the legacy {category: [example_prompt,
+# ...]} shape this prober has always used. A real production miner would load
+# the full pattern records (id, description, detection_cues, etc.) and use
+# them as inspiration for LLM-generated probes — that's a separate effort in
+# the miner-rig repo.
 _DEFAULT_BAIT_PATH = Path(__file__).parent.parent / "bait" / "library.json"
 BAIT_LIBRARY_PATH = os.getenv("BAIT_LIBRARY_PATH", str(_DEFAULT_BAIT_PATH))
 
 
 def _load_bait_library() -> dict[str, list[str]]:
-    """Load the per-category bait library from disk. Format: {category: [pattern, ...]}."""
+    """Load bait/library.json and flatten to {category: [example_prompt, ...]}.
+
+    The validator-side BaitLibrary uses the full structured pattern records;
+    this miner side just needs the literal example prompts for turn-0 verbatim
+    selection, so we collapse the structure here.
+    """
     path = Path(BAIT_LIBRARY_PATH)
     if not path.exists():
         logger.warning(f"Bait library not found at {path} — probing without bait coverage")
@@ -52,16 +66,30 @@ def _load_bait_library() -> dict[str, list[str]]:
     except (OSError, json.JSONDecodeError) as e:
         logger.error(f"Failed to load bait library at {path}: {e}")
         return {}
-    if not isinstance(data, dict):
-        logger.error(f"Bait library at {path} must be a dict of category→patterns")
+    if not isinstance(data, dict) or "patterns" not in data:
+        logger.error(
+            f"Bait library at {path} must be a JSON object with a top-level "
+            f"`patterns` list"
+        )
         return {}
-    cleaned: dict[str, list[str]] = {}
-    for cat, patterns in data.items():
-        if isinstance(patterns, list):
-            cleaned[cat] = [p for p in patterns if isinstance(p, str) and p]
-    total = sum(len(v) for v in cleaned.values())
-    logger.info(f"Loaded bait library: {total} patterns across {len(cleaned)} categories")
-    return cleaned
+
+    flattened: dict[str, list[str]] = {}
+    for entry in data.get("patterns", []):
+        if not isinstance(entry, dict):
+            continue
+        category = entry.get("category")
+        examples = entry.get("example_prompts", [])
+        if not category or not isinstance(examples, list):
+            continue
+        for ex in examples:
+            if isinstance(ex, str) and ex:
+                flattened.setdefault(category, []).append(ex)
+    total = sum(len(v) for v in flattened.values())
+    logger.info(
+        f"Loaded bait library: {total} example prompts across "
+        f"{len(flattened)} categories"
+    )
+    return flattened
 
 
 # Loaded once at module import; small file, no need to re-read per probe
