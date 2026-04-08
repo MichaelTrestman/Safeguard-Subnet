@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Safeguard Validator{% endblock %}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: #0a0a0a; color: #e0e0e0; padding: 2rem;
+           max-width: 1200px; margin: 0 auto; }
+    a { color: #88f; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { color: #fff; margin-bottom: 0.5rem; }
+    h2 { color: #aaa; font-size: 1rem; font-weight: normal; margin-bottom: 1.5rem; }
+    h3 { color: #fff; margin: 2rem 0 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem; margin-bottom: 2rem; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 1.25rem; }
+    .card h4 { color: #888; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 0.4rem; }
+    .card .value { font-size: 1.6rem; font-weight: bold; color: #fff; }
+    .card .sub { font-size: 0.8rem; color: #666; margin-top: 0.2rem; }
+    .ok { color: #44cc44; }
+    .warn { color: #ffcc44; }
+    .err { color: #ff4444; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #222; }
+    th { color: #888; font-size: 0.8rem; text-transform: uppercase; }
+    tr:hover { background: #111; }
+    code { background: #1a1a1a; padding: 0.1rem 0.4rem; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Safeguard Validator</h1>
+  <h2>Operator console</h2>
+  {% block content %}{% endblock %}
+</body>
+</html>

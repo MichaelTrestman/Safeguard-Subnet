@@ -1,0 +1,112 @@
+"""
+Django settings for vali-django.
+
+Lean by design — no auth middleware on the customer API (Epistula handles
+that per-view), no sessions, no CSRF on the API endpoints. The operator UI
+is read-only and runs on the same port; lock it down at the network layer
+(k8s NetworkPolicy / GCP firewall) rather than in Django.
+"""
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-change-me")
+DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+ALLOWED_HOSTS = ["*"]  # k8s ingress / firewall handles host filtering
+
+INSTALLED_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
+    "django.contrib.staticfiles",
+    "validator.apps.ValidatorConfig",
+]
+
+MIDDLEWARE = [
+    "django.middleware.common.CommonMiddleware",
+]
+
+ROOT_URLCONF = "valiproject.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": []},
+    },
+]
+
+ASGI_APPLICATION = "valiproject.asgi.application"
+WSGI_APPLICATION = "valiproject.wsgi.application"
+
+
+def _database_from_url(url: str) -> dict:
+    # Tiny parser to avoid pulling dj-database-url for one feature.
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    if p.scheme.startswith("postgres"):
+        return {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": p.path.lstrip("/"),
+            "USER": p.username or "",
+            "PASSWORD": p.password or "",
+            "HOST": p.hostname or "",
+            "PORT": str(p.port or ""),
+        }
+    raise ValueError(f"Unsupported DATABASE_URL scheme: {p.scheme}")
+
+
+if os.environ.get("DATABASE_URL"):
+    DATABASES = {"default": _database_from_url(os.environ["DATABASE_URL"])}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+USE_TZ = True
+TIME_ZONE = "UTC"
+
+# --- Validator-specific config ---
+VALIDATOR_WALLET = os.environ.get("VALIDATOR_WALLET", "")
+VALIDATOR_HOTKEY = os.environ.get("VALIDATOR_HOTKEY", "")
+SUBTENSOR_NETWORK = os.environ.get("SUBTENSOR_NETWORK", "test")
+NETUID = int(os.environ.get("NETUID", "444"))
+
+LOOP_INTERVAL_S = float(os.environ.get("LOOP_INTERVAL_S", "12"))
+HEALTH_MAX_WEIGHT_AGE_S = float(os.environ.get("HEALTH_MAX_WEIGHT_AGE_S", "1800"))
+HEALTH_MAX_TICK_AGE_S = float(os.environ.get("HEALTH_MAX_TICK_AGE_S", "120"))
+
+# Structured-ish stdout logging. k8s captures stdout; never write log files.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "plain": {
+            "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "stdout": {
+            "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+            "formatter": "plain",
+        },
+    },
+    "root": {"handlers": ["stdout"], "level": "INFO"},
+    "loggers": {
+        "django.server": {"handlers": ["stdout"], "level": "WARNING", "propagate": False},
+    },
+}

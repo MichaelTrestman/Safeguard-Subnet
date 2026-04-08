@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vali-django
+  labels: { app: vali-django }
+spec:
+  # Decentralized note: each validator runs their own instance, but a single
+  # validator should run replicas: 1 — two pods sharing one wallet would
+  # double-submit set_weights extrinsics. If you want a hot standby, run a
+  # second Deployment with a *different* hotkey, not a second replica.
+  replicas: 1
+  strategy:
+    type: Recreate  # never two pods alive at once for the same wallet
+  selector:
+    matchLabels: { app: vali-django }
+  template:
+    metadata:
+      labels: { app: vali-django }
+    spec:
+      containers:
+        - name: vali
+          image: vali-django:latest  # replace with your registry path
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: http
+          env:
+            - name: VALIDATOR_WALLET
+              value: "SuperPractice"
+            - name: VALIDATOR_HOTKEY
+              value: "default"
+            - name: SUBTENSOR_NETWORK
+              value: "test"
+            - name: NETUID
+              value: "444"
+            - name: DJANGO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vali-django-secret
+                  key: django-secret-key
+            - name: HEALTH_MAX_TICK_AGE_S
+              value: "120"
+            - name: HEALTH_MAX_WEIGHT_AGE_S
+              value: "1800"
+          volumeMounts:
+            - name: wallets
+              mountPath: /root/.bittensor
+              readOnly: true
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "1000m", memory: "1Gi" }
+      volumes:
+        - name: wallets
+          secret:
+            # The Secret holds your ~/.bittensor/wallets/<wallet>/hotkeys/<hotkey>
+            # file tree. See secret.example.yaml.
+            secretName: vali-django-wallets
+        - name: data
+          persistentVolumeClaim:
+            claimName: vali-django-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vali-django
+spec:
+  selector: { app: vali-django }
+  ports:
+    - port: 80
+      targetPort: 9090
+      name: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vali-django-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi

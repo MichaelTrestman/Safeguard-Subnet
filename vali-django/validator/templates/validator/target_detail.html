@@ -1,0 +1,31 @@
+{% extends "validator/base.html" %}
+{% block content %}
+
+<p><a href="{% url 'operator_dashboard' %}">← back</a></p>
+<h3>{{ target.name }}</h3>
+<p style="color:#888">
+  <code>{{ target.client_hotkey }}</code><br>
+  Relay: <code>{{ target.relay_endpoint }}</code><br>
+  Categories: {{ target.categories|join:", " }}
+</p>
+
+<h3>Recent Evaluations ({{ evaluations|length }})</h3>
+{% if evaluations %}
+<table>
+  <tr><th>When</th><th>Category</th><th>Miner UID</th><th>Accepted severity</th><th>Contribution</th><th>HITL</th></tr>
+  {% for e in evaluations %}
+  <tr>
+    <td>{{ e.timestamp|date:"Y-m-d H:i:s" }}</td>
+    <td>{{ e.category }}</td>
+    <td>{{ e.miner_uid }}</td>
+    <td>{{ e.accepted_severity|floatformat:3 }}</td>
+    <td>{{ e.contribution|floatformat:3 }}</td>
+    <td>{% if e.hitl_routed %}yes{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p style="color:#666">No evaluations yet for this target.</p>
+{% endif %}
+
+{% endblock %}

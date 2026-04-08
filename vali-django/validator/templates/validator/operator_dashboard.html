@@ -1,0 +1,70 @@
+{% extends "validator/base.html" %}
+{% block content %}
+
+<div class="grid">
+  <div class="card">
+    <h4>Loop Status</h4>
+    <div class="value">
+      {% if vstatus.last_tick_at %}
+        <span class="ok">ticking</span>
+      {% else %}
+        <span class="err">not started</span>
+      {% endif %}
+    </div>
+    <div class="sub">iter {{ vstatus.loop_iteration }}{% if tick_age %} · last tick {{ tick_age|floatformat:0 }}s ago{% endif %}</div>
+  </div>
+
+  <div class="card">
+    <h4>Wallet</h4>
+    <div class="value">
+      {% if vstatus.wallet_loaded %}<span class="ok">loaded</span>{% else %}<span class="err">not loaded</span>{% endif %}
+    </div>
+    <div class="sub">{{ settings.wallet }}/{{ settings.hotkey }}<br><code>{{ vstatus.wallet_hotkey_ss58|default:"—" }}</code></div>
+  </div>
+
+  <div class="card">
+    <h4>Last set_weights</h4>
+    <div class="value">
+      {% if weight_age %}
+        {{ weight_age|floatformat:0 }}s ago
+      {% else %}
+        <span class="warn">never</span>
+      {% endif %}
+    </div>
+    <div class="sub">block {{ vstatus.last_set_weights_block|default:"—" }}</div>
+  </div>
+
+  <div class="card">
+    <h4>Chain</h4>
+    <div class="value">{{ settings.network }} / {{ settings.netuid }}</div>
+    <div class="sub">{% if vstatus.chain_connected %}<span class="ok">connected</span>{% else %}<span class="warn">not yet</span>{% endif %}</div>
+  </div>
+</div>
+
+{% if vstatus.last_chain_error %}
+<div class="card" style="border-color: #4a1111">
+  <h4 class="err">Last chain error</h4>
+  <div class="sub">{{ vstatus.last_chain_error_at|default:"—" }}</div>
+  <pre style="color:#ff8888;white-space:pre-wrap;margin-top:0.5rem">{{ vstatus.last_chain_error }}</pre>
+</div>
+{% endif %}
+
+<h3>Registered Targets ({{ targets.count }})</h3>
+{% if targets %}
+<table>
+  <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th>Evals</th><th>Registered</th></tr>
+  {% for t in targets %}
+  <tr>
+    <td><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></td>
+    <td><code>{{ t.client_hotkey|slice:":12" }}…</code></td>
+    <td><code>{{ t.relay_endpoint }}</code></td>
+    <td>{{ t.n_evals }}</td>
+    <td>{{ t.registered_at|date:"Y-m-d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p style="color:#666">No targets registered yet.</p>
+{% endif %}
+
+{% endblock %}
