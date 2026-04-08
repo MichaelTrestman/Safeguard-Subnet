@@ -141,6 +141,8 @@ async def relay(
     Safeguard miners send prompts here. We forward to our own miner
     using our own auth. The miner can't tell it's a Safeguard probe.
     """
+    global _relay_calls_received
+    _relay_calls_received += 1
     body = await request.json()
     prompt = body.get("prompt", "")
     session_id = body.get("session_id", "")
@@ -231,6 +233,8 @@ async def request_safety_evaluation(query: str, response: str) -> dict:
     Call Safeguard /evaluate to get a safety score for a miner interaction.
     Requires Epistula auth.
     """
+    global _evaluate_calls_made
+    _evaluate_calls_made += 1
     body_bytes, headers = _build_evaluate_request(query, response)
 
     try:
@@ -284,19 +288,24 @@ async def health():
     }
 
 
-# -- Safeguard registration (register relay for ongoing evaluation) --
+# -- Safeguard registration (background loop, self-heals across portal restarts) --
 
-async def _register_with(api_url: str, label: str):
-    """Register this relay with an auditor's cross-subnet API for probing."""
+REGISTRATION_RETRY_INTERVAL = float(os.getenv("REGISTRATION_RETRY_INTERVAL", "60"))
+
+
+async def _register_with(api_url: str, label: str) -> tuple[bool, str]:
+    """Single registration attempt. Returns (success, error_message).
+
+    Idempotent on the portal side (the /register handler upserts), so
+    this is safe to call repeatedly from a background loop.
+    """
     if not WALLET_NAME:
-        logger.info(f"No WALLET_NAME set, skipping {label} registration")
-        return
+        return False, "no WALLET_NAME set"
 
     try:
         relay_wallet = Wallet(name=WALLET_NAME, hotkey=HOTKEY_NAME)
     except Exception as e:
-        logger.warning(f"Failed to load wallet for registration: {e}")
-        return
+        return False, f"wallet load failed: {e}"
 
     commit_host = "127.0.0.1" if RELAY_HOST == "0.0.0.0" else RELAY_HOST
     body = json.dumps({
@@ -317,43 +326,98 @@ async def _register_with(api_url: str, label: str):
         "Content-Type": "application/json",
     }
 
-    for attempt in range(5):
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{api_url}/register",
-                    content=body,
-                    headers=headers,
-                    timeout=10.0,
-                )
-                if resp.status_code == 200:
-                    logger.info(f"Registered with {label} as '{RELAY_MODEL_NAME}' at {api_url}")
-                    return
-                else:
-                    logger.warning(f"{label} registration failed: {resp.status_code} {resp.text}")
-                    return
-        except Exception as e:
-            if attempt < 4:
-                logger.info(f"{label} API not ready, retrying in 5s... ({e})")
-                await asyncio.sleep(5)
-            else:
-                logger.warning(f"Could not register with {label} after 5 attempts: {e}")
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{api_url}/register",
+                content=body,
+                headers=headers,
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                return True, ""
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
-async def register_with_safeguard():
-    await _register_with(SAFEGUARD_API_URL, "Safeguard")
+async def _register_periodically(api_url: str, label: str):
+    """Background task: register with the auditor and keep re-registering
+    every REGISTRATION_RETRY_INTERVAL seconds (default 60s). Idempotent on
+    the portal side, so this self-heals if the portal goes down or comes
+    up after the demo client started — no need to restart the demo client
+    when the validator stack flaps.
 
-
-async def register_with_arbiter():
-    if not ARBITER_API_URL:
+    State-transition logging only: only state changes (first attempt, ok→fail,
+    fail→ok) get logged. Continued steady-state runs are silent so the log
+    isn't a wall of warnings while the portal is down.
+    """
+    if not WALLET_NAME:
+        logger.info(f"No WALLET_NAME set, skipping {label} registration loop")
         return
-    await _register_with(ARBITER_API_URL, "Arbiter")
+
+    last_status: bool | None = None  # None = first attempt
+    while True:
+        ok, error = await _register_with(api_url, label)
+        if ok:
+            if last_status is not True:
+                if last_status is False:
+                    logger.info(f"Re-registered with {label} (auditor came back)")
+                else:
+                    logger.info(
+                        f"Registered with {label} as '{RELAY_MODEL_NAME}' at {api_url}"
+                    )
+            last_status = True
+        else:
+            if last_status is not False:
+                logger.warning(
+                    f"{label} registration failed: {error}; "
+                    f"will keep retrying every {REGISTRATION_RETRY_INTERVAL:.0f}s "
+                    f"(no need to restart this process)"
+                )
+            last_status = False
+        await asyncio.sleep(REGISTRATION_RETRY_INTERVAL)
+
+
+DC_HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("DC_HEARTBEAT_INTERVAL", "300"))
+
+# Counters for the heartbeat log so the operator can see what the demo
+# client has been doing without enabling debug logging.
+_relay_calls_received = 0
+_evaluate_calls_made = 0
+_started_at = time.time()
+
+
+async def _heartbeat_loop():
+    """Periodic 'I'm alive' status log for the demo client validator. Logs
+    every DC_HEARTBEAT_INTERVAL_SECONDS (default 5 minutes) showing uptime,
+    relay calls received from Safeguard miners, and evaluate calls made to
+    the auditor APIs. Pure state read, no I/O."""
+    last_relay = 0
+    last_evaluate = 0
+    while True:
+        await asyncio.sleep(DC_HEARTBEAT_INTERVAL_SECONDS)
+        uptime_sec = int(time.time() - _started_at)
+        delta_relay = _relay_calls_received - last_relay
+        delta_eval = _evaluate_calls_made - last_evaluate
+        last_relay = _relay_calls_received
+        last_evaluate = _evaluate_calls_made
+        logger.info(
+            f"Heartbeat: alive on port {RELAY_PORT}, uptime={uptime_sec}s, "
+            f"relay_calls={_relay_calls_received} (+{delta_relay}), "
+            f"evaluate_calls={_evaluate_calls_made} (+{delta_eval})"
+        )
 
 
 @app.on_event("startup")
 async def startup():
-    await register_with_safeguard()
-    await register_with_arbiter()
+    # Fire-and-forget background registration loops. Do NOT await — startup
+    # must not block on the portal/auditor being reachable, otherwise the
+    # demo client can't accept relay traffic until the auditor is up.
+    asyncio.create_task(_register_periodically(SAFEGUARD_API_URL, "Safeguard"))
+    if ARBITER_API_URL:
+        asyncio.create_task(_register_periodically(ARBITER_API_URL, "Arbiter"))
+    asyncio.create_task(_heartbeat_loop())
 
 
 # -- Validation loop (chain-registered mode) --

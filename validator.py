@@ -22,6 +22,7 @@ import asyncio
 import logging
 import threading
 import uuid
+import concurrent.futures
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -42,6 +43,71 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_TIMEOUT = 600  # seconds
 MINER_QUERY_TIMEOUT = 600.0  # seconds — miner makes multiple LLM calls per task
+
+# Periodic visible "I'm alive" log line at INFO level so the operator can tail
+# validator.log between tempo cycles without wondering if the loop is stuck.
+# Counted in main-loop iterations (each iteration is ~12s).
+HEARTBEAT_LOG_INTERVAL_ITERATIONS = 25  # ~5 minutes at 12s/iteration
+
+# Per-call timeouts for chain RPC operations. The substrate-interface library
+# does not have client-side timeouts on websocket calls, so without these a
+# flaky chain endpoint can hang the main loop indefinitely until the heartbeat
+# watchdog restarts the process. See "Bug E" in dev-blog-004.md.
+CHAIN_TIMEOUT_SYNC = 60.0           # metagraph.sync
+CHAIN_TIMEOUT_BLOCK = 30.0          # subtensor.get_current_block
+CHAIN_TIMEOUT_DISCOVER = 60.0       # discover_miners (get_all_commitments)
+CHAIN_TIMEOUT_SET_WEIGHTS = 120.0   # set_weights with wait_for_inclusion=True
+
+# Subtensor connect retry — guards against transient WSS handshake failures
+# at validator startup. Without this, a single ConnectionResetError during
+# bt.Subtensor() init crashes the process before the heartbeat thread is even
+# running, so os.execv self-restart can't recover. See "Bug F" in dev-blog-004.md.
+SUBTENSOR_CONNECT_MAX_ATTEMPTS = 10
+
+_chain_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="chain"
+)
+
+
+def _chain_call(fn, *args, _timeout: float = 60.0, **kwargs):
+    """Run a chain RPC with a hard timeout. Raises TimeoutError on hang.
+
+    The substrate websocket layer can block forever on a flaky endpoint;
+    this wrapper enforces a per-call deadline so the main loop can self-recover
+    instead of waiting for the heartbeat watchdog to kill the process.
+    """
+    future = _chain_executor.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=_timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise TimeoutError(
+            f"Chain call {getattr(fn, '__name__', repr(fn))} timed out after {_timeout}s"
+        )
+
+
+def _connect_subtensor_with_retry(
+    network: str,
+    max_attempts: int = SUBTENSOR_CONNECT_MAX_ATTEMPTS,
+) -> bt.Subtensor:
+    """Connect to chain with exponential backoff retry. Tolerates transient
+    network failures during SSL handshake / WSS connect that would otherwise
+    crash the validator at startup before the heartbeat thread can begin."""
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return bt.Subtensor(network=network)
+        except (ConnectionError, ConnectionResetError, OSError, TimeoutError) as e:
+            last_exc = e
+            wait = min(2 ** attempt, 60)
+            logger.warning(
+                f"Subtensor connect attempt {attempt + 1}/{max_attempts} failed: "
+                f"{type(e).__name__}: {e}; retrying in {wait}s"
+            )
+            time.sleep(wait)
+    raise RuntimeError(
+        f"Subtensor connection failed after {max_attempts} attempts; last error: {last_exc}"
+    )
 
 # Bait modifier scoring constants — see DESIGN.md § Bait
 BAIT_ALPHA = 0.05            # max bait modifier per submission, small vs typical findings reward
@@ -843,9 +909,12 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
 
     try:
         wallet = Wallet(name=coldkey, hotkey=hotkey)
-        subtensor = bt.Subtensor(network=network)
+        # Bug F: retry on transient WSS handshake failures so a single network
+        # blip during init doesn't kill the validator before the heartbeat
+        # thread can begin (in which case os.execv self-restart can't recover).
+        subtensor = _connect_subtensor_with_retry(network=network)
         metagraph = bt.Metagraph(netuid=netuid, network=network)
-        metagraph.sync(subtensor=subtensor)
+        _chain_call(metagraph.sync, subtensor=subtensor, _timeout=CHAIN_TIMEOUT_SYNC)
 
         logger.info(f"Metagraph synced: {metagraph.n} neurons at block {metagraph.block}")
 
@@ -865,17 +934,25 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
         hitl_miners: dict[int, str] = {}
         prev_probe_uids: set[int] = set()
         prev_hitl_uids: set[int] = set()
+        heartbeat_iteration = 0  # for periodic status log
 
         while True:
             try:
-                metagraph.sync(subtensor=subtensor)
-                current_block = subtensor.get_current_block()
+                # Bug E: each chain RPC has its own hard timeout so a flaky
+                # endpoint can't hang the main loop past the heartbeat watchdog.
+                # On TimeoutError we log, refresh the heartbeat anyway, and
+                # continue to the next iteration for retry.
+                _chain_call(metagraph.sync, subtensor=subtensor, _timeout=CHAIN_TIMEOUT_SYNC)
+                current_block = _chain_call(
+                    subtensor.get_current_block, _timeout=CHAIN_TIMEOUT_BLOCK
+                )
                 last_heartbeat[0] = time.time()
 
                 # Re-discover miners every loop iteration so newly registered
                 # miners are picked up promptly, not just at tempo boundaries.
-                probe_miners, hitl_miners = discover_miners(
-                    subtensor, netuid, metagraph
+                probe_miners, hitl_miners = _chain_call(
+                    discover_miners, subtensor, netuid, metagraph,
+                    _timeout=CHAIN_TIMEOUT_DISCOVER,
                 )
                 cur_probe_uids = set(probe_miners.keys())
                 cur_hitl_uids = set(hitl_miners.keys())
@@ -902,12 +979,13 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                     logger.info(f"Block {current_block}: Running evaluation cycle")
 
                     # Whether this cycle actually collected at least one fresh result.
-                    # Used below to gate the last_weight_block update — without this,
-                    # the validator's first-on-boot cycle (which fires immediately
-                    # because last_weight_block=0) burns its tempo credit setting
-                    # weights from purely persisted state even when no live miner
-                    # responded, locking the validator out of fresh dispatches for
-                    # a full tempo (~72 minutes). See "first-cycle race" in DESIGN.md.
+                    # Used below to decide whether to reset the time-remaining until
+                    # the next cycle — without this, the validator's first-on-boot
+                    # cycle (which fires immediately because last_weight_block=0)
+                    # would reset the timer after setting weights from purely
+                    # persisted state, even when no live miner responded, locking
+                    # the validator out of fresh dispatches for a full tempo
+                    # (~72 minutes). See "first-cycle race" in DESIGN.md.
                     cycle_collected_fresh_data = False
 
                     # Refresh target configs from registry each cycle
@@ -924,7 +1002,16 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         target_index += 1
                         logger.info(f"Target: {target['name']} ({target['relay']})")
 
-                        # 3. One task per probe miner, dispatched in parallel
+                        # 3. One task per probe miner, dispatched in parallel.
+                        #
+                        # PROTOCOL INVARIANT: this validator MUST dispatch to every
+                        # probe miner discovered on chain every cycle. Failure is
+                        # recorded as zero contribution under the discovery market —
+                        # it is NEVER a reason to skip a registered miner from future
+                        # dispatch. Bittensor's own deregistration logic handles
+                        # miners that should drop off the metagraph; validator code
+                        # does not adjudicate miner eligibility. Skipping registered
+                        # miners is censorship and a Yuma Consensus violation.
                         tasks_for_miners = {}
                         for uid, endpoint in probe_miners.items():
                             task = build_single_task(target_config=target)
@@ -1045,7 +1132,12 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         )
 
                     if uids:
-                        success = subtensor.set_weights(
+                        # Bug E: set_weights blocks on tx inclusion (~12-24s
+                        # normally, but can hang on chain flakiness). Hard
+                        # timeout via _chain_call so it can't lock the loop
+                        # past the heartbeat watchdog.
+                        success = _chain_call(
+                            subtensor.set_weights,
                             wallet=wallet,
                             netuid=netuid,
                             uids=uids,
@@ -1053,20 +1145,21 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                             mechid=0,
                             wait_for_inclusion=True,
                             wait_for_finalization=False,
+                            _timeout=CHAIN_TIMEOUT_SET_WEIGHTS,
                         )
                         if success:
                             logger.info(f"Set weights (mech 0 probe): {dict(zip(uids, [f'{w:.4f}' for w in weights]))}")
-                            # Only burn the tempo credit if this cycle actually
-                            # collected fresh data. Otherwise leave the cycle gate
-                            # open so the next loop iteration retries dispatch as
-                            # soon as a miner becomes reachable.
+                            # Only reset the time-remaining until the next cycle
+                            # if this cycle actually collected fresh data. Otherwise
+                            # leave the timer at zero so the next loop iteration
+                            # retries dispatch as soon as a miner becomes reachable.
                             if cycle_collected_fresh_data:
                                 last_weight_block = current_block
                             else:
                                 logger.info(
                                     "Cycle set weights from persisted state only "
-                                    "(no fresh data collected) — keeping cycle gate "
-                                    "open for retry on next iteration"
+                                    "(no fresh data collected) — leaving time-remaining "
+                                    "at zero so next iteration retries dispatch"
                                 )
                         else:
                             logger.warning("Failed to set weights for mechanism 0")
@@ -1079,7 +1172,8 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         # For MVP: equal weight to all responsive HITL miners
                         hitl_weights = [1.0 / len(hitl_uids)] * len(hitl_uids)
                         try:
-                            success = subtensor.set_weights(
+                            success = _chain_call(
+                                subtensor.set_weights,
                                 wallet=wallet,
                                 netuid=netuid,
                                 uids=hitl_uids,
@@ -1087,11 +1181,14 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                                 mechid=1,
                                 wait_for_inclusion=True,
                                 wait_for_finalization=False,
+                                _timeout=CHAIN_TIMEOUT_SET_WEIGHTS,
                             )
                             if success:
                                 logger.info(f"Set weights (mech 1 HITL): {dict(zip(hitl_uids, [f'{w:.4f}' for w in hitl_weights]))}")
                             else:
                                 logger.warning("Failed to set weights for mechanism 1")
+                        except TimeoutError as e:
+                            logger.warning(f"Mech 1 set_weights timed out: {e}")
                         except Exception as e:
                             logger.debug(f"Mechanism 1 weight setting failed (may not exist yet): {e}")
 
@@ -1102,11 +1199,32 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                         f"Block {current_block}: Waiting ({blocks_since_last}/{tempo})"
                     )
 
+                # Periodic visible heartbeat at INFO so the operator can see
+                # the loop is alive between tempo cycles. The actual watchdog
+                # heartbeat (last_heartbeat[0]) updates every iteration above;
+                # this is purely a UX log line for tail watchers.
+                heartbeat_iteration += 1
+                if heartbeat_iteration % HEARTBEAT_LOG_INTERVAL_ITERATIONS == 0:
+                    blocks_until_next = max(0, tempo - (current_block - last_weight_block))
+                    minutes_until = blocks_until_next * 12 / 60
+                    logger.info(
+                        f"Heartbeat: block {current_block}, next cycle in "
+                        f"{blocks_until_next} blocks (~{minutes_until:.0f} min); "
+                        f"probe_miners={len(probe_miners)} hitl_miners={len(hitl_miners)}"
+                    )
+
                 time.sleep(12)
 
             except KeyboardInterrupt:
                 logger.info("Validator stopped by user")
                 break
+            except TimeoutError as e:
+                # Bug E: chain RPC hung past its hard timeout. Refresh the
+                # heartbeat so the watchdog doesn't restart us, and retry on
+                # the next iteration.
+                logger.warning(f"Chain RPC timed out: {e}; retrying next iteration")
+                last_heartbeat[0] = time.time()
+                time.sleep(5)
             except Exception as e:
                 logger.error(f"Error in validator loop: {e}")
                 time.sleep(12)

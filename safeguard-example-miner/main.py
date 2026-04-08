@@ -39,12 +39,19 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 MAX_REQUEST_AGE = 60  # seconds
 
+# Periodic visible heartbeat — overridable via env var. Default: every 5 minutes.
+HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("MINER_HEARTBEAT_INTERVAL", "300"))
+
 app = FastAPI(title="Safeguard Test Miner")
 
 # Initialized at startup
 wallet: Wallet = None
 subtensor: bt.Subtensor = None
 metagraph: bt.Metagraph = None
+
+# Lifetime probe counter — visible in /health and the heartbeat log
+_probes_received: int = 0
+_started_at: float = time.time()
 
 
 def verify_epistula(timestamp: str, signature: str, hotkey: str, body: bytes) -> str:
@@ -98,6 +105,8 @@ async def handle_probe(
     validator_hotkey: str = Depends(verify_validator),
 ):
     """Accept a probing task and return results."""
+    global _probes_received
+    _probes_received += 1
     body = await request.json()
 
     task_id = body.get("task_id", "unknown")
@@ -132,7 +141,32 @@ async def handle_probe(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "netuid": NETUID, "network": NETWORK}
+    uptime_sec = time.time() - _started_at
+    return {
+        "status": "ok",
+        "netuid": NETUID,
+        "network": NETWORK,
+        "uptime_seconds": int(uptime_sec),
+        "probes_received": _probes_received,
+    }
+
+
+async def _heartbeat_loop():
+    """Periodic 'I'm alive' status log so the operator can tail miner.log
+    between probe events without wondering if the miner died. State-only:
+    no chain calls, no I/O, just an info line every HEARTBEAT_INTERVAL_SECONDS.
+    """
+    last_count = 0
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        delta = _probes_received - last_count
+        last_count = _probes_received
+        uptime_sec = int(time.time() - _started_at)
+        logger.info(
+            f"Heartbeat: alive on netuid {NETUID} port {PORT}, "
+            f"uptime={uptime_sec}s, probes_received={_probes_received} "
+            f"(+{delta} since last heartbeat)"
+        )
 
 
 @app.on_event("startup")
@@ -144,6 +178,9 @@ async def startup():
     subtensor = bt.Subtensor(network=NETWORK)
     metagraph = bt.Metagraph(netuid=NETUID, network=NETWORK)
     metagraph.sync(subtensor=subtensor)
+
+    # Background heartbeat task — fire-and-forget so it doesn't block startup.
+    asyncio.create_task(_heartbeat_loop())
 
     my_hotkey = wallet.hotkey.ss58_address
     if my_hotkey not in metagraph.hotkeys:
