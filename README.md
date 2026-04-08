@@ -26,6 +26,12 @@ Bittensor has none of this. Individual subnets may or may not implement safety m
 
 **Regulatory risk is existential.** The EU AI Act classifies AI systems that exploit vulnerabilities (including of minors and people in psychological distress) as "unacceptable risk" — meaning they are banned outright [^6]. Multiple US states have enacted or are preparing legislation specifically targeting AI companion products, AI-generated NCII, and AI systems that interact with minors [^7]. If Bittensor's AI services are perceived as unregulable and unsafe, the regulatory response will not distinguish between "the protocol" and "the subnets." The entire network faces existential risk from the safety failures of individual subnets.
 
+## Research context
+
+Independent evaluation of high-impact generative AI is widely treated as essential for public awareness, transparency, and accountability. The [MIT AI Safe Harbor open letter](https://sites.mit.edu/ai-safe-harbor/) — signed by hundreds of researchers and practitioners across AI, law, and policy — documents how corporate terms of service and the absence of explicit protections for good-faith work can chill independent safety, security, and trustworthiness research; it calls for legal safe harbors aligned with established vulnerability-disclosure norms and for more equitable access to evaluation, as a complement (not a substitute) to vendor-run researcher programs. The letter authors elaborate the case in an accompanying paper, [*A Safe Harbor for AI Evaluation*](https://bpb-us-e1.wpmucdn.com/sites.mit.edu/dist/6/336/files/2024/03/Safe-Harbor-0e192065dccf6d83.pdf).
+
+Safeguard is **not** affiliated with that initiative and does not claim endorsement by its signatories. The connection is substantive, not promotional: decentralized AI services on Bittensor sit outside the centralized policy stack the letter addresses — there is no single terms-of-service regime to amend — while still needing systematic, adversarial safety evaluation. Safeguard is infrastructure for that case: an incentive-aligned subnet that probes live services through the relay model, aggregates findings, and feeds human judgment back into automated tiers. It addresses the structural gap for decentralized AI in parallel to the policy arguments the Safe Harbor letter makes for centralized ecosystems.
+
 ## The Safeguard Strategy
 
 **Miners** run adversarial AI agents that probe target AI services for failures across whatever risk categories that service's threat profile demands. For an AI companion, that means testing whether the service encourages self-harm, simulates romantic attachment with minors, or produces radicalization content. For a code generation service, it means testing whether the service produces malicious code, exfiltrates user data, or executes unauthorized actions. For an agent-based service, it means testing whether the agent can be hijacked, whether it respects permission boundaries, and whether it leaks credentials. The probing categories are defined per-target-subnet and evolve as new risks emerge, new research reveals attack vectors, and new regulations impose requirements.
@@ -35,6 +41,14 @@ Bittensor has none of this. Individual subnets may or may not implement safety m
 **Human miners** Humans working as miners on the HITL submechanism label the hard cases that automated validation can't confidently score. Their labels feed back as training data and canaries, continuously improving the automated tiers.
 
 **Target subnet validators** play two roles: client and relay. As a client, they call Safeguard's `/evaluate` endpoint with interaction context. As a relay, they expose a `/relay` endpoint that Safeguard miners probe through — the target validator forwards each prompt to its own miners using its own auth protocol (Chutes AES, Epistula, etc.), making probes indistinguishable from normal traffic. The target miner never knows it's being safety-tested. See [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) for the relay spec.
+
+## Why This Works for Bittensor
+
+Bittensor has a structural paradox almost nobody in the network names directly: every subnet runs its own alpha token, competing zero-sum for stake and emissions, while the unit of value that holds it all together — TAO itself — is a cooperative product. Every subnet inherits every other subnet's legitimacy. The competitive game is local; the legitimacy game is shared.
+
+Safeguard collapses this paradox. Its commodity *is* the legitimacy of the rest of the network. Every safety evaluation it produces makes a peer subnet more credible to a regulator, more defensible to an enterprise customer, and more trusted by users. The other subnets are not Safeguard's competitors — they are its customers, and their success is Safeguard's success in a way almost nothing else in the network can claim. Per-evaluation fees and corpus licensing are the line-item revenue. The larger revenue is the network effect: every integrated subnet that runs Safeguard makes TAO itself more legitimate, which lifts every alpha including Safeguard's own.
+
+This is also Bittensor's answer to the centralized-AI argument that markets cannot produce safety. Decentralized AI is supposed to be a *better way to do AI* — including on the dimensions centralized providers say markets cannot handle. If Bittensor has no answer on safety, that claim collapses and the network becomes centralized AI minus the safety team. Safeguard is the existence proof that the same incentive engine producing useful inference, pointed at safety, produces a safety credential no centralized provider can match: continuous, adversarial, transparent, and bound into the economic mechanism rather than bolted on. A mainnet slot for Safeguard is not one more subnet — it is the network's answer to the question of whether decentralized AI can produce safety as a first-class commodity. See whitepaper §3 for the full argument.
 
 ## What Safeguard Tests
 
@@ -198,6 +212,7 @@ When the validator detects miner-validator disagreement > 0.3 on a probe result,
 | [ETHICS.md](ETHICS.md) | Content privacy, HITL welfare, epistemological honesty |
 | [RELAY_PROTOCOL.md](RELAY_PROTOCOL.md) | `/relay` endpoint spec for partner subnets |
 | [HITL_DESIGN.md](HITL_DESIGN.md) | Human-in-the-loop architecture (MVP + production) |
+| [design_2.md](design_2.md) | Supplementary design: HITL bait-suggestion track (deferred rewards, validator demand); extends DESIGN.md |
 | [LOCAL_DEPLOY.md](LOCAL_DEPLOY.md) | Local chain deployment guide |
 
 ## Client Subnet Integration
