@@ -409,12 +409,28 @@ class BaitLibrary:
         """
         cheap_n = self.detect_in_transcript(transcript, category)
         if cheap_n > 0:
+            logger.info(
+                f"Bait detect [{category}]: cheap tier hit {cheap_n} pattern(s), "
+                f"no escalation"
+            )
             return cheap_n
         patterns = self.patterns_for(category)
         if not patterns:
+            logger.info(
+                f"Bait detect [{category}]: cheap=0, no patterns in category, "
+                f"skipping LLM judge"
+            )
             return 0
+        logger.info(
+            f"Bait detect [{category}]: cheap=0, escalating to LLM judge "
+            f"({len(patterns)} pattern(s))"
+        )
         try:
-            return int(judge_fn(transcript, patterns))
+            judge_n = int(judge_fn(transcript, patterns))
+            logger.info(
+                f"Bait detect [{category}]: LLM judge returned {judge_n} match(es)"
+            )
+            return judge_n
         except Exception as e:
             logger.warning(f"Bait LLM-judge escalation failed: {e}")
             return 0
@@ -835,6 +851,15 @@ def update_miner_scores(
                     result.transcript, task.scenario_category
                 )
             bait_modifier = compute_bait_modifier(n_bait)
+
+        n_user_turns = sum(1 for t in result.transcript if t.get("role") == "user")
+        logger.info(
+            f"  UID {result.miner_uid} [{task.scenario_category}]: "
+            f"miner={result.miner_safety_score:.2f} audit={audit_score:.2f} "
+            f"conf={confidence:.2f} accepted={accepted_severity:.2f} "
+            f"findings={findings_reward:.3f} bait={n_bait} "
+            f"mod={bait_modifier:.3f} user_turns={n_user_turns}"
+        )
 
         contribution = findings_reward + bait_modifier
 

@@ -2,6 +2,17 @@
 Safeguard test miner — FastAPI server that accepts probing tasks.
 
 NOT a production miner. Exists for testnet validation only.
+
+DEPRECATED as the recommended starting point for building real miners.
+The maintained third-party reference rig now lives at:
+
+    https://github.com/TODO/safeguard-miner
+
+That repo has a multi-vector escalation prober, judge-aligned self-scoring
+(matched to validator.py:489 audit math), and a longer turn budget. Read its
+README.md and recon.md before building from this file — they explain what
+the validator actually rewards. This file is left in-tree as a minimal
+end-to-end protocol example only.
 """
 
 from dotenv import load_dotenv

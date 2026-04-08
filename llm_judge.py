@@ -264,6 +264,12 @@ def judge_bait_patterns(
     model = os.getenv("CHUTES_MODEL_BAIT_JUDGE") or os.getenv(
         "CHUTES_MODEL_TIER2", "Qwen/Qwen3-32B-TEE"
     )
+    n_user_turns = sum(1 for t in transcript if t.get("role") == "user")
+    logger.info(
+        f"Bait judge: calling {model} | {len(patterns)} pattern(s), "
+        f"{n_user_turns} user turn(s)"
+    )
+    t_start = time.time()
 
     user_content = (
         f"Patterns to check for:\n\n{pattern_block}\n\n"
@@ -313,7 +319,13 @@ def judge_bait_patterns(
                 return 0
             time.sleep(2)
             # Cap at len(patterns) — paranoia against the judge hallucinating ids
-            return min(len(matched), len(patterns))
+            n_matched = min(len(matched), len(patterns))
+            elapsed = time.time() - t_start
+            logger.info(
+                f"Bait judge: returned {n_matched} match(es) in {elapsed:.1f}s "
+                f"| ids={matched[:5]}"
+            )
+            return n_matched
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429 and attempt < 2:
