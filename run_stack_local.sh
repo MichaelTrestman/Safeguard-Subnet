@@ -6,6 +6,17 @@
 
 set -e
 
+# Shared cleanup helpers (kill_stale, assert_ports_clear)
+source "$(dirname "$0")/_run_helpers.sh"
+
+kill_stale "Safeguard local stack" \
+    'demo-client/miner\.py' \
+    'demo-client/validator\.py' \
+    'safeguard-example-miner/main\.py' \
+    'validator\.py.*--coldkey'
+
+assert_ports_clear 8070 8071 8072 9000 9001 9002 8080
+
 LOGFILE="stack.log"
 > "$LOGFILE"  # truncate
 

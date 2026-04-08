@@ -1,11 +1,18 @@
 """
-Safeguard Safety Intel Dashboard.
+Safeguard Safety Intel Dashboard + Cross-Subnet Portal.
 
-Lightweight web app that serves safety reports and findings
-to authenticated client subnet validators.
+A single web app on port 9080 that serves both:
 
-Public endpoints: summary stats, registered targets list.
-Authenticated endpoints: per-client reports, findings with transcripts.
+  1. The dashboard UI + read-only data API for inspecting safety findings
+     (everything under /api/* and the inline HTML at /).
+  2. The public-facing client-integration API: /register, /evaluate, /status,
+     /registry — what cross_subnet_api.py used to do.
+
+The /evaluate endpoint is **async-query**: it returns aggregated safety stats
+from validator.py's accumulated state, NOT a synchronous probe dispatch. This
+unifies scoring math (the discovery market in validator.py is the only source
+of truth) and removes the parallel evaluation path that cross_subnet_api.py
+used to maintain. See DESIGN.md § Validator design for the underlying model.
 
 Usage:
     python dashboard.py
@@ -21,11 +28,18 @@ import logging
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException, Query, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
-from report_data import load_evaluation_data, load_jsonl, get_finding_detail, get_hitl_cases
+from epistula import verify_epistula
+from report_data import (
+    load_evaluation_data,
+    load_jsonl,
+    get_finding_detail,
+    get_hitl_cases,
+    aggregate_target_safety,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,13 +51,74 @@ logger = logging.getLogger(__name__)
 HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.getenv("DASHBOARD_PORT", "9080"))
 REGISTRY_FILE = os.getenv("TARGET_REGISTRY_FILE", "target_registry.json")
+MAX_REQUEST_AGE = 60  # seconds — for Epistula timestamp freshness check
 
-app = FastAPI(title="Safeguard Safety Intel Dashboard")
+# Default categories that any newly registered target is probed against unless
+# the client provides a custom subset. Mirrors validator.py DEFAULT_SCENARIO_CATEGORIES.
+DEFAULT_SCENARIO_CATEGORIES = [
+    "self-harm", "illegal-activity", "fraud",
+    "harassment", "pii-generation", "unauthorized-access",
+]
+
+app = FastAPI(title="Safeguard Safety Intel Portal")
 
 # Cache with short TTL to avoid re-reading files on every request
 _cache: dict = {}
 _cache_ts: float = 0
 CACHE_TTL = 30  # seconds
+
+# Target registry — keyed by client hotkey. Persisted to REGISTRY_FILE.
+# validator.py reads this same file each cycle to know what to probe.
+_registry: dict[str, dict] = {}
+
+
+def _save_registry():
+    try:
+        with open(REGISTRY_FILE, "w") as f:
+            json.dump(_registry, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save registry: {e}")
+
+
+def _load_registry_into_memory():
+    global _registry
+    try:
+        with open(REGISTRY_FILE) as f:
+            _registry = json.load(f)
+        logger.info(f"Loaded {len(_registry)} registered target(s) from {REGISTRY_FILE}")
+    except FileNotFoundError:
+        _registry = {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to load registry: {e}")
+        _registry = {}
+
+
+async def _get_body_bytes(request: Request) -> bytes:
+    return await request.body()
+
+
+async def verify_caller(
+    request: Request,
+    body: bytes = Depends(_get_body_bytes),
+) -> str:
+    """Verify Epistula auth headers on an inbound request. Returns the caller hotkey.
+
+    For MVP we accept any valid Epistula-signed request — i.e. any wallet that
+    can prove possession of its hotkey. In production, the caller's hotkey
+    should also be checked against a known set of registered target subnets.
+    """
+    try:
+        hotkey = verify_epistula(
+            timestamp=request.headers["X-Epistula-Timestamp"],
+            signature=request.headers["X-Epistula-Signature"],
+            hotkey=request.headers["X-Epistula-Hotkey"],
+            body=body,
+        )
+    except KeyError as e:
+        raise HTTPException(400, f"Missing header: {e}")
+    except ValueError as e:
+        raise HTTPException(401, str(e))
+    return hotkey
 
 
 def _get_data(filter_target: str = "") -> dict:
@@ -60,23 +135,184 @@ def _get_data(filter_target: str = "") -> dict:
     return data
 
 
-def _get_registry() -> dict:
-    """Load target registry."""
-    try:
-        with open(REGISTRY_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+# -- Cross-subnet portal endpoints (replaces cross_subnet_api.py) --
+
+@app.post("/register")
+async def register(
+    request: Request,
+    caller_hotkey: str = Depends(verify_caller),
+):
+    """Register a target relay for ongoing safety evaluation.
+
+    Body: {
+        "relay_endpoint": "http://...",
+        "name": "human-readable name",
+        "subnet_type": "llm-chat",  # optional, default llm-chat
+        "categories": ["self-harm", ...]  # optional subset of DEFAULT_SCENARIO_CATEGORIES
+    }
+    """
+    body = await request.json()
+    relay_endpoint = body.get("relay_endpoint", "")
+    name = body.get("name", f"client-{caller_hotkey[:8]}")
+    if not relay_endpoint:
+        raise HTTPException(400, "Missing relay_endpoint")
+
+    categories = body.get("categories") or DEFAULT_SCENARIO_CATEGORIES
+
+    _registry[caller_hotkey] = {
+        "relay_endpoint": relay_endpoint,
+        "name": name,
+        "subnet_type": body.get("subnet_type", "llm-chat"),
+        "categories": categories,
+        "registered_at": time.time(),
+        "last_probed": None,
+        "evaluations_completed": 0,
+        "last_evaluation": None,
+    }
+    _save_registry()
+    logger.info(
+        f"Registered target: {name} at {relay_endpoint} (client={caller_hotkey[:8]}...)"
+    )
+    return {
+        "status": "registered",
+        "client_hotkey": caller_hotkey,
+        "name": name,
+    }
 
 
-# -- Public endpoints (no auth) --
+@app.delete("/register")
+async def deregister(
+    request: Request,
+    caller_hotkey: str = Depends(verify_caller),
+):
+    """Deregister a target (stop being probed)."""
+    if caller_hotkey in _registry:
+        name = _registry[caller_hotkey].get("name", "unknown")
+        del _registry[caller_hotkey]
+        _save_registry()
+        logger.info(f"Deregistered target: {name} (client={caller_hotkey[:8]}...)")
+        return {"status": "deregistered"}
+    raise HTTPException(404, "Client not registered")
+
+
+@app.get("/status/{client_hotkey}")
+async def client_status(client_hotkey: str):
+    """Check evaluation status for a registered client (public, no auth)."""
+    entry = _registry.get(client_hotkey)
+    if not entry:
+        raise HTTPException(404, "Client not registered")
+    return {
+        "registered": True,
+        "relay_endpoint": entry["relay_endpoint"],
+        "name": entry["name"],
+        "evaluations_completed": entry.get("evaluations_completed", 0),
+        "last_evaluation": entry.get("last_evaluation"),
+        "registered_at": entry.get("registered_at"),
+    }
+
+
+@app.get("/registry")
+async def list_registry():
+    """List all registered targets (public, no auth)."""
+    return {
+        "count": len(_registry),
+        "targets": [
+            {
+                "client_hotkey": hk[:12] + "...",
+                "name": entry.get("name", "unknown"),
+                "relay_endpoint": entry.get("relay_endpoint", ""),
+                "evaluations_completed": entry.get("evaluations_completed", 0),
+            }
+            for hk, entry in _registry.items()
+        ],
+    }
+
+
+@app.post("/evaluate")
+async def evaluate(
+    request: Request,
+    caller_hotkey: str = Depends(verify_caller),
+):
+    """Async-query safety evaluation: returns aggregated stats from validator.py's
+    accumulated state, NOT a synchronous probe dispatch.
+
+    The validator.py main loop continuously dispatches probes against registered
+    targets and accumulates per-finding contributions under the discovery market.
+    This endpoint is a thin read-only window over that accumulated state.
+
+    Body (legacy + new shapes both accepted):
+        Legacy:  {"subnet_type": "...", "target_validator_endpoint": "...", "context": {...}}
+        New:     {"target": "<name|hotkey>", "category": "<optional category filter>"}
+
+    Response:
+        {
+            "safety_score": float in [0, 1] — 1 = safe, 0 = unsafe (multiplier-friendly)
+            "based_on_evaluations": int,
+            "categories_observed": [str],
+            "n_findings": int,
+            "n_bait_only": int,
+            "n_null": int,
+            "total_accepted_severity": float,
+            "time_range": {"start": float, "end": float},
+            "fallback": bool  — true if no accumulated data was available yet
+        }
+    """
+    body = await request.json()
+
+    # Resolve target name from one of: explicit "target", legacy
+    # "target_validator_endpoint" lookup against registry, or fall back to
+    # the caller's own registered name.
+    target_name = body.get("target", "")
+    if not target_name:
+        # Legacy: caller passed target_validator_endpoint; look it up by relay match
+        endpoint = body.get("target_validator_endpoint", "")
+        if endpoint:
+            for hk, entry in _registry.items():
+                if entry.get("relay_endpoint") == endpoint:
+                    target_name = entry.get("name", "")
+                    break
+        # Last resort: caller's own registration
+        if not target_name and caller_hotkey in _registry:
+            target_name = _registry[caller_hotkey].get("name", "")
+
+    if not target_name:
+        raise HTTPException(
+            400,
+            "Could not resolve target. Pass 'target' (registered name) or "
+            "'target_validator_endpoint' that matches a registered relay, "
+            "or register first via POST /register."
+        )
+
+    category_filter = body.get("category", "")
+    agg = aggregate_target_safety(target_name, category=category_filter)
+
+    # Update registry stats so the dashboard shows recent activity
+    if caller_hotkey in _registry:
+        _registry[caller_hotkey]["evaluations_completed"] = (
+            _registry[caller_hotkey].get("evaluations_completed", 0) + 1
+        )
+        _registry[caller_hotkey]["last_evaluation"] = {
+            "timestamp": time.time(),
+            "target": target_name,
+            "safety_score": agg["safety_score"],
+        }
+        _save_registry()
+
+    logger.info(
+        f"Evaluate query from {caller_hotkey[:8]}... target={target_name} "
+        f"category={category_filter or 'any'} → safety_score={agg['safety_score']:.3f} "
+        f"based_on={agg['based_on_evaluations']}"
+    )
+    return agg
+
+
+# -- Public dashboard data API (no auth) --
 
 @app.get("/api/targets")
 async def api_targets():
-    """List registered targets with evaluation counts."""
-    registry = _get_registry()
+    """List registered targets with evaluation counts (UI use)."""
     targets = []
-    for hk, entry in registry.items():
+    for hk, entry in _registry.items():
         targets.append({
             "client_hotkey": hk[:12] + "...",
             "name": entry.get("name", "unknown"),
@@ -283,23 +519,33 @@ async def index():
         ]);
         const s = summary.summary;
         let html = '<div class="grid">';
-        html += card('Total Probes', s.total_probes, s.total_canaries + ' canaries');
+        html += card('Total Probes', s.total_probes, (s.total_canaries || 0) + ' legacy canary entries');
         html += card('Findings', s.findings_count, s.critical_count + ' critical');
-        html += card('HITL Cases', s.hitl_routed_count, s.hitl_labels_count + ' labeled');
+        html += card('Bait-only Nulls', s.bait_only_count || 0, 'informative nulls');
+        html += card('Empty Nulls', s.null_count || 0, 'no findings, no bait');
+        html += card('HITL Cases', s.hitl_routed_count, (s.hitl_labels_count||0) + ' labeled');
         html += card('Targets', s.targets_count, summary.targets.join(', '));
         html += '</div>';
 
         if (comparison.comparison.length) {
-            html += '<h3>Model Comparison</h3><table><tr><th>Target</th><th>Probes</th><th>Findings</th><th>Critical</th><th>Rate</th><th>Miner</th><th>Validator</th></tr>';
+            html += '<h3>Model Comparison</h3><table><tr><th>Target</th><th>Probes</th><th>Findings</th><th>Critical</th><th>Safety</th><th>Avg Severity</th><th>Contribution</th></tr>';
             for (const c of comparison.comparison) {
-                html += '<tr><td><a href="#" onclick="showTarget(\\'' + c.target + '\\')">' + c.target + '</a></td><td>' + c.probes + '</td><td>' + c.findings + '</td><td>' + c.critical + '</td><td>' + (c.finding_rate*100).toFixed(0) + '%</td><td>' + c.avg_miner_score.toFixed(2) + '</td><td>' + c.avg_validator_score.toFixed(2) + '</td></tr>';
+                const safety = (c.safety_score != null ? c.safety_score : (1 - (c.avg_accepted_severity || 0)));
+                const sev = (c.avg_accepted_severity != null ? c.avg_accepted_severity : (c.avg_validator_score || 0));
+                const contrib = (c.total_contribution != null ? c.total_contribution : 0);
+                html += '<tr><td><a href="#" onclick="showTarget(\\'' + c.target + '\\')">' + c.target + '</a></td>';
+                html += '<td>' + c.probes + '</td><td>' + c.findings + '</td><td>' + c.critical + '</td>';
+                html += '<td>' + safetyTag(safety) + '</td>';
+                html += '<td>' + sev.toFixed(2) + '</td>';
+                html += '<td>' + contrib.toFixed(3) + '</td></tr>';
             }
             html += '</table>';
         }
 
-        html += '<h3>Category Breakdown</h3><table><tr><th>Category</th><th>Probes</th><th>Findings</th><th>Miner</th><th>Validator</th></tr>';
+        html += '<h3>Category Breakdown</h3><table><tr><th>Category</th><th>Probes</th><th>Findings</th><th>Avg Severity</th></tr>';
         for (const [cat, st] of Object.entries(summary.category_breakdown).sort((a,b) => b[1].findings - a[1].findings)) {
-            html += '<tr><td>' + cat + '</td><td>' + st.count + '</td><td>' + st.findings + '</td><td>' + st.avg_miner_score.toFixed(2) + '</td><td>' + st.avg_validator_score.toFixed(2) + '</td></tr>';
+            const sev = (st.avg_accepted_severity != null ? st.avg_accepted_severity : (st.avg_validator_score || 0));
+            html += '<tr><td>' + cat + '</td><td>' + st.count + '</td><td>' + st.findings + '</td><td>' + sev.toFixed(2) + '</td></tr>';
         }
         html += '</table>';
         document.getElementById('app').innerHTML = html;
@@ -314,6 +560,8 @@ async def index():
         html += '<div class="grid">';
         html += card('Probes', s.total_probes);
         html += card('Findings', s.findings_count, s.critical_count + ' critical');
+        html += card('Bait-only Nulls', s.bait_only_count || 0);
+        html += card('Empty Nulls', s.null_count || 0);
         html += card('HITL', s.hitl_routed_count);
         html += '</div>';
 
@@ -337,12 +585,16 @@ async def index():
         html += '<div class="detail-grid">';
         html += detailItem('Target', f.target_name);
         html += detailItem('Category', f.category);
-        html += detailItem('Miner Score', scoreTag(f.miner_safety_score));
-        html += detailItem('Validator Score', scoreTag(f.validator_score));
         html += detailItem('Miner UID', f.miner_uid);
-        html += detailItem('HITL Routed', f.hitl_routed ? 'Yes' : 'No');
-        html += detailItem('Source', f.source || 'validator');
         html += detailItem('Time', new Date(f.timestamp * 1000).toLocaleString());
+        html += detailItem('Miner claimed severity', scoreTag(f.miner_safety_score));
+        html += detailItem('Audit score', scoreTag(f.audit_score != null ? f.audit_score : f.validator_score));
+        html += detailItem('Confidence in claim', (f.confidence_in_claim != null ? Number(f.confidence_in_claim).toFixed(2) : '—'));
+        html += detailItem('Accepted severity', scoreTag(f.accepted_severity != null ? f.accepted_severity : 0));
+        html += detailItem('Findings reward', (f.findings_reward != null ? Number(f.findings_reward).toFixed(3) : '—'));
+        html += detailItem('Bait detected', (f.n_bait_detected != null ? f.n_bait_detected : 0) + ' patterns');
+        html += detailItem('Bait modifier', (f.bait_modifier != null ? Number(f.bait_modifier).toFixed(3) : '0.000'));
+        html += detailItem('Total contribution', (f.contribution != null ? Number(f.contribution).toFixed(3) : '—'));
         html += '</div>';
 
         if (f.miner_categories && f.miner_categories.length) {
@@ -374,15 +626,17 @@ async def index():
             html += '<p style="color:#666">No HITL cases yet.</p>';
         } else {
             for (const c of data.cases) {
+                const minerScore = (c.miner_safety_score != null ? c.miner_safety_score : 0);
+                const auditScore = (c.tier2_score != null ? c.tier2_score : (c.audit_score || 0));
                 html += '<div class="finding" onclick="showFinding(\\'' + c.task_id + '\\')">';
                 html += '<div class="meta"><span class="status ' + c.status + '">' + c.status + '</span> ';
-                html += scoreTag(c.miner_safety_score) + ' miner vs ' + scoreTag(c.tier2_score) + ' tier2';
+                html += 'miner ' + scoreTag(minerScore) + ' vs audit ' + scoreTag(auditScore);
                 html += ' — ' + new Date(c.timestamp * 1000).toLocaleDateString() + '</div>';
                 if (c.probe_preview) { html += '<div class="preview"><strong>Probe:</strong> ' + esc(c.probe_preview) + '</div>'; }
                 if (c.response_preview) { html += '<div class="preview" style="margin-top:0.3rem"><strong>Response:</strong> ' + esc(c.response_preview) + '</div>'; }
                 if (c.labels.length) {
                     for (const l of c.labels) {
-                        html += '<div class="hitl-label" style="margin-top:0.75rem"><div class="header"><span>' + scoreTag(l.safety_score) + ' ' + l.severity + '</span><span style="color:#666">' + (l.categories||[]).join(', ') + '</span></div>';
+                        html += '<div class="hitl-label" style="margin-top:0.75rem"><div class="header"><span>' + scoreTag(l.safety_score) + ' ' + (l.severity||'') + '</span><span style="color:#666">' + (l.categories||[]).join(', ') + '</span></div>';
                         if (l.reasoning) { html += '<div class="reasoning">"' + esc(l.reasoning) + '"</div>'; }
                         html += '</div>';
                     }
@@ -394,16 +648,22 @@ async def index():
     }
 
     function findingCard(f) {
-        const sc = Math.max(f.miner_safety_score, f.validator_score);
+        // Prefer the discovery-market accepted_severity; fall back to legacy max(miner, validator).
+        const accepted = (f.accepted_severity != null ? f.accepted_severity : Math.max(f.miner_safety_score||0, f.validator_score||0));
+        const baitInfo = (f.n_bait_detected ? ' [' + f.n_bait_detected + ' bait]' : '');
+        const contribInfo = (f.contribution != null ? ' contrib:' + Number(f.contribution).toFixed(3) : '');
         return '<div class="finding" onclick="showFinding(\\'' + f.task_id + '\\')">' +
-            '<div class="meta">' + scoreTag(sc) + ' ' + esc(f.category) + ' — m:' + f.miner_safety_score.toFixed(2) + ' v:' + f.validator_score.toFixed(2) +
+            '<div class="meta">' + scoreTag(accepted) + ' ' + esc(f.category) + ' — accepted:' + accepted.toFixed(2) + contribInfo + baitInfo +
             (f.hitl_routed ? ' [HITL]' : '') + ' <span style="color:#444">' + (f.target_name||'') + '</span></div>' +
             '<div class="preview">' + esc(f.transcript_preview || '(no preview)') + '</div></div>';
     }
 
     function card(t, v, sub) { return '<div class="card"><h4>'+t+'</h4><div class="value">'+v+'</div>'+(sub?'<div class="sub">'+sub+'</div>':'')+'</div>'; }
     function detailItem(label, val) { return '<div class="detail-item"><div class="label">' + label + '</div><div class="val">' + val + '</div></div>'; }
-    function scoreTag(score) { const c = score >= 0.7 ? 'critical' : score >= 0.4 ? 'high' : score >= 0.3 ? 'medium' : 'low'; return '<span class="score '+c+'">'+Number(score).toFixed(2)+'</span>'; }
+    // Severity tag: higher = more unsafe (red). For accepted_severity, miner claims, audit scores.
+    function scoreTag(score) { const s = Number(score)||0; const c = s >= 0.7 ? 'critical' : s >= 0.4 ? 'high' : s >= 0.3 ? 'medium' : 'low'; return '<span class="score '+c+'">'+s.toFixed(2)+'</span>'; }
+    // Safety tag: higher = SAFER (green). For target safety_score from /evaluate aggregation.
+    function safetyTag(score) { const s = Number(score)||0; const c = s >= 0.7 ? 'low' : s >= 0.4 ? 'medium' : s >= 0.3 ? 'high' : 'critical'; return '<span class="score '+c+'">'+s.toFixed(2)+'</span>'; }
     function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
 
     loadOverview();
@@ -412,6 +672,13 @@ async def index():
 </html>"""
 
 
+@app.on_event("startup")
+async def _startup():
+    """Load registry from disk before serving requests."""
+    _load_registry_into_memory()
+    logger.info(f"Safeguard portal listening on {HOST}:{PORT}")
+
+
 if __name__ == "__main__":
-    logger.info(f"Starting Safeguard dashboard on {HOST}:{PORT}")
+    logger.info(f"Starting Safeguard portal on {HOST}:{PORT}")
     uvicorn.run(app, host=HOST, port=PORT)

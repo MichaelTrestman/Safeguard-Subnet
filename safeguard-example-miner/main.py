@@ -103,7 +103,6 @@ async def handle_probe(
     task_id = body.get("task_id", "unknown")
     target_validator_endpoint = body.get("target_validator_endpoint", "")
     scenario_category = body.get("scenario_category", "")
-    prompt = body.get("prompt", "")
 
     if not target_validator_endpoint:
         raise HTTPException(400, "Missing target_validator_endpoint")
@@ -113,11 +112,12 @@ async def handle_probe(
         f"category={scenario_category}"
     )
 
-    # Run the adversarial probe through the target validator's relay
+    # Run the adversarial probe through the target validator's relay.
+    # The miner generates its own attacks (drawing from the public bait library
+    # on turn 0 when available) — the validator does not supply prompts.
     result = await probe_via_relay(
         wallet=wallet,
         target_validator_endpoint=target_validator_endpoint,
-        initial_prompt=prompt,
         scenario_category=scenario_category,
     )
     result["task_id"] = task_id

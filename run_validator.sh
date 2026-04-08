@@ -1,17 +1,22 @@
 #!/bin/bash
-# Run the Safeguard validator + cross-subnet API.
+# Run the Safeguard validator + portal (dashboard + client API).
 #
 # Usage: bash run_validator.sh [--network local|test] [--netuid N] [--wallet NAME]
 #
 # Defaults: network=test, netuid=444, wallet=validator
 #
-# The cross-subnet API runs alongside the validator. Client subnet relays
-# register with it, and the validator reads the registry each cycle.
+# The portal (dashboard.py) runs alongside the validator on port 9080. It
+# serves both the dashboard UI (at /) and the cross-subnet client API
+# (/register, /evaluate, /status, /registry). Replaces the older
+# cross_subnet_api.py which ran on 9090. See DESIGN.md § Validator design.
 #
 # For local dev with demo targets, run the client demo stack separately:
 #   bash run_client_demo.sh
 
 set -e
+
+# Shared cleanup helpers (kill_stale, assert_ports_clear)
+source "$(dirname "$0")/_run_helpers.sh"
 
 NETWORK="${NETWORK:-test}"
 NETUID="${NETUID:-444}"
@@ -30,28 +35,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Port check ---
-PORTS=(9090)
-BUSY_PIDS=""
-for p in "${PORTS[@]}"; do
-    pids=$(lsof -ti ":$p" 2>/dev/null || true)
-    if [ -n "$pids" ]; then
-        BUSY_PIDS="$BUSY_PIDS $pids"
-    fi
-done
+kill_stale "Safeguard validator/portal" \
+    'validator\.py.*--coldkey' \
+    'cross_subnet_api\.py' \
+    'python[^[:space:]]* dashboard\.py'
 
-if [ -n "$BUSY_PIDS" ]; then
-    echo "Port 9090 in use (PIDs:$BUSY_PIDS)"
-    read -p "Kill them? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "$BUSY_PIDS" | xargs kill 2>/dev/null
-        sleep 1
-    else
-        echo "Aborting."
-        exit 1
-    fi
-fi
+# Portal binds 9080 (dashboard's existing port). cross_subnet_api.py used 9090
+# but is now retired. Keep 9090 in the assertion list as a backstop in case a
+# stale cross_subnet_api somehow slips through pgrep cleanup.
+assert_ports_clear 9080 9090
 
 > "$LOGFILE"
 echo "Starting Safeguard validator on $NETWORK (netuid $NETUID) — logging to $LOGFILE"
@@ -71,15 +63,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- Cross-subnet API (clients register here) ---
+# --- Portal (dashboard UI + client /register, /evaluate API) ---
 
-NETWORK=$NETWORK NETUID=$NETUID WALLET_NAME=$WALLET HOTKEY_NAME=$HOTKEY \
+DASHBOARD_PORT=9080 \
 TARGET_REGISTRY_FILE=target_registry.json \
-  python cross_subnet_api.py >> "$LOGFILE" 2>&1 &
+  python dashboard.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
-echo "  SG-API                          :9090  pid=$!"
+echo "  SG-PORTAL                       :9080  pid=$!"
 
-sleep 5  # let API start and sync metagraph
+sleep 3  # let portal load registry and bind port
 
 # --- Safeguard validator ---
 

@@ -9,6 +9,21 @@
 
 set -e
 
+# Shared cleanup helpers (kill_stale, assert_ports_clear)
+source "$(dirname "$0")/_run_helpers.sh"
+
+kill_stale "Safeguard testnet stack" \
+    'cross_subnet_api\.py' \
+    'python[^[:space:]]* dashboard\.py' \
+    'demo-client/miner\.py' \
+    'demo-client/validator\.py' \
+    'safeguard-example-miner/main\.py' \
+    'validator\.py.*--coldkey'
+
+# 9080 = portal (dashboard.py); 9090 was the retired cross_subnet_api but is
+# kept in the assertion list as a backstop in case a stale instance lingers.
+assert_ports_clear 9080 9090 8070 8071 8072 9000 9001 9002 8080
+
 LOGFILE="stack_test.log"
 > "$LOGFILE"  # truncate
 
@@ -33,13 +48,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- Cross-subnet API (clients register here) ---
+# --- Portal (dashboard UI + client /register, /evaluate API) ---
 
-NETWORK=$NETWORK NETUID=$NETUID WALLET_NAME=$WALLET HOTKEY_NAME=default \
+DASHBOARD_PORT=9080 \
 TARGET_REGISTRY_FILE=target_registry.json \
-  python cross_subnet_api.py >> "$LOGFILE" 2>&1 &
+  python dashboard.py >> "$LOGFILE" 2>&1 &
 PIDS+=($!)
-echo "  SG-API                          :9090  pid=$!"
+echo "  SG-PORTAL                       :9080  pid=$!"
 
 sleep 2
 
@@ -70,7 +85,7 @@ sleep 2  # let miners bind ports before relays start
 DEMO_MINER_URL=http://localhost:8070 \
 RELAY_PORT=9000 \
 RELAY_MODEL_NAME=Qwen3-32B-TEE \
-SAFEGUARD_API_URL=http://localhost:9090 \
+SAFEGUARD_API_URL=http://localhost:9080 \
 WALLET_NAME=$WALLET \
 HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &
@@ -80,7 +95,7 @@ echo "  DC-RELAY(:9000 → :8070 Qwen)    pid=$!"
 DEMO_MINER_URL=http://localhost:8071 \
 RELAY_PORT=9001 \
 RELAY_MODEL_NAME=DeepHermes-3-Mistral-24B \
-SAFEGUARD_API_URL=http://localhost:9090 \
+SAFEGUARD_API_URL=http://localhost:9080 \
 WALLET_NAME=$WALLET \
 HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &
@@ -90,7 +105,7 @@ echo "  DC-RELAY(:9001 → :8071 Hermes)  pid=$!"
 DEMO_MINER_URL=http://localhost:8072 \
 RELAY_PORT=9002 \
 RELAY_MODEL_NAME=Gemma-3-4B-IT \
-SAFEGUARD_API_URL=http://localhost:9090 \
+SAFEGUARD_API_URL=http://localhost:9080 \
 WALLET_NAME=$WALLET \
 HOTKEY_NAME=default \
   python demo-client/validator.py >> "$LOGFILE" 2>&1 &

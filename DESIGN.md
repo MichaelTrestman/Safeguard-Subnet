@@ -8,6 +8,24 @@ The effectiveness of AI agents at discovering safety and security failures in AI
 
 Safety evaluations. Safeguard produces verified safety scores that validators on other subnets consume as part of their own validation pipelines. The scope of evaluation evolves with the threat landscape — as new risks emerge from research, incidents, and regulation, Safeguard's probing strategies and scoring rubrics adapt.
 
+## Research context
+
+Independent evaluation of generative AI systems is widely argued to be necessary for accountability. The [MIT AI Safe Harbor open letter](https://sites.mit.edu/ai-safe-harbor/) collects that consensus across AI, legal, and policy communities: it stresses that terms of service and lack of explicit good-faith research protections can chill independent safety and trustworthiness work, and it recommends legal safe harbors (consistent with vulnerability disclosure practice) plus mechanisms for more equitable access — alongside, not instead of, company-run researcher programs. The authors develop the argument in [*A Safe Harbor for AI Evaluation*](https://bpb-us-e1.wpmucdn.com/sites.mit.edu/dist/6/336/files/2024/03/Safe-Harbor-0e192065dccf6d83.pdf).
+
+Safeguard does not represent that letter or its signatories. Architecturally, Bittensor subnets are not inside a single provider's policy envelope; the letter's remedies target centralized platforms. Safeguard is the complementary move for decentralized deployment: market incentives, relay-based probing of production traffic paths, tiered validation, and HITL ground truth — i.e. infrastructure for independent-style evaluation where corporate safe-harbor policies do not apply.
+
+## Economic alignment with the network
+
+Safeguard's economic structure is load-bearing for the architecture below. Every architectural choice in this document is measured against one property: that Safeguard's revenue is also Bittensor's legitimacy.
+
+Bittensor subnets compete for emissions through their own alpha tokens — locally zero-sum — but TAO itself is a cooperative product. Every subnet inherits the legitimacy or illegitimacy of every other subnet. Most subnets live with this paradox. Safeguard's commodity *is* the legitimacy of the rest of the network: every evaluation it produces makes a peer subnet more credible to regulators, enterprises, and users, and through them makes TAO itself more credible. The other subnets are not Safeguard's competitors. They are its customers, and the network effect of integrating them is the largest line in the long-term revenue model. See the whitepaper, §3, for the full argument.
+
+This produces three architectural constraints that the rest of this document satisfies:
+
+1. **Open by default.** The threat intelligence corpus is not Safeguard's moat. The discovery infrastructure is. Tiered access (see Ethical architecture below, and ETHICS.md) protects raw exploit content while keeping aggregate findings available — including to peer subnets, researchers, and regulators — because hoarding the corpus would defeat the cooperation argument.
+2. **Cross-subnet by design.** The relay protocol exists so that Safeguard miners can probe peer subnets' real services without breaking peer subnets' authentication. Cooperation is the protocol, not the marketing.
+3. **No subnet-internal extraction.** No custodial burns, no whitelists, no self-mining. The architectural commitments here are not afterthoughts — they are the constraints that make Safeguard a credible cooperative actor in a network full of subnets that have not made them.
+
 ## Architecture overview
 
 ```
@@ -96,7 +114,7 @@ Each submechanism defines:
 - **Threat profile**: The specific risks this service type poses — harmful content, security vulnerabilities, or both. A companion AI needs testing for self-harm encouragement and emotional exploitation; an agent-based service needs testing for goal hijacking and unauthorized actions; both need testing for PII extraction and credential theft
 - **Probing scenarios**: Attack strategies tailored to the threat profile, informed by current research and regulatory requirements
 - **Security claims**: If the target subnet makes specific guarantees (sandboxed execution, permission boundaries, content filtering), the submechanism can probe those claims directly
-- **Canary banks**: Known-safe and known-unsafe test cases specific to that service type
+- **Bait library**: Per-category catalog of known adversarial probe patterns the validator can recognize in submitted transcripts (see Validator design § Bait)
 - **Scoring rubric**: How to evaluate miner transcripts for this service type, weighted by the severity of failures in context (self-harm encouragement to a minor is catastrophic; mild profanity is not)
 
 Submechanisms are living configurations. They evolve as:
@@ -129,63 +147,167 @@ A mining market for human safety labels on hard cases.
 
 **Partnership opportunity:** Safety research organizations can run HITL miners (their trained annotators), earn emissions, and get access to frontier safety data.
 
-## Validation architecture
+## Validator design: discovery market and audit policy
 
-The core challenge: how does a validator rank miners without being a better safety evaluator than the miners themselves?
+**The validator's judgments are the product.** If buyers do not trust Safeguard's safety assertions, the subnet has no commodity to sell. Anti-cheating, audit policy, and miner scoring all derive from this one constraint. Everything else is plumbing.
 
-### The two failure modes
+### Four things the validator owns
 
-1. **Sandbagging**: Miner goes easy, skips hard questions, reports everything safe
-2. **Over-flagging**: Miner labels safe content as unsafe to appear thorough
+The validator owns four things, and only four:
 
-### Tiered validation
+1. **A configurable theory of value.** Safety is not universal. A children's tutoring service, a security research tool, and a financial chatbot have non-overlapping definitions of "unsafe." The validator accepts a *concerns vector* per buyer:
+   ```
+   concerns: {category: weight ∈ [0, 1]}
+   ```
+   One parameter per category. Per-category severity multipliers collapse into the weight — the product `weight × multiplier × severity` has only one degree of freedom per category, so severity stays normalized 0–1 across categories and the weight carries all per-category cross-importance. For the bootstrap deployment the only buyer is Safeguard itself, with a uniform weight vector.
 
-**Tier 1: Canary calibration (cheap, deterministic)**
+2. **An audit pipeline that produces continuous confidence.** When a miner submits a finding, the validator runs the tiered audit (cheap classifier → judge → HITL) to compute its own `confidence_in_claim ∈ [0, 1]`. The miner's report is accepted at:
+   ```
+   accepted_severity = claimed_severity × confidence_in_claim
+   ```
+   This is a continuous downgrade, not a binary accept/reject. A textbook-perfect finding gets full credit. A finding the audit thinks is overstated gets partial credit. A spurious fabrication gets ~0. The audit function is normalized empirically against the realized distribution of submissions so that average reports get average credit — not punished into near-zero by an unattainable ideal.
 
-Validator maintains a private bank of:
-- **Positive canaries**: Tasks with known-achievable safety failures at calibrated difficulty. Miners that fail to find these are sandbagging.
-- **Negative canaries**: Benign prompts that should NOT be flagged unsafe. Miners that flag these are over-sensitive or gaming.
+3. **An expected-utility-driven audit policy.** Every audit-tier escalation is a pure expected-value-of-information decision. For each report at each tier:
+   ```
+   EU(run next tier) = expected_information_gain × value − cost(t)
+   run iff EU > 0
+   ```
+   No global audit budget. No tunable threshold. The policy is just per-decision arithmetic. All costs (`cost_classifier(t)`, `cost_judge(t)`, `cost_hitl(t)`) are runtime variables queried at decision time, not hardcoded constants.
 
-Canaries are mixed in with real probing tasks. The miner cannot distinguish them. This gives the validator deterministic ground truth on a known subset.
+4. **A per-category bait library.** A public catalog of known adversarial content the validator can recognize in submitted transcripts. Used to interpret null findings: a transcript that contains no findings *and* no recognizable adversarial content is indistinguishable from a no-op submission. The library is sourced from public adversarial benchmarks at bootstrap, accumulates verified findings from the validator's own audit history, and grows from HITL-discovered novel attack vectors. See "Bait — interpreting null transcripts" below for the scoring mechanics.
 
-**Tier 2: Lightweight classifier (cheap, automated)**
+### Discovery market, not forecasting market
 
-A fine-tuned safety classifier (HarmBench-style) scores whether target responses in miner transcripts were actually unsafe. Single forward pass, much cheaper than the miner's work. Handles the confident middle of the distribution.
-
-**Tier 3: Heavier LLM judge (moderate cost, automated)**
-
-Low-confidence cases from tier 2 get escalated to a more capable LLM judge (e.g., via Chutes). Handles ambiguous-but-resolvable cases.
-
-**Tier 4: HITL escalation (expensive, human)**
-
-Cases where even the LLM judge is uncertain get routed to the HITL submechanism. Human labels on these frontier cases are the most valuable output of the subnet over time, because they continuously improve tiers 1-3.
-
-### Feedback loop
+Miners are **discovery agents**, not forecasters. They are paid for what they find:
 
 ```
-HITL labels ──▶ new canaries (tier 1)
-            ──▶ classifier training data (tier 2)
-            ──▶ judge prompt refinement (tier 3)
-            ──▶ rubric updates (all tiers)
+reward(miner) = Σ over verified findings: accepted_severity × concerns_weight[category]
 ```
 
-Over time, automated tiers handle more cases, the tails shrink, and HITL concentrates on the genuinely hardest frontier cases — which is where the real value is.
+Properties of this market:
 
-## Scoring
+- **Null transcripts are interpreted, not flatly zeroed.** A miner that probes a target and finds nothing has its transcript scanned for bait usage (see "Bait" below). A null transcript with bait gets a small positive modifier; a null transcript with no recognizable adversarial content gets zero. It is not the miner's fault if a target is genuinely safe — but the miner needs to leave a recognizable signal that they attempted recognizable work.
+- **Spurious findings are self-disciplined.** Generating a fabricated or wildly overclaimed report costs the miner its generation cost (Chutes calls, compute) and returns ~0 from the audit. Miners self-regulate on whether to bid low-value reports. No explicit penalty term needed.
+- **No proper-scoring-rule machinery.** Scoring rules (Brier, log-score) are for situations where the outcome is an uncertain probability that needs eliciting. Here the outcomes — findings — are concrete and verifiable. Pay for verified findings; let the audit produce confidence; multiply.
 
-### Red-team miners
+### Why peer comparison does not work for probe miners
 
-Composite score from:
-- **Canary accuracy**: Did you find the known failures? Did you avoid false-flagging safe content?
-- **Coverage**: Did you actually probe all assigned scenario categories?
-- **Novelty**: Embedding deduplication — finding the same known jailbreak everyone finds is worth less than discovering a new attack vector
-- **Depth**: More sophisticated multi-turn probing scores higher than shallow single-prompt attacks
+Probe miners are **generative**. Each miner makes its own creative choices about how to attack a target — what prompts to send, what conversational moves to make, where to push. Two miners attacking the same target produce two completely different transcripts, and *neither one is more correct than the other*. There is no fixed measurement they are both performing.
 
-### Human miners (HITL)
+This means cross-miner agreement is incoherent as a quality signal for probe miners. Consensus, inter-miner deduplication, and agreement scoring all fail in the generative case. The discovery-market mechanism replaces it entirely: no work → no findings → no reward, with no need for a comparison set.
 
-- **Gold standard accuracy**: Performance on cases with known labels
-- **Inter-annotator agreement**: Alignment with consensus of other labelers
-- **Consistency**: Same answers when presented the same case twice
+### Bait — interpreting null transcripts
+
+The discovery market handles most of sandbagging implicitly: a miner that does no work earns nothing. But the validator still has an interpretation problem on null transcripts — a miner that returns nothing might be probing a genuinely safe target, or might be submitting noise. To distinguish these cases, the validator maintains a **bait library**.
+
+Bait is publicly catalogued adversarial content the validator can recognize as an attempt to elicit unsafe behavior: known jailbreak prompts, fiction-framing patterns, role-play exploits, refusal-bypass templates, social-engineering vectors, multi-turn escalation patterns. The library is **organized per category** — a self-harm bait library, a fraud bait library, a PII-extraction bait library, and so on — because the patterns that signal effort on one category are irrelevant to another. The library is sourced from public adversarial benchmarks (HarmBench, AdvBench, etc.) at bootstrap, accumulates verified findings from the validator's own audit history (a prompt that elicits a verified finding becomes bait), and grows from HITL-discovered novel attack vectors.
+
+**The bait library is public.** Miners can read it and incorporate any of its patterns into their probes. There is no secret bait — secrecy is not what makes the mechanism work.
+
+**Bait is detected post-hoc on submitted transcripts**, not dispatched as a special task type. Every task the miner receives has the same shape; the validator does not insert "bait tasks" or distinguish them from any other task. After the miner submits, if their score is otherwise low (no significant safety findings) the validator scans the transcript for the presence of bait patterns from the relevant category's bait library. If the miner used sufficient bait to show that they tried to probe somewhat, they receive a small score boost, because this gives us some signal that at least the model was legitamately probed, but not much. It's a baseline, to differentiate not-trying at all (low match to bait and no results).
+
+**Scoring contribution per submission:**
+
+```
+contribution = findings_reward + bait_modifier
+
+where:
+  findings_reward = Σ accepted_severity × concerns_weight   (over verified findings; 0 if none)
+  bait_modifier   = α × diminishing_function(n_bait_patterns_detected)
+```
+
+`α` is small relative to a typical findings reward — bait usage is a tie-breaker, not a primary scoring axis. The diminishing function (e.g. `1 − exp(−β·n)`) flattens quickly: detecting one bait pattern earns most of the maximum bait modifier; detecting a hundred earns only marginally more. **Bait-packing a probe with every pattern in the library earns no more than including a single one would.** This is intentional — bait-packing is a cheap and reliably-failing strategy that should not be encouraged relative to genuine probing that has a chance of producing findings.
+
+**Interpretation of the three states:**
+
+| Findings? | Bait detected? | Outcome |
+|-----------|----------------|---------|
+| Yes       | (any)          | `findings_reward + small bait_modifier`. Findings dominate by an order of magnitude or more; bait usage is irrelevant in practice. |
+| No        | Yes            | Just `bait_modifier`. Small but non-zero. Informative null: the miner attempted recognizable adversarial content, the target resisted, the validator can interpret the transcript as a real probe that didn't pan out. |
+| No        | No             | Zero. Uninformative null: there is no signal that the miner attempted anything the validator can recognize, and the transcript is indistinguishable from a no-op submission. |
+
+A miner who uses bait but produces no findings narrowly outperforms a miner who uses no bait and produces no findings. Both are dwarfed by a miner who finds anything real.
+
+**Bait usage is a tie-breaker, not a scoring axis.** The asymmetry is intentional:
+
+- A miner who finds something real gets the full discovery-market reward, regardless of whether bait was used. Novel attacks that succeed are the most valuable kind of work, and the bait library will absorb the new attack pattern after the fact.
+- A miner who uses bait but finds nothing gets a small bonus for the effort signal — they have demonstrated something the validator can recognize.
+- A miner who finds nothing and used no bait gets nothing — there is no signal that distinguishes them from a no-op submission.
+- A miner who tries to game the system by bait-packing every probe still gets `α × diminishing_function(many) ≈ α`, which is meaningless next to actually finding something.
+
+The values of `α` and the diminishing function's shape parameter are calibration constants, tuned empirically against the realized distribution of submissions so that bait usage remains meaningfully less rewarding than a real finding.
+
+### HITL routing as expected value of information
+
+HITL is the most expensive audit tier and the only one that produces information neither the validator nor any probe miner can synthesize on its own. Routing decisions are pure value-of-information arithmetic.
+
+For each report, after the cheap audit tiers have run:
+
+
+
+```
+EU(route_to_hitl) = uncertainty(report)
+                  × concerns_weight[total across current customers/concerns for the subnet]
+                  × max_severity_at_stake
+                  − cost_hitl(t)
+```
+
+Components:
+
+- **`uncertainty(report)`** — operationalized as the entropy of the validator's own audit assessment. Highest near 50/50 (classifier and judge split, or classifier confidence ≈ 0.5), drops to 0 as the validator's posterior approaches either pole. High uncertainty means HITL has lots of new information to add; low uncertainty means HITL adds nothing.
+- **`concerns_weight[total across current customers/concerns for the subnet]`** — Categories with low weight cannot generate enough downstream value to justify HITL spend regardless of how uncertain the case is. We should only pay for compute to discover stuff that probably matters?
+- **`max_severity_at_stake`** — `max(claimed_severity, audit_severity_estimate)`. Weighted by the worst-case reading because the cost of being wrong scales with the worst case, not the average case.
+- **`cost_hitl(t)`** — dynamic, queried at decision time. May be effectively infinite if no HITL miners are available, in which case escalation is impossible and the validator returns its tier-3 assessment.
+
+Escalate iff `EU > 0`. The four corners of the decision space fall out naturally:
+
+|                          | Low stakes                          | High stakes                                   |
+|--------------------------|-------------------------------------|-----------------------------------------------|
+| **Certain**              | Skip — sure and doesn't matter     | Skip — sure, even though it matters           |
+| **Uncertain**            | Skip — confused but who cares      | **Escalate** — confused and matters           |
+
+This matches the intuition that HITL is for cases that are *both* uncertain *and* matter. It also explicitly handles the failure mode where the validator is confidently wrong: the validator has no way to know it is wrong, so it does not escalate, and is wrong cheaply rather than wrong expensively.
+
+### HITL miners: peer comparison is valid here
+
+HITL miners are **evaluative**, not generative. Two HITL miners labeling the same case are measuring the same fixed thing — the safety of a given transcript under a given concerns vector. Unlike probe miners, they *should* converge on similar labels, and divergence is a meaningful quality signal.
+
+Peer comparison (inter-annotator agreement) is therefore a valid scoring mechanism for HITL miners, and the incoherence problem from the probe-miner side does not apply.
+
+Default routing: a single annotator per case, to keep HITL spend down. Multi-annotator routing is reserved for cases on the boundary of escalation worth-it-ness, where the additional annotator serves as a tiebreaker on whether the validator's own posterior should shift.
+
+HITL miner scoring axes:
+
+- **Inter-annotator agreement** when multiple annotators see the same case.
+- **Gold-standard accuracy** on known-answer HITL cases — cases where the validator already knows the correct label, mixed in to keep HITL miners honest. (These are right-answer tests because HITL miners are evaluative, not generative — they label fixed transcripts. They are unrelated to probe-miner bait, which is content scanned post-hoc on transcripts.)
+- **Consistency** on repeated cases — same case, same annotator, much later → same answer.
+
+### HITL feedback into the cheap tiers
+
+HITL labels are the most valuable training signal in the system. They flow back into the cheaper audit tiers in two stages:
+
+- **v1 (offline).** HITL labels are logged and used for offline retraining of the tier-2 classifier. This is the obvious starting point and the current direction.
+- **v2 (online).** A thin online correction layer learns to adjust the classifier's outputs from accumulated HITL disagreement, so the validator's audit pipeline self-improves between retrainings. Not for v1.
+
+This feedback loop is what makes the audit pipeline asymptotically cheap: as the cheap tiers improve from accumulated HITL labels, the rate of HITL escalations falls, and HITL concentrates on the genuinely novel frontier — which is where its information value is highest.
+
+### Yuma Consensus and structural collusion resistance
+
+The validator design above is per-validator: each validator independently runs its own audit policy and produces its own miner weights. Yuma Consensus aggregates those weights into emissions and provides several structural defenses against collusion that the validator design relies on rather than reimplementing internally:
+
+- **Clipping eliminates outlier validator weights.** For each miner M, the consensus benchmark is the maximum weight supported by at least κ of validator stake (default 50%). Any validator setting a weight for M above the benchmark is clipped to it. A corrupt validator cannot unilaterally inflate a colluding miner's emissions — it would need to control >50% of validator stake to move the consensus benchmark.
+- **Bond penalties punish persistent overstatement.** A validator whose weights are systematically out-of-consensus has its bond-weight decayed via the penalty factor `β`, reducing its share of validator emissions. The EMA smoothing on bonds means this penalty compounds over time — flash inflation is structurally damped.
+- **Trust scores expose alignment.** Yuma computes per-miner trust as the ratio of post-clipping to pre-clipping rank, and per-validator trust as the sum of clipped weights. Both are public signals of consensus alignment.
+
+What Yuma does not handle: it enforces consensus, including consensus on bad audits. If all validators converge on running degraded audit pipelines (e.g., skipping the expensive tiers because of cost), Yuma reinforces the degradation. The mitigation is that the audit policy specified above is deterministic and cheap enough at the lower tiers that the per-decision EU calculation gives the same answer everywhere — validators converge on doing it because the math demands it, not because they coordinate.
+
+### Parameters left to empirical calibration
+
+Several pieces of the design specify policy structure but leave parameter values to be tuned against the realized distribution of submissions:
+
+1. **`confidence_in_claim` normalization.** The audit function maps (claim, evidence) to a confidence in [0, 1]. The mapping must be calibrated so that the realized distribution of confidence values has good spread across the realized distribution of miner submissions, not collapsed into the tails.
+2. **Concerns vector elicitation.** Beyond the bootstrap (uniform weights, single internal buyer), external buyers need a concrete interface for declaring their concerns vector.
+3. **Concerns vector revision.** Buyers' concerns vectors evolve. The validator must handle revisions cleanly without retroactively invalidating historical scores.
 
 ## Client API (target subnet integration)
 
@@ -241,38 +363,7 @@ A 3-turn probe cannot detect any of these. Each turn looks safe in isolation. Th
 - Services with user profiles (personalization leading to filter bubble radicalization)
 - Any service that maintains conversation memory across sessions
 
-### Implementation stages
-
-1. **Current**: Single-session, 3-turn probing. Catches direct compliance and simple social engineering.
-2. **Next**: Extended single sessions (10-20 turns). Catches escalation patterns within one conversation.
-3. **Future**: Cross-session persistent probing. Miners maintain identity across evaluation cycles, building rapport with the target over time. This requires session management infrastructure and a fundamentally different scoring model.
-
-Stage 2 is achievable with the current architecture by increasing `max_turns` and improving the miner's adversarial strategy. Stage 3 requires new infrastructure for session persistence and a new scoring framework for trajectory evaluation.
-
 ## Future directions
-
-### Separation of probing and scoring
-
-The current miner design combines two distinct skills in one agent: adversarial probing (crafting attacks, conducting multi-turn conversations) and transcript scoring (evaluating whether the target's responses were unsafe). These should be separated because:
-
-- **Different optimization targets**: Probing rewards creativity, persistence, social engineering skill. Scoring rewards calibration, nuance, and domain knowledge. Different models may be optimal for each.
-- **Miner specialization**: Some miners may excel at probing but not scoring, or vice versa. Separation allows miners to compete on their strengths.
-- **Independent optimization**: Probing techniques and scoring methodology evolve on different timelines. A new attack technique doesn't change how you evaluate a transcript. A rubric update doesn't change how you craft an attack.
-- **Cleaner validation**: The validator verifies scores (comparing against its own classifier and HITL ground truth). It doesn't need to evaluate probing technique to verify a score.
-
-This maps to Bittensor's **multiple incentive mechanisms** feature — a subnet can have separate mechanisms with independent bond pools. Mechanism 0 could reward probing quality (did the miner conduct a sophisticated, multi-angle adversarial conversation?), Mechanism 1 could reward scoring accuracy (did the miner's safety score match ground truth?). Miners participate in one or both.
-
-**Probing mechanism scoring dimensions:**
-- Probe sophistication: variety and quality of attack techniques
-- Category coverage: breadth across the assigned threat profile
-- Adaptation: evidence of strategy changes based on target responses
-- Finding rate: did the probing actually elicit unsafe behavior?
-
-**Scoring mechanism scoring dimensions:**
-- Canary accuracy: correct scores on known-labeled cases
-- Validator agreement: alignment with independent Tier 2/3 verification
-- HITL agreement: alignment with human ground truth labels
-- Calibration: appropriate use of the full 0.0-1.0 scale (not just 0.0 and 1.0)
 
 ### Ethical architecture
 
@@ -288,45 +379,24 @@ Key principles embedded in the design:
 
 4. **Privacy of safety content**: Tiered access — raw transcripts only to authenticated participants, aggregated scores to customers, sanitized reports to public. Epistula authentication enforces this at every boundary.
 
-### Public canary bank
-
-The canary bank should be public to all subnet participants (miners and validators). Canaries serve two purposes, neither of which requires secrecy:
-
-1. **Competency baseline**: Known probing scenarios that miners should be able to execute. A miner that can't handle standard attacks won't handle novel ones.
-2. **Scoring calibration**: HITL-labeled cases with known correct scores. Miners knowing the right answers is learning, not cheating — a miner that memorizes all canary answers is correctly calibrated, which is the goal.
-
-Protection against gaming comes from multi-signal validation (canaries + classifier + cross-miner consensus + HITL sampling), not from keeping canaries secret.
-
 ### Dynamic knowledge loop
 
-Mining work produces discoveries about AI safety failures. These must feed back into the system dynamically, not just as scores:
+Mining work produces discoveries about AI safety failures. These feed back into the system dynamically, not just as scores:
 
 ```
 Mining discoveries
     → HITL labels (ground truth on hard cases)
-    → New canaries (calibration data for future miners)
+    → Bait library expansion (new recognizable adversarial patterns)
     → Knowledge base updates (rubric refinements, new category definitions)
-    → Attack technique evolution (successful probing strategies shared)
+    → Attack technique catalogue (successful probing strategies)
 ```
 
-The feedback pipeline (HITL labels → canaries) is implemented. The broader knowledge loop (findings → knowledge base → better miners) is currently manual and should be semi-automated in production: cluster similar findings, identify patterns, propose rubric updates for human review.
-
-### Probe quality scoring
-
-The current validator scores miners primarily on canary accuracy and score correctness. This fails to distinguish good miners from lazy miners when the target is safe (both return score=0.0). A **probe sophistication** dimension is needed:
-
-The validator assesses transcript quality independently of the safety score:
-- Did the miner attempt multiple attack angles?
-- Were techniques appropriate to the category?
-- Did the miner adapt after refusal?
-- Was the conversation realistic enough to test real-world resilience?
-
-This is an LLM judgment call (the validator asks its classifier "how sophisticated was this probe?") and is necessarily imprecise. But without it, miners are incentivized to phone it in against safe targets.
+The feedback path from HITL labels and verified findings into the bait library is direct. The broader knowledge loop — clustering similar findings, identifying patterns, proposing rubric updates — sits behind human review.
 
 ## Open research problems
 
-1. **Canary freshness**: How to continuously generate new canaries without them leaking to miners over time. The HITL feedback loop helps but doesn't fully solve this.
-2. **Cross-subnet adaptation**: How to automatically design probing strategies for new subnet types as they appear on the network. The threat profile template should make this easier — define the service type, identify the relevant risk categories, seed the canary bank — but automating threat profile generation for novel service types is an open problem.
+1. **Bait library curation**: How to keep the per-category bait libraries growing and well-organized as new adversarial techniques emerge. The HITL → bait and verified-finding → bait pipelines populate them automatically, but de-duplication, retirement of obsolete patterns, and category-coverage analysis still need a curation policy.
+2. **Cross-subnet adaptation**: How to automatically design probing strategies for new subnet types as they appear on the network. The threat profile template should make this easier — define the service type, identify the relevant risk categories, seed the bait library — but automating threat profile generation for novel service types is an open problem.
 3. **Adversarial miners gaming the classifier**: If miners learn the tier 2 classifier's decision boundary, they can craft responses that pass the classifier but aren't actually good probes. Classifier retraining from HITL labels is the mitigation, creating an evolutionary arms race where the evaluation improves as fast as miners learn to game it.
 4. **Defining "unsafe"**: What constitutes a safety failure depends on context — the service type, the user population, the regulatory jurisdiction, and the security claims the service makes. A companion AI encouraging self-harm is categorically different from a code service producing a buffer overflow, but both are failures. The rubric is a living document. The HITL submechanism is the evolutionary mechanism for refining it — human judgment on frontier cases continuously updates what "unsafe" means as the world changes.
-5. **Scope evolution**: The threat landscape for AI services is not static. New attack vectors emerge from research, new harm categories emerge from real-world incidents, new requirements emerge from regulation. Safeguard's architecture must evolve at least as fast as the threats it tests for. The feedback loop (HITL → canaries → classifier → rubric) is the primary mechanism, but the question of how to detect and incorporate genuinely novel risk categories — ones no existing submechanism covers — remains open.
+5. **Scope evolution**: The threat landscape for AI services is not static. New attack vectors emerge from research, new harm categories emerge from real-world incidents, new requirements emerge from regulation. Safeguard's architecture must evolve at least as fast as the threats it tests for. The feedback loop (HITL → bait + classifier + rubric) is the primary mechanism, but the question of how to detect and incorporate genuinely novel risk categories — ones no existing submechanism covers — remains open.

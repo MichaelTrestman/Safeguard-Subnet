@@ -34,7 +34,10 @@ from bittensor_wallet.keypair import Keypair
 from bittensor_wallet import Wallet
 
 DEMO_MINER_URL = os.getenv("DEMO_MINER_URL", "http://localhost:8070")
-SAFEGUARD_API_URL = os.getenv("SAFEGUARD_API_URL", "http://localhost:9090")
+SAFEGUARD_API_URL = os.getenv("SAFEGUARD_API_URL", "http://localhost:9080")
+# Arbiter shares this demo client subnet with Safeguard. If ARBITER_API_URL
+# is set we call /evaluate on both auditors and combine the scores.
+ARBITER_API_URL = os.getenv("ARBITER_API_URL", "")
 RELAY_HOST = os.getenv("RELAY_HOST", "0.0.0.0")
 RELAY_PORT = int(os.getenv("RELAY_PORT", "9000"))
 RELAY_MODEL_NAME = os.getenv("RELAY_MODEL_NAME", "unknown")
@@ -46,6 +49,33 @@ logging.basicConfig(
     format=f"%(asctime)s | DC-RELAY(:{RELAY_PORT}) | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _say(msg: str, level: str = "INFO"):
+    """Write a DC-RELAY-formatted line straight to stderr.
+
+    Bypasses the python `logging` module entirely. We need this because
+    `import bittensor as bt` installs btlogging, which hijacks the root
+    logger in ways that `logging.basicConfig(force=True)` does not always
+    reclaim — so any `logger.info(...)` call after the bittensor import
+    can silently disappear from the redirected log file. Direct stderr
+    writes always land.
+    """
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+    print(f"{ts} | DC-RELAY(:{RELAY_PORT}) | {level} | {msg}", file=sys.stderr, flush=True)
+
+
+def _die(msg: str, code: int = 1):
+    """Log a fatal error and exit.
+
+    Uses _say() so the message survives bittensor's logger hijack and
+    Python's block-buffered stdio under bash redirection.
+    """
+    _say(msg, level="ERROR")
+    sys.exit(code)
+
+
 MAX_REQUEST_AGE = 60
 MAX_RELAY_REQUESTS_PER_SESSION = 10
 
@@ -162,11 +192,8 @@ async def query_miner(prompt: str) -> dict:
         return resp.json()
 
 
-async def request_safety_evaluation(query: str, response: str) -> dict:
-    """
-    Call Safeguard /evaluate to get a safety score for a miner interaction.
-    This is the Safeguard integration point. Requires Epistula auth.
-    """
+def _build_evaluate_request(query: str, response: str) -> tuple[bytes, dict]:
+    """Build the body + Epistula headers for an /evaluate POST."""
     body_dict = {
         "subnet_type": "llm-chat",
         "target_validator_endpoint": f"http://localhost:{RELAY_PORT}",
@@ -177,7 +204,6 @@ async def request_safety_evaluation(query: str, response: str) -> dict:
     }
     body_bytes = json.dumps(body_dict).encode()
 
-    # Sign with wallet if available
     headers = {"Content-Type": "application/json"}
     signing_wallet = _val_wallet
     if not signing_wallet and WALLET_NAME:
@@ -197,6 +223,16 @@ async def request_safety_evaluation(query: str, response: str) -> dict:
             "X-Epistula-Hotkey": signing_wallet.hotkey.ss58_address,
         })
 
+    return body_bytes, headers
+
+
+async def request_safety_evaluation(query: str, response: str) -> dict:
+    """
+    Call Safeguard /evaluate to get a safety score for a miner interaction.
+    Requires Epistula auth.
+    """
+    body_bytes, headers = _build_evaluate_request(query, response)
+
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -212,6 +248,31 @@ async def request_safety_evaluation(query: str, response: str) -> dict:
         return {"safety_score": None, "error": str(e)}
 
 
+async def request_fairness_evaluation(query: str, response: str) -> dict:
+    """
+    Call Arbiter /evaluate to get a fairness score for a miner interaction.
+    Returns {"fairness_score": None, ...} if ARBITER_API_URL is not set.
+    """
+    if not ARBITER_API_URL:
+        return {"fairness_score": None, "skipped": "ARBITER_API_URL not set"}
+
+    body_bytes, headers = _build_evaluate_request(query, response)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{ARBITER_API_URL}/evaluate",
+                content=body_bytes,
+                headers=headers,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.warning(f"Arbiter evaluation failed: {e}")
+        return {"fairness_score": None, "error": str(e)}
+
+
 @app.get("/health")
 async def health():
     return {
@@ -219,15 +280,16 @@ async def health():
         "service": "demo-client-validator",
         "miner_url": DEMO_MINER_URL,
         "safeguard_url": SAFEGUARD_API_URL,
+        "arbiter_url": ARBITER_API_URL or None,
     }
 
 
 # -- Safeguard registration (register relay for ongoing evaluation) --
 
-async def register_with_safeguard():
-    """Register this relay with Safeguard's cross-subnet API for probing."""
+async def _register_with(api_url: str, label: str):
+    """Register this relay with an auditor's cross-subnet API for probing."""
     if not WALLET_NAME:
-        logger.info("No WALLET_NAME set, skipping Safeguard registration")
+        logger.info(f"No WALLET_NAME set, skipping {label} registration")
         return
 
     try:
@@ -243,7 +305,6 @@ async def register_with_safeguard():
         "subnet_type": "llm-chat",
     }).encode()
 
-    # Epistula-sign the registration request
     nonce = str(int(time.time() * 1e9))
     body_hash = hashlib.sha256(body).hexdigest()
     message = f"{nonce}.{body_hash}"
@@ -256,32 +317,43 @@ async def register_with_safeguard():
         "Content-Type": "application/json",
     }
 
-    # Retry registration — the API may still be starting up
     for attempt in range(5):
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
-                    f"{SAFEGUARD_API_URL}/register",
+                    f"{api_url}/register",
                     content=body,
                     headers=headers,
                     timeout=10.0,
                 )
                 if resp.status_code == 200:
-                    logger.info(f"Registered with Safeguard as '{RELAY_MODEL_NAME}' at {SAFEGUARD_API_URL}")
+                    logger.info(f"Registered with {label} as '{RELAY_MODEL_NAME}' at {api_url}")
                     return
                 else:
-                    logger.warning(f"Safeguard registration failed: {resp.status_code} {resp.text}")
+                    logger.warning(f"{label} registration failed: {resp.status_code} {resp.text}")
+                    return
         except Exception as e:
             if attempt < 4:
-                logger.info(f"Safeguard API not ready, retrying in 5s... ({e})")
+                logger.info(f"{label} API not ready, retrying in 5s... ({e})")
                 await asyncio.sleep(5)
             else:
-                logger.warning(f"Could not register with Safeguard after 5 attempts: {e}")
+                logger.warning(f"Could not register with {label} after 5 attempts: {e}")
+
+
+async def register_with_safeguard():
+    await _register_with(SAFEGUARD_API_URL, "Safeguard")
+
+
+async def register_with_arbiter():
+    if not ARBITER_API_URL:
+        return
+    await _register_with(ARBITER_API_URL, "Arbiter")
 
 
 @app.on_event("startup")
 async def startup():
     await register_with_safeguard()
+    await register_with_arbiter()
 
 
 # -- Validation loop (chain-registered mode) --
@@ -404,21 +476,34 @@ async def _validation_loop():
                     weights[uid] = 0.0
                     continue
 
-                # Step 2: Get safety evaluation from Safeguard
-                safety = await request_safety_evaluation(prompt, response)
-                safety_score = safety.get("safety_score")
+                # Step 2: Get safety + fairness evaluations in parallel
+                safety_task = asyncio.create_task(request_safety_evaluation(prompt, response))
+                fairness_task = asyncio.create_task(request_fairness_evaluation(prompt, response))
+                safety = await safety_task
+                fairness = await fairness_task
 
-                if safety_score is not None:
-                    # Multiplicative penalty: weight = quality * safety
-                    weight = quality_score * safety_score
-                    logger.info(
-                        f"  UID {uid} ({model}): quality={quality_score:.2f} "
-                        f"safety={safety_score:.2f} → weight={weight:.3f}"
-                    )
+                safety_score = safety.get("safety_score")
+                fairness_score = fairness.get("fairness_score")
+
+                # Combine: weight = quality * safety * fairness
+                # Missing scores default to 0.5 (penalize uncertainty) when the
+                # auditor is configured but unavailable, or 1.0 (no-op) when the
+                # auditor isn't configured at all (e.g. ARBITER_API_URL unset).
+                effective_safety = safety_score if safety_score is not None else 0.5
+                if fairness_score is not None:
+                    effective_fairness = fairness_score
+                elif "skipped" in fairness:
+                    effective_fairness = 1.0  # Arbiter not configured
                 else:
-                    # Safeguard unavailable — use quality only
-                    weight = quality_score * 0.5  # penalize uncertainty
-                    logger.warning(f"  UID {uid} ({model}): Safeguard unavailable, weight={weight:.3f}")
+                    effective_fairness = 0.5  # Arbiter configured but unreachable
+
+                weight = quality_score * effective_safety * effective_fairness
+                logger.info(
+                    f"  UID {uid} ({model}): quality={quality_score:.2f} "
+                    f"safety={safety_score if safety_score is not None else '?'} "
+                    f"fairness={fairness_score if fairness_score is not None else '?'} "
+                    f"→ weight={weight:.3f}"
+                )
 
                 weights[uid] = weight
 
@@ -459,27 +544,55 @@ def main(run_demo: bool, validate: bool):
     logger.info(f"Starting demo client validator on {RELAY_HOST}:{RELAY_PORT}")
     logger.info(f"  Demo miner: {DEMO_MINER_URL}")
     logger.info(f"  Safeguard API: {SAFEGUARD_API_URL}")
+    logger.info(f"  Arbiter API: {ARBITER_API_URL or '(not configured)'}")
 
     if validate and WALLET_NAME:
         import bittensor as bt
         from bittensor_wallet import Wallet as BtWallet
 
+        # bittensor's import reconfigures the root logger ("Enabling default
+        # logging" line). Reclaim it so our DC-RELAY format and our _die()
+        # error path stay visible in the log file.
+        logging.basicConfig(
+            level=logging.INFO,
+            format=f"%(asctime)s | DC-RELAY(:{RELAY_PORT}) | %(levelname)s | %(message)s",
+            force=True,
+        )
+
         netuid = int(os.getenv("CLIENT_NETUID", "445"))
         network = os.getenv("NETWORK", "test")
 
-        _val_wallet = BtWallet(name=WALLET_NAME, hotkey=HOTKEY_NAME)
-        _val_subtensor = bt.Subtensor(network=network)
-        _val_metagraph = bt.Metagraph(netuid=netuid, network=network)
-        _val_metagraph.sync(subtensor=_val_subtensor)
+        try:
+            _val_wallet = BtWallet(name=WALLET_NAME, hotkey=HOTKEY_NAME)
+        except Exception as e:
+            _die(f"Failed to load wallet {WALLET_NAME}/{HOTKEY_NAME}: {e}")
+
+        try:
+            _val_subtensor = bt.Subtensor(network=network)
+            _val_metagraph = bt.Metagraph(netuid=netuid, network=network)
+            _val_metagraph.sync(subtensor=_val_subtensor)
+        except Exception as e:
+            _die(
+                f"Failed to connect to chain (network={network}, netuid={netuid}): {e}. "
+                f"Is the network reachable? Is netuid {netuid} a real subnet?"
+            )
+
         _val_hotkey = _val_wallet.hotkey.ss58_address
 
         if _val_hotkey not in _val_metagraph.hotkeys:
-            logger.error(f"Hotkey not registered on netuid {netuid}")
-            sys.exit(1)
+            _die(
+                f"Hotkey {_val_hotkey} ({WALLET_NAME}/{HOTKEY_NAME}) "
+                f"is not registered on netuid {netuid} (network={network}). "
+                f"Register it with: btcli subnet register --netuid {netuid} "
+                f"--wallet.name {WALLET_NAME} --wallet.hotkey {HOTKEY_NAME} "
+                f"--network {network}"
+            )
 
         my_uid = _val_metagraph.hotkeys.index(_val_hotkey)
-        logger.info(f"Validator UID: {my_uid} on netuid {netuid}")
-        logger.info("Starting validation loop with Safeguard integration")
+        # Use _say() (direct stderr write) instead of logger.info because
+        # bittensor's btlogging has clobbered the python logger by this point.
+        _say(f"Validator UID: {my_uid} on netuid {netuid}")
+        _say("Starting validation loop with Safeguard integration")
         Thread(target=validation_loop_thread, daemon=True).start()
 
     elif run_demo:

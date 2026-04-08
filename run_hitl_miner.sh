@@ -16,6 +16,9 @@
 
 set -e
 
+# Shared cleanup helpers (kill_stale, assert_ports_clear)
+source "$(dirname "$0")/_run_helpers.sh"
+
 NETWORK="${NETWORK:-test}"
 NETUID="${NETUID:-444}"
 WALLET="${WALLET:-hitl-miner}"
@@ -35,20 +38,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Port check ---
-BUSY_PIDS=$(lsof -ti ":$PORT" 2>/dev/null || true)
-if [ -n "$BUSY_PIDS" ]; then
-    echo "Port $PORT in use (PIDs: $BUSY_PIDS)"
-    read -p "Kill them? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "$BUSY_PIDS" | xargs kill 2>/dev/null
-        sleep 1
-    else
-        echo "Aborting."
-        exit 1
-    fi
-fi
+kill_stale "Safeguard HITL miner" \
+    'safeguard-hitl-miner/main\.py'
+
+assert_ports_clear "$PORT"
 
 echo "Starting Safeguard HITL miner on $NETWORK (netuid $NETUID)"
 echo "  Wallet: $WALLET / $HOTKEY"

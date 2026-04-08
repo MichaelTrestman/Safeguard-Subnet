@@ -15,51 +15,44 @@
 #     (register with: btcli subnet register --netuid 445 --wallet.name miner
 #      --wallet.hotkey <hotkey> --network test)
 #
-# Usage: bash run_client_demo.sh [--safeguard-api URL]
+# Usage: bash run_client_demo.sh [--safeguard-api URL] [--arbiter-api URL]
+#
+# If ARBITER_API is set (or --arbiter-api is passed), the demo-client
+# validator dual-calls Safeguard + Arbiter and combines:
+#   weight = quality * safety_score * fairness_score
+#
+# Set ARBITER_API="" to run Safeguard-only.
 
 set -e
+
+# Shared cleanup helpers (kill_stale, assert_ports_clear)
+source "$(dirname "$0")/_run_helpers.sh"
 
 NETWORK="${NETWORK:-test}"
 CLIENT_NETUID="${CLIENT_NETUID:-445}"
 VALIDATOR_WALLET="${VALIDATOR_WALLET:-validator}"
 VALIDATOR_HOTKEY="${VALIDATOR_HOTKEY:-default}"
 MINER_WALLET="${MINER_WALLET:-miner}"
-SAFEGUARD_API="${SAFEGUARD_API:-http://localhost:9090}"
+SAFEGUARD_API="${SAFEGUARD_API:-http://localhost:9080}"
+ARBITER_API="${ARBITER_API:-http://localhost:9091}"
 LOGFILE="client_demo.log"
 
 # Parse args
 while [[ $# -gt 0 ]]; do
     case $1 in
         --safeguard-api) SAFEGUARD_API="$2"; shift 2;;
+        --arbiter-api) ARBITER_API="$2"; shift 2;;
         --validator-wallet) VALIDATOR_WALLET="$2"; shift 2;;
         --miner-wallet) MINER_WALLET="$2"; shift 2;;
         *) echo "Unknown arg: $1"; exit 1;;
     esac
 done
 
-# --- Port check ---
-PORTS=(8070 8071 8072 9000)
-BUSY_PIDS=""
-for p in "${PORTS[@]}"; do
-    pids=$(lsof -ti ":$p" 2>/dev/null || true)
-    if [ -n "$pids" ]; then
-        BUSY_PIDS="$BUSY_PIDS $pids"
-    fi
-done
+kill_stale "demo client (target miners + relay validator)" \
+    'demo-client/miner\.py' \
+    'demo-client/validator\.py'
 
-if [ -n "$BUSY_PIDS" ]; then
-    echo "Ports in use: ${PORTS[*]}"
-    echo "PIDs:$BUSY_PIDS"
-    read -p "Kill them? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "$BUSY_PIDS" | xargs kill 2>/dev/null
-        sleep 1
-    else
-        echo "Aborting."
-        exit 1
-    fi
-fi
+assert_ports_clear 8070 8071 8072 9000
 
 > "$LOGFILE"
 echo "Starting demo client subnet (netuid $CLIENT_NETUID) — logging to $LOGFILE"
@@ -67,6 +60,7 @@ echo "  Network: $NETWORK"
 echo "  Validator: $VALIDATOR_WALLET / $VALIDATOR_HOTKEY"
 echo "  Miner wallet: $MINER_WALLET"
 echo "  Safeguard API: $SAFEGUARD_API"
+echo "  Arbiter API:   ${ARBITER_API:-(disabled)}"
 echo ""
 
 PIDS=()
@@ -124,6 +118,7 @@ DEMO_MINER_URL=http://localhost:8070 \
 RELAY_PORT=9000 \
 RELAY_MODEL_NAME=Qwen3-32B-TEE \
 SAFEGUARD_API_URL=$SAFEGUARD_API \
+ARBITER_API_URL=$ARBITER_API \
 NETWORK=$NETWORK \
 CLIENT_NETUID=$CLIENT_NETUID \
 WALLET_NAME=$VALIDATOR_WALLET \
