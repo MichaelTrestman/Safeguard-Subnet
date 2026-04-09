@@ -48,7 +48,30 @@ WALLET_NAME = os.getenv("WALLET_NAME", "miner")
 HOTKEY_NAME = os.getenv("HOTKEY_NAME", "default")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
+# The address we ANNOUNCE to chain — this is what other validators use
+# to reach us via get_all_commitments(). Must be a routable address
+# from the public internet (or at least from every validator hotkey
+# that's going to probe us). Precedence:
+#   1. MINER_EXTERNAL_IP env var (explicit operator override — set this
+#      on any public deployment like GCE, AWS, bare metal)
+#   2. HOST if it's not a wildcard
+#   3. 127.0.0.1 as the fallback (laptop dev mode — works because the
+#      validator probing us is on the same machine)
+# This replaces the old HOST==0.0.0.0 → 127.0.0.1 rewrite which silently
+# broke every remote deployment by committing a localhost URL nobody
+# could reach.
+MINER_EXTERNAL_IP = os.getenv("MINER_EXTERNAL_IP", "").strip()
 MAX_REQUEST_AGE = 60  # seconds
+
+
+def _resolve_announce_host() -> str:
+    """Pick the host/IP we publish in the chain commitment.
+    See MINER_EXTERNAL_IP docstring above for precedence."""
+    if MINER_EXTERNAL_IP:
+        return MINER_EXTERNAL_IP
+    if HOST and HOST not in ("0.0.0.0", "::", ""):
+        return HOST
+    return "127.0.0.1"
 
 # Periodic visible heartbeat — overridable via env var. Default: every 5 minutes.
 HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("MINER_HEARTBEAT_INTERVAL", "300"))
@@ -201,8 +224,18 @@ async def startup():
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info(f"Test miner UID: {my_uid} on netuid {NETUID}")
 
-    # Commit endpoint to chain — use 127.0.0.1 for local, not 0.0.0.0
-    commit_host = "127.0.0.1" if HOST == "0.0.0.0" else HOST
+    # Commit endpoint to chain. The committed URL is what OTHER
+    # validators see via subtensor.get_all_commitments() and will POST
+    # their probe tasks to. It MUST be routable from wherever those
+    # validators are running. Precedence (see module-level
+    # _resolve_announce_host):
+    #   MINER_EXTERNAL_IP env → non-wildcard HOST → 127.0.0.1 fallback.
+    # The old code rewrote HOST=0.0.0.0 to 127.0.0.1 unconditionally,
+    # which silently broke every non-laptop deployment — a GCE instance
+    # would commit "localhost" to chain and every remote validator's
+    # probe would hit ConnectError. The fallback is still 127.0.0.1 so
+    # laptop-dev-mode (validator + miner on same host) works unchanged.
+    commit_host = _resolve_announce_host()
     endpoint_data = json.dumps({"endpoint": f"http://{commit_host}:{PORT}"})
     try:
         subtensor.set_commitment(
