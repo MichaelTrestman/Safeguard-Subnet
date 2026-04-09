@@ -373,3 +373,58 @@ def score_transcript(
         n_bait_detected=n_bait,
         hitl_routed=hitl_routed,
     )
+
+
+# ---------------------------------------------------------------------------
+# Weight computation — the burn-floor compute_weights
+# ---------------------------------------------------------------------------
+
+def compute_weights(
+    cycle_contributions: dict[int, float],
+    owner_uid: int,
+) -> tuple[list[int], list[float]]:
+    """Build the mech-0 weight vector for chain submission from the
+    per-miner raw contributions accumulated over the current tempo
+    window, with an owner-UID burn floor.
+
+    Ported verbatim from safeguard/validator.py:689-729 (the post-
+    2026-04-08 burn-floor rewrite). Pure math, no DB, no side effects.
+
+    Policy:
+      - Any miner with contribution > 0: weight ∝ contribution,
+        normalized so the earners sum to 1.0.
+      - No productive miners: weight 1.0 to owner_uid.
+
+    Per the bittensor-why-burn convention, the chain auto-burns
+    owner-UID-allocated emissions, so the burn-floor branch is a
+    chain-level burn (not custodial — the validator never holds the
+    tokens, DESIGN.md § Architectural commitments item 3 still holds).
+
+    Always returns a non-empty vector. This defends the validator's
+    consensus slot every tempo against silence-then-capture by hostile
+    hotkeys, and routes unearned emissions to the chain burn instead
+    of paying dead miners.
+
+    Args:
+        cycle_contributions: {uid: contribution_over_window} — only
+            uids with non-zero contribution need to appear. Miners
+            absent from the dict get no weight.
+        owner_uid: subnet owner UID, resolved at validator startup via
+            subtensor.get_subnet_owner_hotkey() → get_uid_for_hotkey_on_subnet().
+
+    Returns:
+        (uids, weights) — both lists the same length, weights sum to 1.0,
+        at least one entry. Ready for subtensor.set_weights.
+    """
+    earned = [(uid, c) for uid, c in cycle_contributions.items() if c > 0]
+    earned_total = sum(c for _, c in earned)
+
+    if earned_total <= 0:
+        return [owner_uid], [1.0]
+
+    uids: list[int] = []
+    weights: list[float] = []
+    for uid, c in earned:
+        uids.append(uid)
+        weights.append(c / earned_total)
+    return uids, weights

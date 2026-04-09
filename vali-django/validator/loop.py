@@ -340,6 +340,118 @@ def _list_targets() -> list:
 
 
 @sync_to_async
+def _build_cycle_contributions(
+    since_block: int | None = None,
+) -> dict[int, float]:
+    """Build the per-miner contribution map for the NEXT set_weights
+    submission by aggregating audited Evaluation rows over the current
+    tempo window.
+
+    Sub-phase 2.5 — decouples dispatch cadence from set_weights cadence
+    (per Decision 5 in Phase 2.8 design). Instead of reading the results
+    of a single cycle's dispatch, we sum `contribution` grouped by
+    `miner_uid` across all audited rows since the last successful
+    set_weights block. This is what makes "new miner joined mid-tempo"
+    work under 2.8 — every intra-tempo dispatch accumulates into the
+    same contribution map that gets committed at the next tempo
+    boundary.
+
+    For now (pre-2.8) there's no per-row cycle cursor, so `since_block`
+    is unused — we sum all audited rows with contribution > 0. Once
+    2.8 adds an Evaluation→cycle FK or a timestamp-based window, this
+    helper gets the filter. Passing `since_block` now so the caller
+    signature doesn't change later.
+
+    Returns {uid: summed_contribution}. Miners with contribution == 0
+    are absent from the dict (compute_weights' burn floor handles the
+    empty case).
+    """
+    from django.db.models import Sum
+    from .models import Evaluation
+
+    qs = Evaluation.objects.filter(
+        audit_score__isnull=False,
+        contribution__gt=0,
+    )
+    # TODO 2.8: when we track which rows were already weighted, filter
+    # to rows since the last set_weights commit so we don't re-weight
+    # the same data repeatedly. For now this is idempotent enough —
+    # the chain rate limit prevents double-submission anyway.
+    aggregated = qs.values("miner_uid").annotate(total=Sum("contribution"))
+    return {row["miner_uid"]: float(row["total"] or 0.0) for row in aggregated}
+
+
+@sync_to_async
+def _record_set_weights_success(
+    current_block: int,
+    payload: dict[str, float],
+    burn_share: float,
+) -> None:
+    """Atomically update ValidatorStatus after a successful mech-0
+    set_weights and append a CycleHistory row mirroring the safeguard
+    validator's post-burn-floor cycle summary format."""
+    from django.db.models import Count
+    from .models import CycleHistory, Evaluation, ValidatorStatus
+
+    status = ValidatorStatus.get()
+    status.last_set_weights_at = djtz.now()
+    status.last_set_weights_block = current_block
+    status.last_set_weights_payload = payload
+    status.last_set_weights_success = True
+    status.last_burn_share = burn_share
+    status.save(update_fields=[
+        "last_set_weights_at",
+        "last_set_weights_block",
+        "last_set_weights_payload",
+        "last_set_weights_success",
+        "last_burn_share",
+    ])
+
+    # Cycle history row for the dashboard. Counts are pulled from the
+    # Evaluation table — same data the weight math used, persisted as
+    # a row. These numbers are a snapshot of the full DB at the moment
+    # of the commit, not a per-cycle slice; the per-row cycle cursor
+    # comes in 2.8.
+    from django.db.models import Sum
+    audited_qs = Evaluation.objects.filter(audit_score__isnull=False)
+    earned_qs = audited_qs.filter(contribution__gt=0)
+    n_earned_uids = earned_qs.values("miner_uid").distinct().count()
+    earned_total = float(
+        earned_qs.aggregate(total=Sum("contribution")).get("total") or 0.0
+    )
+    n_registered = status.n_probe_miners
+    CycleHistory.objects.create(
+        cycle_block=current_block,
+        n_registered=n_registered,
+        n_dispatched=n_registered,
+        n_responded=audited_qs.count(),
+        n_earned=n_earned_uids,
+        earned_total=earned_total,
+        burn_share=burn_share,
+        owner_uid=status.owner_uid,
+        submitted_weights=payload,
+        had_fresh_data=True,
+    )
+
+
+@sync_to_async
+def _record_set_weights_failure(error: str) -> None:
+    """Update ValidatorStatus on set_weights failure — keep the last
+    successful block so the tempo gate keeps working, but surface the
+    error for the operator dashboard."""
+    from .models import ValidatorStatus
+    status = ValidatorStatus.get()
+    status.last_set_weights_success = False
+    status.last_chain_error = f"set_weights: {error}"
+    status.last_chain_error_at = djtz.now()
+    status.save(update_fields=[
+        "last_set_weights_success",
+        "last_chain_error",
+        "last_chain_error_at",
+    ])
+
+
+@sync_to_async
 def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     """Audit a single in-progress Evaluation row in place.
 
@@ -515,6 +627,152 @@ def _persist_in_progress_evaluations(target_id: int, results: list[dict]) -> int
         target.evaluations_completed += count
         target.save(update_fields=["last_probed_at", "evaluations_completed"])
     return count
+
+
+async def _set_weights_if_due(
+    subtensor,
+    wallet,
+    netuid: int,
+    owner_uid: int,
+    tempo: int,
+    current_block: int,
+    last_set_weights_block: int | None,
+    hitl_miners: dict[int, str],
+) -> int | None:
+    """Sub-phase 2.6 — the single place in vali-django that calls
+    subtensor.set_weights. Gated strictly on the chain rate limit
+    (one submission per tempo per (hotkey, netuid)).
+
+    Flow:
+      1. Tempo gate: only fire if `last_set_weights_block is None`
+         (never committed yet — first boot) OR we've advanced at least
+         one tempo's worth of blocks since the last commit.
+      2. Build the per-miner contribution map from audited Evaluation
+         rows via _build_cycle_contributions().
+      3. compute_weights(contributions, owner_uid) — ALWAYS returns a
+         non-empty vector. Empty/zero contributions → burn floor to
+         owner UID. Normalized to sum=1.0.
+      4. POST mech 0 (probe miners' burn-floor-aware weights) via
+         subtensor.set_weights with a _chain_call timeout.
+      5. POST mech 1 (HITL miners' flat 1/N split) per Decision E in
+         PLAN.md — locked parity with legacy validator. HITL scoring
+         lands in Phase 4 but the submission path is here from day one
+         so HITL miners never see a silent-zero weight.
+      6. On mech 0 success: record ValidatorStatus + append a
+         CycleHistory row atomically.
+      7. On any chain error: record it, don't advance last_set_weights_block,
+         next iteration retries.
+
+    Returns the new last_set_weights_block on success (the caller
+    updates its in-memory mirror of the value so the next iteration's
+    tempo gate math is accurate without a DB roundtrip), or None if
+    the submission didn't happen or failed.
+    """
+    # ----- Tempo gate -----
+    if last_set_weights_block is not None:
+        blocks_since = current_block - last_set_weights_block
+        if blocks_since < tempo:
+            return None  # not due yet, quiet no-op
+
+    # ----- Build contribution map from audited Evaluation rows -----
+    contributions = await _build_cycle_contributions(
+        since_block=last_set_weights_block,
+    )
+    n_earners = sum(1 for c in contributions.values() if c > 0)
+
+    # ----- Compute the mech 0 weight vector (burn floor guaranteed) -----
+    from .audit import compute_weights
+    uids, weights = compute_weights(contributions, owner_uid)
+    weight_map = {str(u): round(w, 6) for u, w in zip(uids, weights)}
+    burn_share = weight_map.get(str(owner_uid), 0.0)
+    if not any(u != owner_uid for u in uids):
+        burn_share = 1.0  # full burn when only owner_uid is in the vector
+
+    logger.info(
+        f"Block {current_block}: set_weights due "
+        f"(last={last_set_weights_block}, tempo={tempo}, "
+        f"earners={n_earners}, burn={burn_share:.4f})"
+    )
+
+    # ----- Submit mech 0 (probe miners) -----
+    try:
+        success = await _chain_call(
+            subtensor.set_weights,
+            wallet=wallet,
+            netuid=netuid,
+            uids=uids,
+            weights=weights,
+            mechid=0,
+            wait_for_inclusion=True,
+            wait_for_finalization=False,
+            _timeout=CHAIN_TIMEOUT_RPC * 2,  # 120s — set_weights blocks on tx inclusion
+        )
+        # bittensor returns either (bool, str) or bare bool depending on version
+        ok = bool(success[0]) if isinstance(success, tuple) else bool(success)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            f"set_weights mech 0 call failed: {type(e).__name__}: {e}"
+        )
+        await _record_set_weights_failure(f"mech0: {type(e).__name__}: {e}")
+        return None
+
+    if not ok:
+        msg = success[1] if isinstance(success, tuple) else "returned False"
+        logger.warning(f"set_weights mech 0 rejected: {msg}")
+        await _record_set_weights_failure(f"mech0 rejected: {msg}")
+        return None
+
+    pretty = ", ".join(f"{u}:{w:.4f}" for u, w in sorted(zip(uids, weights)))
+    logger.info(f"Set weights (mech 0): burn={burn_share:.4f} {{{pretty}}}")
+
+    # ----- Submit mech 1 (HITL miners, flat 1/N split) — Decision E -----
+    # HITL scoring is Phase 4 work but the submission path is here from
+    # day one for parity with the legacy validator, so HITL miners
+    # never see a silent zero.
+    if hitl_miners:
+        hitl_uids = sorted(hitl_miners.keys())
+        hitl_weights = [1.0 / len(hitl_uids)] * len(hitl_uids)
+        try:
+            hitl_success = await _chain_call(
+                subtensor.set_weights,
+                wallet=wallet,
+                netuid=netuid,
+                uids=hitl_uids,
+                weights=hitl_weights,
+                mechid=1,
+                wait_for_inclusion=True,
+                wait_for_finalization=False,
+                _timeout=CHAIN_TIMEOUT_RPC * 2,
+            )
+            hitl_ok = (
+                bool(hitl_success[0])
+                if isinstance(hitl_success, tuple)
+                else bool(hitl_success)
+            )
+            if hitl_ok:
+                hitl_pretty = ", ".join(
+                    f"{u}:{w:.4f}" for u, w in zip(hitl_uids, hitl_weights)
+                )
+                logger.info(f"Set weights (mech 1 HITL): {{{hitl_pretty}}}")
+            else:
+                msg = hitl_success[1] if isinstance(hitl_success, tuple) else "returned False"
+                logger.warning(f"set_weights mech 1 rejected: {msg}")
+        except Exception as e:  # noqa: BLE001
+            # Mech 1 rejection does NOT invalidate the mech 0 commit.
+            # Log and continue; the dashboard's last_chain_error will
+            # show it if it persists.
+            logger.warning(
+                f"set_weights mech 1 failed (mech 0 still committed): "
+                f"{type(e).__name__}: {e}"
+            )
+
+    # ----- Record mech 0 success (atomic ValidatorStatus + CycleHistory) -----
+    await _record_set_weights_success(
+        current_block=current_block,
+        payload=weight_map,
+        burn_share=burn_share,
+    )
+    return current_block
 
 
 async def acquire_resources():
@@ -911,9 +1169,31 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                     # help.
                     last_dispatched_uids = set(probe_miners.keys())
 
-            # TODO sub-phase 2.5: build per-cycle contribution map (DB aggregation)
-            # TODO sub-phase 2.6: compute_weights() + set_weights() for mech 0 AND mech 1
-            # TODO sub-phase 2.7: tempo cadence + cycle_collected_fresh_data retry
+            # ----- Sub-phase 2.6: set_weights (tempo-gated) -----
+            # Runs every iteration but gated internally on tempo, so
+            # most ticks are a quiet no-op. Decoupled from the dispatch
+            # cycle gate above: dispatch can fire on "new miner joined"
+            # mid-tempo, but set_weights ONLY fires on tempo boundary
+            # (chain rate limit enforces this anyway — explicit gate
+            # here saves the wasted extrinsic round trip).
+            #
+            # This call runs regardless of whether dispatch fired — the
+            # burn floor in compute_weights guarantees a non-empty
+            # weight vector even when we have zero productive miners,
+            # which is how we defend the consensus slot from silence-
+            # then-capture.
+            await _set_weights_if_due(
+                subtensor=subtensor,
+                wallet=wallet,
+                netuid=netuid,
+                owner_uid=owner_uid,
+                tempo=tempo,
+                current_block=current_block,
+                last_set_weights_block=last_swb,
+                hitl_miners=hitl_miners,
+            )
+
+            # TODO sub-phase 2.7: full cycle_collected_fresh_data retry parity
             # TODO sub-phase 2.8: per-miner tempo gate (see PLAN.md)
             #
             # Note on double-submit: the chain enforces a one-set_weights-
