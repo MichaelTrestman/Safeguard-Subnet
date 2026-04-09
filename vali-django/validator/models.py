@@ -75,6 +75,22 @@ class Evaluation(models.Model):
         related_name="evaluations",
     )
 
+    # Sub-phase 2.9 — provenance verification state.
+    #   provenance_verified:
+    #     True  = every per-turn entry in the submitted transcript was
+    #             matched against a stored RelayCommitment row at audit
+    #             time and all digests reproduced.
+    #     False = at least one turn had a mismatch (transcript truncated
+    #             at the first failing turn). Severity forced to 0;
+    #             flagged on the dashboard as a fabrication suspect.
+    #     None  = legacy v1 submission with no commitment blocks.
+    #             Audited normally; flagged on the dashboard as
+    #             "legacy" so v1-era rows are visually distinct.
+    #   provenance_turns_verified: count of turns that successfully
+    #     reproduced. Drives the dashboard's per-row badge text.
+    provenance_verified = models.BooleanField(null=True, blank=True, db_index=True)
+    provenance_turns_verified = models.IntegerField(default=0)
+
 
 class Finding(models.Model):
     """A single accepted finding extracted from an Evaluation."""
@@ -212,3 +228,55 @@ class CycleHistory(models.Model):
     owner_uid = models.IntegerField(default=0)
     submitted_weights = models.JSONField(default=dict, blank=True)
     had_fresh_data = models.BooleanField(default=False)
+
+
+# ---------------------------------------------------------------------------
+# Sub-phase 2.9 — Provenance v2 (RELAY_PROTOCOL_V2.md)
+# ---------------------------------------------------------------------------
+
+
+class RelaySession(models.Model):
+    """One probing session started by a Safeguard miner.
+
+    Ties per-turn `RelayCommitment` rows together by `session_id`. The
+    audit worker uses this to verify session ownership (the calling
+    miner_hotkey must match the Evaluation's miner) and to enforce
+    turn ordering at scoring time.
+    """
+    session_id = models.UUIDField(unique=True, db_index=True)
+    miner_hotkey = models.CharField(max_length=128, db_index=True)
+    target = models.ForeignKey(
+        RegisteredTarget, on_delete=models.CASCADE,
+        related_name="relay_sessions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_turn_at = models.DateTimeField(auto_now=True)
+    turn_count = models.PositiveIntegerField(default=0)
+
+
+class RelayCommitment(models.Model):
+    """One row per successful /probe/relay call. The authoritative
+    record of what the Safeguard validator observed coming out of the
+    client v1 /relay. Re-verified at scoring time against the
+    Evaluation's submitted transcript.
+
+    Storing the full preimage (not just the digest) lets the audit
+    worker re-verify without trusting the miner's submission to contain
+    a canonicalizable copy. The digest column is indexed for
+    observability (duplicate-detection queries, audit-trail lookup).
+    """
+    SCHEME_V1 = "sha256-canonical-json-v1"
+
+    session = models.ForeignKey(
+        RelaySession, on_delete=models.CASCADE, related_name="commitments",
+    )
+    turn_index = models.PositiveIntegerField()
+    scheme = models.CharField(max_length=64, default=SCHEME_V1)
+    preimage = models.JSONField()
+    digest = models.CharField(max_length=128, db_index=True)
+    committed_at = models.DateTimeField(auto_now_add=True)
+    committed_by = models.CharField(max_length=128)
+
+    class Meta:
+        unique_together = [("session", "turn_index")]
+        indexes = [models.Index(fields=["session", "turn_index"])]
