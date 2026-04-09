@@ -37,7 +37,13 @@
   <div class="card">
     <h4>Chain</h4>
     <div class="value">{{ settings.network }} / {{ settings.netuid }}</div>
-    <div class="sub">{% if vstatus.chain_connected %}<span class="ok">connected</span>{% else %}<span class="warn">not yet</span>{% endif %}</div>
+    <div class="sub">
+      {% if vstatus.chain_connected %}<span class="ok">connected</span>{% else %}<span class="warn">not yet</span>{% endif %}
+      {% if vstatus.chain_connected %} · owner uid {{ vstatus.owner_uid }}{% endif %}
+    </div>
+    {% if vstatus.chain_connected %}
+    <div class="sub">block {{ vstatus.current_block|default:"—" }} · {{ vstatus.n_probe_miners }} probe / {{ vstatus.n_hitl_miners }} HITL miners</div>
+    {% endif %}
   </div>
 </div>
 

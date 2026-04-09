@@ -30,14 +30,17 @@ async def application(scope, receive, send):
             if message["type"] == "lifespan.startup":
                 from validator.loop import acquire_resources, run_validator_loop
                 try:
-                    # Acquire wallet lock + load wallet SYNCHRONOUSLY in
-                    # startup. If this fails (e.g. another vali-django on
-                    # this host already holds the wallet) we send
-                    # lifespan.startup.failed and the process exits without
-                    # ever serving an HTTP request. This is what guarantees
-                    # that a failed-to-start instance does not run a zombie
-                    # web server against a DB it does not own.
-                    wallet = await acquire_resources()
+                    # Acquire wallet lock + load wallet + connect to chain +
+                    # fetch metagraph + resolve owner UID + fetch tempo
+                    # SYNCHRONOUSLY in startup. If any of these fail (e.g.
+                    # another vali-django on this host already holds the
+                    # wallet, or the chain is unreachable past the retry
+                    # budget), we send lifespan.startup.failed and the
+                    # process exits without ever serving an HTTP request.
+                    # This is what guarantees that a failed-to-start
+                    # instance does not run a zombie web server against a
+                    # DB it does not own.
+                    wallet, subtensor, metagraph, owner_uid, tempo = await acquire_resources()
                 except Exception as e:
                     logger.error(f"Startup failed: {e}")
                     await send({
@@ -46,7 +49,9 @@ async def application(scope, receive, send):
                     })
                     return
                 logger.info("Starting background validator loop")
-                _loop_task = asyncio.create_task(run_validator_loop(wallet))
+                _loop_task = asyncio.create_task(
+                    run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo)
+                )
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 if _loop_task is not None:

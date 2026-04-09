@@ -132,7 +132,18 @@ def evaluate(request: HttpRequest) -> JsonResponse:
             {"error": "could not resolve target — register first"}, status=400
         )
 
-    qs = Evaluation.objects.filter(target=target)
+    # Only aggregate Evaluation rows that have been through the audit
+    # pipeline (sub-phase 2.4). In-progress rows — persisted by dispatch
+    # but not yet audited — have audit_score=NULL and accepted_severity=0
+    # (model default), which would drag avg_severity to 0 and report a
+    # bogus safety_score=1.0 whenever the audit worker is behind. The
+    # correct semantics are: if we have not yet audited ANY rows for this
+    # target, fall back (n=0, fallback=True) rather than lie with a
+    # "perfect safety" placeholder.
+    qs = Evaluation.objects.filter(
+        target=target,
+        audit_score__isnull=False,
+    )
     category = body.get("category", "")
     if category:
         qs = qs.filter(category=category)

@@ -15,6 +15,17 @@
 >   the dependency DAG and Phase 9 retirement steps updated to match.
 >   The `OPERATOR.md` runbook deliverable that was bundled with Phase 6
 >   moves to Phase 10 (polish).
+> - **Sub-phases 2.0, 2.1, 2.2, 2.3 have all shipped** and verified
+>   end-to-end against testnet 444. Partial Phase 2.7 (the
+>   `cycle_collected_fresh_data` retry pattern, ported as
+>   `last_dispatched_uids` state-transition logging) shipped on the
+>   same day. The detailed phase descriptions below are **not yet
+>   updated** to reflect shipped status — treat them as the original
+>   design intent, cross-reference the git history and
+>   `validator/loop.py` for what actually shipped. A new **Phase 2.8
+>   (per-miner tempo gate)** has been added below after Phase 2.7 to
+>   fix the architectural complaint that the current cycle gate can
+>   still make a mid-tempo-joining miner wait up to a full tempo.
 
 ---
 
@@ -77,7 +88,8 @@ This is the work. Items are ordered by dependency, not priority.
 |---|---|---|---|
 | `MinerScore.submissions, findings_count, bait_only_count, null_count, last_contribution` | `validator/models.py` | **missing — to add** | Lifetime counters added to legacy `MinerScore` 2026-04-08. Observability only — does not feed weights, but the operator dashboard reads them. |
 | `MinerScore.score`, `contribution_total` | `validator/models.py` | **to delete (Decision A)** | Both vestigial. Chain bond EMA owns "current standing" and chain dividend history owns "lifetime tau earned"; duplicating either locally guarantees drift. |
-| `ValidatorStatus.owner_uid, last_burn_share, last_set_weights_payload (JSON), last_set_weights_success` | `validator/models.py` | **missing** | Added to `validator_status.json` 2026-04-08. The operator dashboard panel I just shipped on the legacy `dashboard.py` reads these. |
+| `ValidatorStatus.owner_uid, last_burn_share, last_set_weights_payload (JSON), last_set_weights_success` | `validator/models.py` | ✅ landed in `0002_burn_floor_schema.py` (2026-04-09) | Added to `validator_status.json` 2026-04-08. The operator dashboard panel I just shipped on the legacy `dashboard.py` reads these. |
+| `ValidatorStatus.n_probe_miners, n_hitl_miners, current_block, blocks_until_next_cycle` | `validator/models.py` | **missing — to add in 2.2** | Per-tick metadata written from the loop body each iteration. Originally only mentioned in sub-phase 2.2 / 2.7 behavior lists; consolidated here 2026-04-09. Lands in `0003_status_tick_fields.py` ahead of the discover_miners code. |
 | `CycleHistory` model (one row per cycle) | `validator/models.py` | **missing** | Mirrors `cycle_history.jsonl` rows. Fields: `timestamp`, `cycle_block`, `n_registered`, `n_dispatched`, `n_responded`, `n_earned`, `earned_total`, `burn_share`, `owner_uid`, `submitted_weights` (JSON), `had_fresh_data`. |
 | `Finding` model | `validator/models.py` | **already exists** but unused — loop never writes to it | When the audit pipeline lands (phase 4), each accepted_severity > FINDINGS_THRESHOLD evaluation gets one or more `Finding` rows. |
 | `HitlCase` model | `validator/models.py` | **already exists** but unused | Same — written when the audit disagreement crosses threshold. |
@@ -376,6 +388,185 @@ deploy alone before any loop work)
 
 ---
 
+### Phase 2.8 — Per-miner tempo gate (architecture)
+
+**Motivation.** Dispatch cadence and `set_weights` cadence are two
+different clocks being run by the same variable. Tempo (360 blocks
+~72 min on testnet 444) is the chain's `set_weights` rate limit per
+(hotkey, netuid); it is NOT the correct interval at which to decide
+"should I probe miner X". A miner that registers at minute 10 of a
+72-minute tempo currently waits up to 62 minutes for its first probe —
+a bad operator experience and a bad protocol signal (late-join penalty
+for no reason). "Good" is: every newly-discovered probe miner receives
+a dispatch within one loop tick (`LOOP_INTERVAL_S` ~12s), while
+`set_weights` stays strictly gated on the chain rate limit.
+
+**Already shipped (partial fix).** `validator/loop.py:566-744` tracks
+an in-memory `last_dispatched_uids: set[int]` on the loop-instance
+and fires a fresh cycle the moment
+`set(probe_miners.keys()) - last_dispatched_uids` is non-empty
+(line 642). The gate at lines 643-647 OR-combines first-boot, tempo
+elapsed, and newly-appeared UIDs. Trigger reason logging at lines
+692-707 distinguishes the three cases for operator visibility. Dry-run
+truth table at `vali-django/tmp-scripts/dryrun_cycle_gate.py` covers
+10 cases. This fixes the "restart validator, see new miner probed"
+case but leaves several architectural questions open — enumerated
+below as locked recommendations.
+
+**Decisions locked (recommendations pending human sign-off before
+implementation).**
+
+1. **Per-miner last-probed tracking.** ADD
+   `MinerScore.last_probed_at_block BigIntegerField null=True
+   db_index=True` (new migration `0004_per_miner_tempo.py`). Enables
+   the operator dashboard "last probed Xm ago" column (Phase 3) and
+   is the natural relational home for per-miner gate state. Cleaner
+   than a JSONField on `ValidatorStatus`.
+
+2. **Persistence across restart.** DO persist, via the field above.
+   After restart, `last_probed_at_block IS NULL` is treated as
+   "never probed" and triggers dispatch on the next tick. First-boot
+   behavior remains: all discovered miners get dispatched.
+
+3. **Removed / rotated miners.** On discovery, if the (uid, hotkey)
+   pair differs from the stored `MinerScore` row, reset
+   `last_probed_at_block = NULL` before the cycle gate runs.
+   `_upsert_discovered_miners` at loop.py:310-329 already updates the
+   hotkey on uid collision; extend it to also null the block field
+   on hotkey change. Pure removals (UID gone from commitments) are
+   ignored, matching existing behavior.
+
+4. **Rate-limiting the cycle trigger.** No debounce needed — the gate
+   is self-debouncing because each productive cycle stamps
+   `last_probed_at_block` for every dispatched miner in the same
+   transaction as the Evaluation rows. A 10-miner burst fires one
+   cycle, not ten.
+
+5. **Interaction with set_weights (2.6).** Dispatch fires on the
+   hybrid gate; `set_weights` stays strictly gated on
+   `current_block - last_set_weights_block >= tempo`. Intra-tempo
+   dispatches write Evaluation rows that accumulate. On tempo
+   boundary, `compute_weights` aggregates ALL Evaluations since the
+   last `set_weights`, not just the most recent cycle. This is the
+   decoupling the phase exists to deliver.
+
+6. **Backlog / partial cycles.** One retry per tempo on failed
+   dispatch. If `_send_probe_to_miner` returns None, leave
+   `last_probed_at_block` unchanged so the next tick re-dispatches.
+   Cap re-dispatch at 3 attempts per tempo via a
+   `MinerScore.dispatch_attempts_this_tempo` counter reset on tempo
+   boundary. Prevents crash-loop on a permanently broken miner from
+   starving healthy ones. **Tuning knob — user should confirm
+   3 vs 1 vs "retry every tick".**
+
+7. **Interaction with legacy `safeguard/validator.py`.** LEAVE ALONE.
+   Legacy retires in Phase 9 regardless. Fixing it doubles the test
+   surface with zero long-term payoff.
+
+8. **Storage location of gate state.** Per-miner on `MinerScore`
+   (see #1), NOT JSONField on `ValidatorStatus`. Relational,
+   indexable, powers the dashboard.
+
+**Proposed schema changes**
+(`validator/migrations/0004_per_miner_tempo.py`):
+- `MinerScore.last_probed_at_block BigIntegerField null=True db_index=True`
+- `MinerScore.dispatch_attempts_this_tempo IntegerField default=0`
+- No changes to `ValidatorStatus` or `CycleHistory`.
+
+**Proposed loop changes** (all in `validator/loop.py`):
+- New `@sync_to_async` helper
+  `_select_miners_due_for_dispatch(probe_miners, current_block, tempo)`
+  returning only miners where `last_probed_at_block IS NULL` or
+  `current_block - last_probed_at_block >= tempo`. Replaces the
+  `newly_appeared_uids` set math at loop.py:642.
+- New `@sync_to_async` helper
+  `_stamp_miners_dispatched(uids, current_block)` called inside
+  `_persist_in_progress_evaluations` transaction (loop.py:367) so
+  Evaluation rows and the stamp commit atomically.
+- New `@sync_to_async` helper
+  `_reset_hotkey_changed_miners(probe_miners, metagraph)` called
+  before the gate check (Decision 3).
+- Cycle gate at loop.py:643-647 becomes:
+  ```python
+  due_miners = await _select_miners_due_for_dispatch(
+      probe_miners, current_block, tempo,
+  )
+  cycle_due = bool(due_miners) or (
+      last_set_weights_block is not None
+      and current_block - last_set_weights_block >= tempo
+  )
+  ```
+- `_dispatch_target_to_miners` at loop.py:182 takes `due_miners`
+  instead of `probe_miners`, so we only dispatch to the filtered
+  subset.
+- Delete `last_dispatched_uids` local state (loop.py:568); DB is the
+  source of truth.
+
+**Interaction with audit pipeline (2.4).** Audit consumes Evaluation
+rows by `audit_score IS NULL`, not by cycle boundary, so audit is
+already per-row and per-miner dispatch is transparent to it. Gotcha:
+the dashboard "current cycle contribution" view may eventually need a
+cycle identifier. Deferred — add
+`CycleHistory.id`-referencing nullable FK on Evaluation only if the
+Phase 3 dashboard work needs it.
+
+**Interaction with `set_weights` cadence (2.6).** See Decision 5.
+Invariant: `set_weights` ONLY runs inside the
+`current_block - last_set_weights_block >= tempo` branch, and that
+branch MUST aggregate all audited Evaluations since
+`last_set_weights_block`, not just the ones from "this cycle".
+`compute_weights` in 2.6 already takes a `cycle_contributions` dict;
+the 2.8 change is that the dict is built from a time-range query,
+not a single-cycle result list.
+
+**Verification plan.**
+1. Boot validator against a metagraph with one registered probe
+   miner; assert first cycle fires within `LOOP_INTERVAL_S` of boot
+   and the miner's `last_probed_at_block` is stamped.
+2. After a productive cycle, wait less than tempo; register a NEW
+   probe miner (commit JSON from a second hotkey); assert within one
+   tick a new cycle fires that ONLY dispatches to the new miner
+   (not the already-probed one) — verify via `Evaluation` row
+   counts.
+3. Assert `ValidatorStatus.last_set_weights_block` does NOT advance
+   from step 2 — `set_weights` stays on tempo cadence.
+4. Wait a full tempo with no new miners; assert a cycle fires that
+   re-dispatches to all miners and `set_weights` IS called.
+5. Restart validator mid-tempo; assert no redundant cycle fires for
+   miners with fresh `last_probed_at_block` (persistence works).
+6. Rotate one miner's hotkey on the same UID; assert that miner is
+   re-dispatched on the next tick despite a fresh block stamp.
+
+**Out of scope for 2.8.**
+- Cross-process coordination when multiple vali-django instances
+  share a hotkey — that's layer-2 wallet defense (Phase 7).
+- Per-miner circuit-breaker beyond the 3-attempts-per-tempo cap —
+  Phase 10 polish.
+- Reworking `CycleHistory` to represent "partial cycles" — current
+  schema is fine because `set_weights` still runs once per tempo
+  and that's what `CycleHistory` tracks.
+- Rewriting stale phase descriptions in this document to reflect
+  shipped status; flagged at the top, separate editorial pass.
+
+**Phase 2.8 done criteria.**
+- A miner registered mid-tempo is probed within one tick of
+  commitment, verified end-to-end on testnet 444.
+- `last_set_weights_block` cadence unchanged (still one per tempo,
+  enforced by chain).
+- Dashboard shows per-miner "last probed at block N (+Xm)" from
+  `MinerScore.last_probed_at_block`.
+- `/healthz` stays green across the 6-step verification plan.
+
+**Open questions for the user before 2.8 implementation starts:**
+1. Retry cap (Decision 6): 3 vs 1 vs "retry every tick until tempo
+   boundary"?
+2. Reset semantics of `dispatch_attempts_this_tempo`: on tempo
+   boundary or on successful dispatch?
+3. Whether to add the `Evaluation → CycleHistory` FK now or defer
+   until Phase 3 dashboard needs it.
+
+---
+
 ### Phase 3 — operator dashboard upgrades
 
 Now that the data exists in the DB, the operator dashboard becomes
@@ -511,6 +702,10 @@ accumulates fresh state from zero post-cutover.)
 
 Catchall for the final 10% that takes 90% of the perfectionist time:
 
+- Operator runbook: `OPERATOR.md` covering "what to do when /healthz
+  goes red", "how to rotate hotkeys", "how to read the cycle history
+  table", "how to recover from a stuck loop". (Moved here from the
+  removed Phase 6 on 2026-04-09.)
 - Better 404 page
 - Better 500 page (read `last_chain_error` from ValidatorStatus and show
   it on the 500 page so operators see the cause without leaving the
@@ -524,7 +719,7 @@ Catchall for the final 10% that takes 90% of the perfectionist time:
 
 ---
 
-## Decisions (locked, 2026-04-08)
+## Decisions (locked 2026-04-08, human-confirmed 2026-04-09)
 
 ### A: `MinerScore` vestigial field handling — DROP BOTH
 
