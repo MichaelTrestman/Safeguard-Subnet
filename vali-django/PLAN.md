@@ -6,7 +6,7 @@
 > EMA-removal / cycle-history design landed in `safeguard/validator.py`
 > on 2026-04-08, plus the schema and dashboard gaps that work created.
 >
-> **2026-04-09 amendments:**
+> **2026-04-09 amendments (updated end of day):**
 > - Decisions A–E (see Decisions section below) are now human-confirmed
 >   and locked. Phase 2.0 (schema migration) is unblocked.
 > - **Phase 6 (seed-from-legacy command) removed entirely.** All testnet
@@ -15,17 +15,42 @@
 >   the dependency DAG and Phase 9 retirement steps updated to match.
 >   The `OPERATOR.md` runbook deliverable that was bundled with Phase 6
 >   moves to Phase 10 (polish).
-> - **Sub-phases 2.0, 2.1, 2.2, 2.3 have all shipped** and verified
->   end-to-end against testnet 444. Partial Phase 2.7 (the
+> - **The vali-django core port is complete.** Sub-phases 2.0, 2.1, 2.2,
+>   2.3, 2.4, 2.5, 2.6 have all shipped and been verified end-to-end
+>   against testnet 444. Partial Phase 2.7 (the
 >   `cycle_collected_fresh_data` retry pattern, ported as
 >   `last_dispatched_uids` state-transition logging) shipped on the
->   same day. The detailed phase descriptions below are **not yet
->   updated** to reflect shipped status — treat them as the original
->   design intent, cross-reference the git history and
->   `validator/loop.py` for what actually shipped. A new **Phase 2.8
->   (per-miner tempo gate)** has been added below after Phase 2.7 to
->   fix the architectural complaint that the current cycle gate can
->   still make a mid-tempo-joining miner wait up to a full tempo.
+>   same day. **vali-django made its first on-chain `set_weights` call
+>   on 2026-04-09 at block 6871216** — mech 0 burn-floor-aware vector
+>   (`burn=0.0000 {1:0.0921, 4:0.0360, 5:0.4360, 6:0.4360}`) and mech 1
+>   flat 1/N HITL split (`{2:0.5000, 3:0.5000}`) both committed. First
+>   end-to-end cycle also exercised the tier-1→tier-2 audit fallthrough
+>   and created the first `HitlCase` row (pii-generation row where
+>   miner claimed 0.80 but both audit tiers scored 0.00).
+> - The detailed phase descriptions below are **not yet updated** to
+>   reflect shipped status — treat them as the original design intent,
+>   cross-reference the git history and `validator/loop.py` +
+>   `validator/audit.py` for what actually shipped. Recent commits of
+>   note: `1cbe312` (2.0-2.4 + audit pipeline), `ce0e0e8` (2.5+2.6
+>   aggregation + set_weights burn floor).
+> - A new **Phase 2.8 (per-miner tempo gate)** was added below after
+>   Phase 2.7 to fix the architectural complaint that the current cycle
+>   gate can still make a mid-tempo-joining miner wait up to a full
+>   tempo. Design is locked; 3 open questions still need user answers
+>   before implementation (see the Phase 2.8 section below).
+> - **Miner public-IP bug** discovered via GCP deployment planning:
+>   `safeguard/safeguard-example-miner/main.py` used to rewrite
+>   `HOST=0.0.0.0` → `127.0.0.1` before the chain commit, which broke
+>   any non-laptop deployment. Fixed in commit `99e928e` — added
+>   `MINER_EXTERNAL_IP` env var with explicit precedence. Prereq for
+>   Phase 9 retirement of the legacy `safeguard/validator.py`.
+> - **GCP deployment plan** drafted at
+>   `claude-brainstormz/gcp-deploy-plan.md` for moving all three
+>   services (vali-django, safeguard-demo-client, safeguard-example-miner)
+>   off the macOS laptop onto Compute Engine. Three locked decisions:
+>   three e2-small VMs (isolation), upgrade to bittensor 10.2 + Python
+>   3.14, Chutes key rotation parked (only ~$5 credit remaining).
+>   Execution parked pending Phase 9 readiness.
 
 ---
 
