@@ -91,22 +91,37 @@ def _call_chutes(
     system_prompt: str,
     transcript: list[dict],
     model: str | None = None,
+    tier_label: str = "audit",
 ) -> dict:
     """
     Call Chutes API with a system prompt and transcript.
-    Returns parsed JSON response.
+    Returns parsed JSON response, or a fallback dict with a ``fallback_reason``
+    key if the call could not be made or parsed.
+
+    Every call logs one INFO line describing what was attempted, and one
+    INFO line describing the outcome (with latency, status, and parsed
+    result). Fallbacks log at WARNING with a clear reason so overnight runs
+    are diagnosable from the log alone.
     """
     api_key = os.getenv("CHUTES_API_KEY", "")
     if not api_key:
-        logger.warning("CHUTES_API_KEY not set, returning low-confidence placeholder")
-        return {"unsafe_prob": 0.5, "confidence": 0.0}
+        logger.warning(
+            f"[{tier_label}] CHUTES_API_KEY not set → fallback (0.5, 0.0)"
+        )
+        return {"unsafe_prob": 0.5, "confidence": 0.0, "fallback_reason": "no_api_key"}
 
     if model is None:
         model = os.getenv("CHUTES_MODEL_TIER2", "Qwen/Qwen3-32B-TEE")
 
     formatted = _format_transcript(transcript)
+    n_turns = len(transcript)
+    chars = len(formatted)
+    logger.info(
+        f"[{tier_label}] Chutes call → model={model} turns={n_turns} chars={chars}"
+    )
 
     for attempt in range(3):
+        t_start = time.time()
         try:
             response = httpx.post(
                 CHUTES_API_URL,
@@ -126,40 +141,69 @@ def _call_chutes(
                 timeout=90.0,
             )
             response.raise_for_status()
+            latency = time.time() - t_start
 
             content = response.json()["choices"][0]["message"]["content"]
 
+            parsed: dict | None = None
             # Extract JSON object directly — handles <think> blocks and markdown fences
             json_match = re.search(r'\{[^{}]*"unsafe_prob"\s*:\s*[\d.]+[^{}]*\}', content)
             if json_match:
-                time.sleep(2)
-                return json.loads(json_match.group())
+                parsed = json.loads(json_match.group())
+            else:
+                # Fallback: strip think blocks and fences
+                cleaned = _strip_think(content).strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[1]
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned[:-3]
+                    cleaned = cleaned.strip()
+                parsed = json.loads(cleaned)
 
-            # Fallback: strip think blocks and fences
-            content = _strip_think(content)
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[1]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = content.strip()
-
+            logger.info(
+                f"[{tier_label}] Chutes ok → status={response.status_code} "
+                f"latency={latency:.1f}s "
+                f"unsafe_prob={parsed.get('unsafe_prob', '?')} "
+                f"confidence={parsed.get('confidence', '?')}"
+            )
             time.sleep(2)
-            return json.loads(content)
+            return parsed
 
         except httpx.HTTPStatusError as e:
+            latency = time.time() - t_start
             if e.response.status_code == 429 and attempt < 2:
                 wait = 5 * (attempt + 1)
-                logger.warning(f"Rate limited, waiting {wait}s (attempt {attempt + 1}/3)")
+                logger.warning(
+                    f"[{tier_label}] Chutes 429 rate-limited "
+                    f"(attempt {attempt + 1}/3) → sleeping {wait}s"
+                )
                 time.sleep(wait)
                 continue
-            logger.error(f"Chutes API call failed: {e}")
-            return {"unsafe_prob": 0.5, "confidence": 0.0}
+            logger.error(
+                f"[{tier_label}] Chutes HTTP error → status={e.response.status_code} "
+                f"latency={latency:.1f}s body={e.response.text[:200]!r}"
+            )
+            return {
+                "unsafe_prob": 0.5,
+                "confidence": 0.0,
+                "fallback_reason": f"http_{e.response.status_code}",
+            }
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.error(f"Chutes API call failed: {e}")
-            return {"unsafe_prob": 0.5, "confidence": 0.0}
+            latency = time.time() - t_start
+            logger.error(
+                f"[{tier_label}] Chutes call failed → {type(e).__name__}: {e} "
+                f"latency={latency:.1f}s"
+            )
+            return {
+                "unsafe_prob": 0.5,
+                "confidence": 0.0,
+                "fallback_reason": f"{type(e).__name__}",
+            }
 
-    return {"unsafe_prob": 0.5, "confidence": 0.0}
+    logger.error(
+        f"[{tier_label}] Chutes exhausted 3 attempts → fallback (0.5, 0.0)"
+    )
+    return {"unsafe_prob": 0.5, "confidence": 0.0, "fallback_reason": "retries_exhausted"}
 
 
 def classify_transcript(transcript: list[dict]) -> tuple[float, float]:
@@ -168,7 +212,9 @@ def classify_transcript(transcript: list[dict]) -> tuple[float, float]:
     Returns (unsafe_probability, confidence).
     """
     model = os.getenv("CHUTES_MODEL_TIER2", "Qwen/Qwen3-32B-TEE")
-    result = _call_chutes(TIER2_SYSTEM_PROMPT, transcript, model=model)
+    result = _call_chutes(
+        TIER2_SYSTEM_PROMPT, transcript, model=model, tier_label="tier1-classify"
+    )
     return (
         float(result.get("unsafe_prob", 0.5)),
         float(result.get("confidence", 0.0)),
@@ -181,7 +227,9 @@ def judge_transcript(transcript: list[dict]) -> tuple[float, float]:
     Returns (unsafe_probability, confidence).
     """
     model = os.getenv("CHUTES_MODEL_TIER3", "Qwen/Qwen3-32B-TEE")
-    result = _call_chutes(TIER3_SYSTEM_PROMPT, transcript, model=model)
+    result = _call_chutes(
+        TIER3_SYSTEM_PROMPT, transcript, model=model, tier_label="tier2-judge"
+    )
     return (
         float(result.get("unsafe_prob", 0.5)),
         float(result.get("confidence", 0.0)),

@@ -300,35 +300,11 @@ vali-django/
 ### Stubbed — the next real piece of work
 
 **`validator/loop.py`** is a stub. It loads the wallet, ticks the iteration
-counter, records errors on `ValidatorStatus`, and sleeps. It does NOT yet:
+counter, records errors on `ValidatorStatus`, and sleeps. It does NOT yet
+discover miners, dispatch probes, audit transcripts, update `MinerScore`,
+or call `set_weights`.
 
-- discover miners (commitments + metagraph sync)
-- dispatch probes against `RegisteredTarget` rows
-- audit returned transcripts
-- update `MinerScore`
-- call `set_weights`
-
-The port from `safeguard/validator.py` is the next milestone. Two notes
-for that work:
-
-1. **Per-call timeouts.** `safeguard/validator.py:72-86` wraps every chain
-   RPC in a `ThreadPoolExecutor` future with a hard deadline so a flaky
-   substrate websocket can't hang the loop. The async-native equivalent is
-   `await asyncio.wait_for(asyncio.to_thread(fn, ...), timeout=...)`. Same
-   goal, no thread pool needed because the asyncio loop already provides
-   cancellation.
-
-2. **Don't port `_heartbeat_watchdog` or the `os.execv` self-restart.**
-   That logic was a workaround for not having a process supervisor. We
-   have one now (k8s), and the `/healthz` probe is the supervisor's view
-   into whether the loop is healthy. Let it own restarts.
-
-### Not done yet (intentional)
-
-- Tests. Worth adding `tests/test_views.py` for the customer portal once
-  the loop body is ported.
-- CI config.
-- Importing existing seed data (`target_configs.json`, `canaries/`) into
-  the DB at startup. Wait until the loop body needs them.
-- Customer-facing dashboard view (logged-in HTML view of "my target's
-  recent evaluations"). Epistula-only API is enough for MVP.
+The full completion + perfection plan — schema migrations, loop port
+phases, dashboard upgrades, audit pipeline wiring, tests, layer-2 wallet
+defense, legacy retirement — lives in [`PLAN.md`](./PLAN.md). Read that
+top to bottom before starting any work on the loop body.

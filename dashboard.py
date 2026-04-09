@@ -39,6 +39,8 @@ from report_data import (
     get_finding_detail,
     get_hitl_cases,
     aggregate_target_safety,
+    load_validator_status,
+    load_cycle_history,
 )
 
 logging.basicConfig(
@@ -415,6 +417,28 @@ async def api_comparison():
     return {"comparison": comparison}
 
 
+@app.get("/api/validator/status")
+async def api_validator_status():
+    """Live status singleton from validator.py — block, tempo countdown,
+    last set_weights, burn share, owner UID, last chain error.
+
+    Returns 200 with `running: false` if validator_status.json doesn't
+    exist yet (validator never started or fresh checkout) so the UI can
+    render an "offline" badge instead of a 404.
+    """
+    status = load_validator_status()
+    if status is None:
+        return {"running": False}
+    status["running"] = True
+    return status
+
+
+@app.get("/api/cycles")
+async def api_cycles(limit: int = Query(default=20, ge=1, le=500)):
+    """Recent evaluation cycles from cycle_history.jsonl, newest first."""
+    return {"cycles": load_cycle_history(limit=limit)}
+
+
 @app.get("/health")
 async def health():
     data = _get_data()
@@ -496,6 +520,24 @@ async def index():
         .hitl-label .reasoning { color: #aaa; font-style: italic; margin-top: 0.5rem; }
         .loading { color: #666; padding: 2rem; text-align: center; }
         .back { margin-bottom: 1rem; }
+        .ops-panel { background: #0f1419; border: 1px solid #2a3540; border-radius: 8px; padding: 1.25rem; margin-bottom: 2rem; }
+        .ops-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+        .ops-header h3 { color: #fff; margin: 0; }
+        .ops-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+        .ops-stat { background: #161b22; border: 1px solid #222; border-radius: 6px; padding: 0.6rem 0.75rem; }
+        .ops-stat .label { color: #888; font-size: 0.7rem; text-transform: uppercase; }
+        .ops-stat .val { color: #fff; font-size: 1.05rem; margin-top: 0.15rem; word-break: break-all; }
+        .ops-stat .val.dim { color: #888; font-size: 0.9rem; }
+        .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: bold; text-transform: uppercase; }
+        .badge.alive { background: #1a3a1a; color: #44cc44; }
+        .badge.stale { background: #4a2a11; color: #ff8844; }
+        .badge.offline { background: #4a1111; color: #ff4444; }
+        .badge.burn { background: #2a2a4a; color: #88aaff; }
+        .cycles-table th, .cycles-table td { font-size: 0.8rem; padding: 0.4rem 0.55rem; }
+        .cycles-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .cycles-table .burn-cell { color: #88aaff; }
+        .cycles-table .earned-cell { color: #44cc44; }
+        .err-line { background: #1a0a0a; border: 1px solid #4a1111; color: #ff8888; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; }
     </style>
 </head>
 <body>
@@ -512,13 +554,21 @@ async def index():
 
     async function loadOverview() {
         setNav('nav-overview');
-        const [summary, comparison, targets] = await Promise.all([
+        const [summary, comparison, targets, vstatus, cycles] = await Promise.all([
             fetch(API + '/api/summary').then(r => r.json()),
             fetch(API + '/api/comparison').then(r => r.json()),
             fetch(API + '/api/targets').then(r => r.json()),
+            fetch(API + '/api/validator/status').then(r => r.json()),
+            fetch(API + '/api/cycles?limit=20').then(r => r.json()),
         ]);
         const s = summary.summary;
-        let html = '<div class="grid">';
+        let html = '';
+
+        // ----- Validator Operations panel (top of overview) -----
+        html += renderValidatorOps(vstatus, cycles);
+
+        html += '<h3>Aggregate Stats</h3>';
+        html += '<div class="grid">';
         html += card('Total Probes', s.total_probes, (s.total_canaries || 0) + ' legacy canary entries');
         html += card('Findings', s.findings_count, s.critical_count + ' critical');
         html += card('Bait-only Nulls', s.bait_only_count || 0, 'informative nulls');
@@ -657,6 +707,94 @@ async def index():
             (f.hitl_routed ? ' [HITL]' : '') + ' <span style="color:#444">' + (f.target_name||'') + '</span></div>' +
             '<div class="preview">' + esc(f.transcript_preview || '(no preview)') + '</div></div>';
     }
+
+    function renderValidatorOps(vstatus, cyclesResp) {
+        if (!vstatus || vstatus.running === false) {
+            return '<div class="ops-panel"><div class="ops-header"><h3>Validator Operations</h3>' +
+                '<span class="badge offline">offline</span></div>' +
+                '<p style="color:#888">No validator_status.json yet — validator has not started, or check VALIDATOR_STATUS_PATH.</p></div>';
+        }
+        const tickAge = vstatus.tick_age_seconds;
+        let badgeClass = 'alive', badgeText = 'alive';
+        if (tickAge == null) { badgeClass = 'offline'; badgeText = 'unknown'; }
+        else if (tickAge > 120) { badgeClass = 'offline'; badgeText = 'stalled (' + Math.round(tickAge) + 's)'; }
+        else if (tickAge > 30)  { badgeClass = 'stale'; badgeText = 'stale (' + Math.round(tickAge) + 's)'; }
+        else                    { badgeText = 'alive (' + Math.round(tickAge) + 's ago)'; }
+
+        const setWeightsAge = vstatus.set_weights_age_seconds;
+        const setWeightsAgeStr = setWeightsAge != null
+            ? (setWeightsAge < 120 ? Math.round(setWeightsAge) + 's ago'
+                : setWeightsAge < 7200 ? Math.round(setWeightsAge / 60) + 'm ago'
+                : Math.round(setWeightsAge / 3600) + 'h ago')
+            : 'never';
+        const burnPct = (vstatus.last_burn_share != null ? (vstatus.last_burn_share * 100).toFixed(1) + '%' : '—');
+        const setWeightsBlock = vstatus.last_set_weights_block || 0;
+        const lastWeightsObj = vstatus.last_set_weights_payload || {};
+        const lastWeightsStr = Object.keys(lastWeightsObj).length
+            ? Object.entries(lastWeightsObj).map(([u, w]) => u + ': ' + Number(w).toFixed(4)).join(', ')
+            : '(none yet)';
+        const blocksUntil = vstatus.blocks_until_next_cycle != null ? vstatus.blocks_until_next_cycle : '—';
+        const minsUntil = (typeof blocksUntil === 'number') ? ' (~' + Math.round(blocksUntil * 12 / 60) + ' min)' : '';
+
+        let html = '<div class="ops-panel">';
+        html += '<div class="ops-header"><h3>Validator Operations</h3>';
+        html += '<span class="badge ' + badgeClass + '">' + badgeText + '</span></div>';
+
+        html += '<div class="ops-stats">';
+        html += opsStat('Validator UID', vstatus.my_uid != null ? vstatus.my_uid : '—');
+        html += opsStat('Owner UID (burn)', vstatus.owner_uid != null ? vstatus.owner_uid : '—');
+        html += opsStat('Network', (vstatus.network || '?') + ' / sn' + (vstatus.netuid != null ? vstatus.netuid : '?'));
+        html += opsStat('Current block', vstatus.current_block != null ? vstatus.current_block : '—');
+        html += opsStat('Next cycle', blocksUntil + ' blk' + minsUntil);
+        html += opsStat('Probe miners', vstatus.n_probe_miners != null ? vstatus.n_probe_miners : 0);
+        html += opsStat('HITL miners', vstatus.n_hitl_miners != null ? vstatus.n_hitl_miners : 0);
+        html += opsStat('Last set_weights', setWeightsAgeStr + (setWeightsBlock ? ' @ ' + setWeightsBlock : ''));
+        html += opsStat('Last burn share', burnPct + ' <span class="badge burn">' + (vstatus.last_burn_share >= 1 ? 'FULL BURN' : vstatus.last_burn_share > 0 ? 'partial' : 'none') + '</span>');
+        html += '</div>';
+
+        html += '<div style="font-size:0.8rem;color:#888;margin-bottom:0.75rem">Last submitted weights: <span style="color:#ccc">{' + esc(lastWeightsStr) + '}</span></div>';
+
+        if (vstatus.last_chain_error) {
+            const errAge = vstatus.last_chain_error_at
+                ? Math.round((Date.now() / 1000 - vstatus.last_chain_error_at) / 60) + 'm ago'
+                : '';
+            html += '<div class="err-line">last chain error ' + errAge + ': ' + esc(vstatus.last_chain_error) + '</div>';
+        }
+
+        // Cycle history table
+        const cycles = (cyclesResp && cyclesResp.cycles) || [];
+        if (cycles.length === 0) {
+            html += '<p style="color:#666;margin-top:1rem">No cycles in cycle_history.jsonl yet.</p>';
+        } else {
+            html += '<h4 style="color:#aaa;margin:1rem 0 0.5rem;font-size:0.85rem;text-transform:uppercase;font-weight:normal">Recent cycles (newest first)</h4>';
+            html += '<table class="cycles-table"><tr>';
+            html += '<th>When</th><th>Block</th><th class="num">Reg</th><th class="num">Disp</th>';
+            html += '<th class="num">Resp</th><th class="num">Earn</th><th class="num">Total</th>';
+            html += '<th class="num">Burn</th><th>Submitted weights</th></tr>';
+            for (const c of cycles) {
+                const when = c.timestamp ? new Date(c.timestamp * 1000).toLocaleTimeString() : '—';
+                const subWeights = c.submitted_weights || {};
+                const subStr = Object.entries(subWeights).map(([u, w]) => u + ':' + Number(w).toFixed(3)).join(' ');
+                const burnVal = (c.burn_share != null ? c.burn_share : 0);
+                const earnedVal = (c.earned_total != null ? c.earned_total : 0);
+                html += '<tr>';
+                html += '<td>' + when + '</td>';
+                html += '<td class="num">' + (c.cycle_block || '—') + '</td>';
+                html += '<td class="num">' + (c.n_registered != null ? c.n_registered : '—') + '</td>';
+                html += '<td class="num">' + (c.n_dispatched != null ? c.n_dispatched : '—') + '</td>';
+                html += '<td class="num">' + (c.n_responded != null ? c.n_responded : '—') + '</td>';
+                html += '<td class="num">' + (c.n_earned != null ? c.n_earned : '—') + '</td>';
+                html += '<td class="num earned-cell">' + earnedVal.toFixed(4) + '</td>';
+                html += '<td class="num burn-cell">' + (burnVal * 100).toFixed(1) + '%</td>';
+                html += '<td style="font-size:0.75rem;color:#888">' + esc(subStr) + '</td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+        }
+        html += '</div>';
+        return html;
+    }
+    function opsStat(label, val) { return '<div class="ops-stat"><div class="label">' + label + '</div><div class="val">' + val + '</div></div>'; }
 
     function card(t, v, sub) { return '<div class="card"><h4>'+t+'</h4><div class="value">'+v+'</div>'+(sub?'<div class="sub">'+sub+'</div>':'')+'</div>'; }
     function detailItem(label, val) { return '<div class="detail-item"><div class="label">' + label + '</div><div class="val">' + val + '</div></div>'; }

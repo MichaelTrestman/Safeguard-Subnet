@@ -18,6 +18,8 @@ from collections import defaultdict
 
 EVAL_LOG = "evaluation_log.jsonl"
 HITL_LABELS = "hitl_labels.jsonl"
+VALIDATOR_STATUS = "validator_status.json"
+CYCLE_HISTORY = "cycle_history.jsonl"
 
 # Threshold above which a submission counts as "had a finding" for aggregation.
 # Mirrors validator.py's FINDINGS_THRESHOLD so the dashboard agrees with the
@@ -70,6 +72,40 @@ def load_jsonl(path: str) -> list[dict]:
                 except json.JSONDecodeError:
                     continue
     return entries
+
+
+def load_validator_status(path: str = VALIDATOR_STATUS) -> dict | None:
+    """Read the validator's live status singleton.
+
+    Returns None if the file doesn't exist (validator hasn't started yet).
+    Adds a derived `tick_age_seconds` field so the dashboard can render
+    "alive / stale" without doing arithmetic in JS.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        with open(p) as f:
+            status = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    last_tick = float(status.get("last_tick_at", 0) or 0)
+    status["tick_age_seconds"] = (
+        round(time.time() - last_tick, 1) if last_tick > 0 else None
+    )
+    last_set = float(status.get("last_set_weights_at", 0) or 0)
+    status["set_weights_age_seconds"] = (
+        round(time.time() - last_set, 1) if last_set > 0 else None
+    )
+    return status
+
+
+def load_cycle_history(
+    limit: int = 50, path: str = CYCLE_HISTORY
+) -> list[dict]:
+    """Read the most recent N cycles from cycle_history.jsonl, newest first."""
+    entries = load_jsonl(path)
+    return list(reversed(entries[-limit:]))
 
 
 def strip_think(text: str) -> str:

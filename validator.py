@@ -24,7 +24,18 @@ import threading
 import uuid
 import concurrent.futures
 from pathlib import Path
+from datetime import datetime
 from dataclasses import dataclass, field
+
+
+def _iso(ts: float | None = None) -> str:
+    """Human-readable ISO datetime for log entries. ``ts`` defaults to now.
+    Used alongside (not instead of) epoch timestamps so downstream date math
+    still works, but humans can read the files without a unix-time converter.
+    """
+    if ts is None or ts == 0:
+        return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
 
 import click
 import httpx
@@ -184,17 +195,19 @@ class ProbeResult:
 
 @dataclass
 class MinerScore:
-    """Accumulated score for a miner under the discovery market.
+    """Lifetime counters for a miner under the discovery market.
 
-    The miner's running EMA contribution is the weight axis. A single submission's
-    contribution is `findings_reward + bait_modifier`; see update_miner_scores.
+    Observability only — does not feed weight setting. compute_weights
+    consumes per-cycle raw contribution; Yuma Consensus smooths across
+    cycles via the chain-side bond EMA (see DESIGN.md § Yuma Consensus
+    interaction).
     """
     uid: int
-    submissions: int = 0       # total submissions audited
-    findings_count: int = 0    # submissions where findings_reward > 0
-    bait_only_count: int = 0   # null findings but bait detected (informative null)
-    null_count: int = 0        # null findings AND no bait (uninformative null)
-    ema_contribution: float = 0.0  # EMA of per-submission contribution; the weight axis
+    submissions: int = 0
+    findings_count: int = 0
+    bait_only_count: int = 0
+    null_count: int = 0
+    last_contribution: float = 0.0  # most recent cycle's raw contribution
 
 
 # ---------------------------------------------------------------------------
@@ -581,10 +594,12 @@ class TieredValidator:
     def route_to_hitl(self, result: ProbeResult, tier2_score: float, tier3_score: float):
         """Tier 4: Log case for future HITL labeling and queue for dispatch."""
         logger.info(f"Routing task {result.task_id} to HITL")
+        _now = time.time()
         entry = {
             "task_id": result.task_id,
             "miner_uid": result.miner_uid,
-            "timestamp": time.time(),
+            "timestamp": _now,
+            "datetime": _iso(_now),
             "transcript": result.transcript,
             "miner_safety_score": result.miner_safety_score,
             "miner_severity": result.miner_severity,
@@ -616,21 +631,46 @@ class TieredValidator:
             disagreement)
 
         Used by the discovery market to compute accepted_severity.
+
+        Logs one INFO line per audit describing which tier produced the decision,
+        so overnight runs can be diagnosed from the log alone (e.g. "every cycle
+        is falling through to HITL because the LLM is returning conf=0.0").
         """
+        tid = result.task_id[:8]
+
         # Tier 1: classifier
         t1_score, t1_conf = self.validate_with_classifier(result)
         if t1_conf >= self.classifier_threshold:
+            logger.info(
+                f"Audit [{tid}] TIER1 accepted: score={t1_score:.3f} "
+                f"conf={t1_conf:.2f} >= threshold={self.classifier_threshold}"
+            )
             return t1_score, _confidence_in_claim(result.miner_safety_score, t1_score)
+        logger.info(
+            f"Audit [{tid}] TIER1 fallthrough: score={t1_score:.3f} "
+            f"conf={t1_conf:.2f} < threshold={self.classifier_threshold}"
+        )
 
         # Tier 2: LLM judge
         t2_score, t2_conf = self.validate_with_llm_judge(result)
         if t2_conf >= self.classifier_threshold:
+            logger.info(
+                f"Audit [{tid}] TIER2 accepted: score={t2_score:.3f} "
+                f"conf={t2_conf:.2f} >= threshold={self.classifier_threshold}"
+            )
             return t2_score, _confidence_in_claim(result.miner_safety_score, t2_score)
+        logger.info(
+            f"Audit [{tid}] TIER2 fallthrough: score={t2_score:.3f} "
+            f"conf={t2_conf:.2f} < threshold={self.classifier_threshold}"
+        )
 
         # Tier 3: HITL
         self.route_to_hitl(result, t1_score, t2_score)
-        # Pending human review: use the average of the two automated reads
         pending_score = (t1_score + t2_score) / 2.0
+        logger.info(
+            f"Audit [{tid}] HITL routed: pending_score={pending_score:.3f} "
+            f"(avg of t1={t1_score:.3f} + t2={t2_score:.3f})"
+        )
         return pending_score, _confidence_in_claim(result.miner_safety_score, pending_score)
 
 
@@ -647,31 +687,45 @@ def _confidence_in_claim(claimed: float, audited: float) -> float:
 # ---------------------------------------------------------------------------
 
 def compute_weights(
-    scores: dict[int, MinerScore],
-    n_neurons: int,
+    cycle_contributions: dict[int, float],
+    owner_uid: int,
 ) -> tuple[list[int], list[float]]:
     """
-    Convert miner scores to weight vectors for chain submission.
+    Build the weight vector for chain submission from this cycle's raw
+    per-miner contributions, with an owner-UID burn floor.
 
-    Discovery market: weight ∝ EMA of (findings_reward + bait_modifier).
-    Yuma Consensus aggregates per-validator weights into emissions; the
-    validator-side design relies on YC clipping/bond penalties for collusion
-    resistance and does not duplicate that machinery here.
+    Policy:
+      - Any miner with contribution > 0 this cycle: weight ∝ contribution,
+        normalized so the productive miners sum to 1.0.
+      - No productive miners this cycle: weight 1.0 to owner_uid.
+
+    Per the bittensor-why-burn convention, the chain auto-burns
+    owner-UID-allocated emissions, so the burn-floor branch is a
+    chain-level burn (not custodial — the validator never holds the
+    tokens, so DESIGN.md § Architectural commitments item 3 still holds).
+
+    Always returns a non-empty vector. This defends the validator's
+    consensus slot every tempo against silence-then-capture by hostile
+    hotkeys, and routes unearned emissions to the chain burn instead of
+    paying dead miners.
+
+    Args:
+        cycle_contributions: {uid: contribution_this_cycle}; miners absent
+            from this dict get no weight this cycle.
+        owner_uid: subnet owner UID, resolved from
+            subtensor.get_subnet_owner_hotkey() at validator startup.
     """
-    uids = []
-    weights = []
+    earned = [(uid, c) for uid, c in cycle_contributions.items() if c > 0]
+    earned_total = sum(c for _, c in earned)
 
-    for uid in range(n_neurons):
-        ms = scores.get(uid)
-        if ms is None or ms.ema_contribution <= 0:
-            continue
+    if earned_total <= 0:
+        return [owner_uid], [1.0]
+
+    uids: list[int] = []
+    weights: list[float] = []
+    for uid, c in earned:
         uids.append(uid)
-        weights.append(ms.ema_contribution)
-
-    if weights:
-        total = sum(weights)
-        weights = [w / total for w in weights]
-
+        weights.append(c / earned_total)
     return uids, weights
 
 
@@ -786,6 +840,8 @@ def build_single_task(
 
 
 EVAL_LOG_PATH = os.getenv("EVAL_LOG_PATH", "evaluation_log.jsonl")
+VALIDATOR_STATUS_PATH = os.getenv("VALIDATOR_STATUS_PATH", "validator_status.json")
+CYCLE_HISTORY_PATH = os.getenv("CYCLE_HISTORY_PATH", "cycle_history.jsonl")
 
 
 def _log_evaluation(entry: dict):
@@ -797,7 +853,32 @@ def _log_evaluation(entry: dict):
         logger.error(f"Failed to write eval log: {e}")
 
 
-EMA_ALPHA = 0.1  # smoothing factor for per-miner contribution EMA
+def _write_validator_status(status: dict):
+    """Overwrite validator_status.json with the live singleton state.
+
+    Operator-facing status feed for the dashboard. Written each loop
+    iteration so the dashboard can show "alive" / "stalled" without
+    tailing validator.log. The vali-django port replaces this with the
+    ValidatorStatus model singleton.
+    """
+    try:
+        with open(VALIDATOR_STATUS_PATH, "w") as f:
+            json.dump(status, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to write validator status: {e}")
+
+
+def _append_cycle_history(entry: dict):
+    """Append one cycle's summary stats to cycle_history.jsonl.
+
+    One line per evaluation cycle, written after a successful set_weights
+    submission. Operator-facing run history for the dashboard.
+    """
+    try:
+        with open(CYCLE_HISTORY_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        logger.error(f"Failed to write cycle history: {e}")
 
 
 def update_miner_scores(
@@ -806,8 +887,8 @@ def update_miner_scores(
     tiered_validator: TieredValidator,
     bait_library: BaitLibrary,
     concerns_vector: dict[str, float],
-):
-    """Score each result under the discovery market and update miner EMAs.
+) -> dict[int, float]:
+    """Score each result under the discovery market.
 
     Per-submission contribution = findings_reward + bait_modifier, where:
       - findings_reward = accepted_severity × concerns_weight[category]
@@ -815,7 +896,11 @@ def update_miner_scores(
       - bait_modifier is computed only if findings_reward < FINDINGS_THRESHOLD
 
     See DESIGN.md § Validator design for the rationale.
+
+    Returns {uid: contribution_this_cycle} for compute_weights. Mutates
+    miner_scores in place to update lifetime counters.
     """
+    cycle_contributions: dict[int, float] = {}
     for result, task, target_name in results:
         uid = result.miner_uid
 
@@ -863,7 +948,6 @@ def update_miner_scores(
 
         contribution = findings_reward + bait_modifier
 
-        # Update bookkeeping for the three states
         if findings_reward >= FINDINGS_THRESHOLD:
             ms.findings_count += 1
         elif n_bait > 0:
@@ -871,10 +955,11 @@ def update_miner_scores(
         else:
             ms.null_count += 1
 
-        # EMA on contribution — the weight axis
-        ms.ema_contribution = (
-            EMA_ALPHA * contribution + (1.0 - EMA_ALPHA) * ms.ema_contribution
-        )
+        ms.last_contribution = contribution
+        if contribution > 0:
+            cycle_contributions[uid] = (
+                cycle_contributions.get(uid, 0.0) + contribution
+            )
 
         # Disagreement-based HITL routing for findings cases (legacy hook;
         # the EU-driven policy lives in DESIGN.md and isn't fully wired yet)
@@ -887,8 +972,10 @@ def update_miner_scores(
             )
             tiered_validator.route_to_hitl(result, audit_score, audit_score)
 
+        _now = time.time()
         _log_evaluation({
-            "timestamp": time.time(),
+            "timestamp": _now,
+            "datetime": _iso(_now),
             "task_id": task.task_id,
             "type": "probe",
             "target_name": target_name,
@@ -906,6 +993,8 @@ def update_miner_scores(
             "contribution": contribution,
             "transcript": result.transcript,
         })
+
+    return cycle_contributions
 
 
 # ---------------------------------------------------------------------------
@@ -980,7 +1069,7 @@ MINER_SCORES_FILE = os.getenv("MINER_SCORES_FILE", "miner_scores.json")
 
 
 def save_miner_scores(scores: dict[int, MinerScore]):
-    """Persist miner scores to disk so restarts don't lose state."""
+    """Persist lifetime counters to disk so restarts don't lose observability."""
     data = {}
     for uid, ms in scores.items():
         data[str(uid)] = {
@@ -989,7 +1078,7 @@ def save_miner_scores(scores: dict[int, MinerScore]):
             "findings_count": ms.findings_count,
             "bait_only_count": ms.bait_only_count,
             "null_count": ms.null_count,
-            "ema_contribution": ms.ema_contribution,
+            "last_contribution": ms.last_contribution,
         }
     try:
         with open(MINER_SCORES_FILE, "w") as f:
@@ -999,7 +1088,7 @@ def save_miner_scores(scores: dict[int, MinerScore]):
 
 
 def load_miner_scores() -> dict[int, MinerScore]:
-    """Load persisted miner scores from disk."""
+    """Load persisted lifetime counters from disk."""
     path = Path(MINER_SCORES_FILE)
     if not path.exists():
         return {}
@@ -1014,7 +1103,7 @@ def load_miner_scores() -> dict[int, MinerScore]:
             ms.findings_count = ms_data.get("findings_count", 0)
             ms.bait_only_count = ms_data.get("bait_only_count", 0)
             ms.null_count = ms_data.get("null_count", 0)
-            ms.ema_contribution = ms_data.get("ema_contribution", 0.0)
+            ms.last_contribution = ms_data.get("last_contribution", 0.0)
             scores[uid] = ms
         logger.info(f"Loaded scores for {len(scores)} miners from {MINER_SCORES_FILE}")
         return scores
@@ -1093,6 +1182,34 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
         my_uid = metagraph.hotkeys.index(my_hotkey)
         logger.info(f"Validator UID: {my_uid}")
 
+        # Resolve subnet owner UID for the burn-floor in compute_weights.
+        # Falls back to UID 0 if the chain query fails — UID 0 is the
+        # convention but the chain is the source of truth.
+        owner_uid = 0
+        try:
+            owner_hotkey = _chain_call(
+                subtensor.get_subnet_owner_hotkey,
+                netuid=netuid,
+                _timeout=CHAIN_TIMEOUT_BLOCK,
+            )
+            resolved = _chain_call(
+                subtensor.get_uid_for_hotkey_on_subnet,
+                hotkey_ss58=owner_hotkey,
+                netuid=netuid,
+                _timeout=CHAIN_TIMEOUT_BLOCK,
+            )
+            if resolved is not None:
+                owner_uid = int(resolved)
+            logger.info(
+                f"Subnet owner: hotkey={owner_hotkey} uid={owner_uid} "
+                f"(burn-floor target)"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve subnet owner UID: {e}; "
+                f"falling back to owner_uid=0"
+            )
+
         tempo = subtensor.get_subnet_hyperparameters(netuid).tempo
         logger.info(f"Subnet tempo: {tempo} blocks")
 
@@ -1102,6 +1219,16 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
         prev_probe_uids: set[int] = set()
         prev_hitl_uids: set[int] = set()
         heartbeat_iteration = 0  # for periodic status log
+
+        # Operator-facing status fields, persisted to validator_status.json
+        # at the end of each loop iteration. The dashboard reads this file.
+        last_set_weights_at: float = 0.0
+        last_set_weights_block: int = 0
+        last_set_weights_payload: dict = {}
+        last_burn_share: float = 0.0
+        last_set_weights_success: bool = False
+        last_chain_error: str = ""
+        last_chain_error_at: float = 0.0
 
         while True:
             try:
@@ -1154,15 +1281,22 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                     # the validator out of fresh dispatches for a full tempo
                     # (~72 minutes). See "first-cycle race" in DESIGN.md.
                     cycle_collected_fresh_data = False
+                    # Per-cycle raw contributions; consumed by compute_weights
+                    # below. Empty dict → burn floor activates → owner UID gets
+                    # 100% weight (chain auto-burns).
+                    cycle_contributions: dict[int, float] = {}
+                    # Per-cycle dispatch counters for the summary log
+                    n_dispatched = 0
+                    n_responded = 0
 
                     # Refresh target configs from registry each cycle
                     if use_registry:
                         target_configs = load_target_configs()
 
                     if not probe_miners:
-                        logger.warning("No probe miner endpoints found, skipping cycle")
+                        logger.warning("No probe miner endpoints found, skipping dispatch")
                     elif not target_configs:
-                        logger.warning("No target configs available, skipping cycle")
+                        logger.warning("No target configs available, skipping dispatch")
                     else:
                         # 2. Pick target for this cycle (rotate across configs)
                         target = target_configs[target_index % len(target_configs)]
@@ -1199,12 +1333,14 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                             (r[0], r[1], target["name"])
                             for r in raw_results if r is not None
                         ]
-                        logger.info(f"Collected {len(results)}/{len(tasks_for_miners)} results")
+                        n_dispatched = len(tasks_for_miners)
+                        n_responded = len(results)
+                        logger.info(f"Collected {n_responded}/{n_dispatched} results")
                         if results:
                             cycle_collected_fresh_data = True
 
                         # 5. Score results under the discovery market (may generate HITL cases)
-                        update_miner_scores(
+                        cycle_contributions = update_miner_scores(
                             miner_scores, results, tiered_validator,
                             bait_library, concerns_vector,
                         )
@@ -1251,6 +1387,7 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                                     resp = await send_hitl_task(wallet, hitl_ep, case)
                                     if resp and resp.get("status") == "labeled":
                                         failed_streak[hitl_uid] = 0
+                                        _label_now = time.time()
                                         label = {
                                             "task_id": case["task_id"],
                                             "annotator_uid": hitl_uid,
@@ -1258,7 +1395,8 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                                             "categories": resp.get("categories", []),
                                             "severity": resp.get("severity", ""),
                                             "reasoning": resp.get("reasoning", ""),
-                                            "timestamp": time.time(),
+                                            "timestamp": _label_now,
+                                            "datetime": _iso(_label_now),
                                         }
                                         _log_hitl_label(label)
                                         logger.info(
@@ -1286,52 +1424,150 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                     # 7. Compute and set weights
                     # Mechanism 0: probe miners
                     probe_uids = set(probe_miners.keys()) if probe_miners else set()
-                    probe_scores = {uid: ms for uid, ms in miner_scores.items() if uid in probe_uids}
-                    uids, weights = compute_weights(probe_scores, metagraph.n)
+                    probe_contributions = {
+                        uid: c for uid, c in cycle_contributions.items()
+                        if uid in probe_uids
+                    }
+                    uids, weights = compute_weights(probe_contributions, owner_uid)
+                    weight_map = dict(zip(uids, weights))
+                    burn_share = weight_map.get(owner_uid, 0.0)
+                    n_earned = sum(1 for c in probe_contributions.values() if c > 0)
+                    earned_total = sum(probe_contributions.values())
 
-                    # Log cycle summary
-                    for uid, ms in miner_scores.items():
-                        mtype = "HITL" if uid in (hitl_miners or {}) else "PROBE"
-                        logger.info(
-                            f"  UID {uid} [{mtype}]: subs={ms.submissions} "
-                            f"findings={ms.findings_count} bait_only={ms.bait_only_count} "
-                            f"null={ms.null_count} ema={ms.ema_contribution:.4f}"
-                        )
-
-                    if uids:
-                        # Bug E: set_weights blocks on tx inclusion (~12-24s
-                        # normally, but can hang on chain flakiness). Hard
-                        # timeout via _chain_call so it can't lock the loop
-                        # past the heartbeat watchdog.
-                        success = _chain_call(
-                            subtensor.set_weights,
-                            wallet=wallet,
-                            netuid=netuid,
-                            uids=uids,
-                            weights=weights,
-                            mechid=0,
-                            wait_for_inclusion=True,
-                            wait_for_finalization=False,
-                            _timeout=CHAIN_TIMEOUT_SET_WEIGHTS,
-                        )
-                        if success:
-                            logger.info(f"Set weights (mech 0 probe): {dict(zip(uids, [f'{w:.4f}' for w in weights]))}")
-                            # Only reset the time-remaining until the next cycle
-                            # if this cycle actually collected fresh data. Otherwise
-                            # leave the timer at zero so the next loop iteration
-                            # retries dispatch as soon as a miner becomes reachable.
-                            if cycle_collected_fresh_data:
-                                last_weight_block = current_block
-                            else:
-                                logger.info(
-                                    "Cycle set weights from persisted state only "
-                                    "(no fresh data collected) — leaving time-remaining "
-                                    "at zero so next iteration retries dispatch"
-                                )
+                    # ========== Cycle summary ==========
+                    logger.info(
+                        f"=== Cycle summary @ block {current_block} ==="
+                    )
+                    logger.info(
+                        f"Probe miners: registered={len(probe_uids)} "
+                        f"dispatched={n_dispatched} responded={n_responded} "
+                        f"earned={n_earned} earned_total={earned_total:.4f}"
+                    )
+                    # Sorted union of (this-cycle probe miners) ∪ (lifetime miner_scores)
+                    # so newcomers and ghosts both surface.
+                    all_probe_relevant = sorted(
+                        probe_uids
+                        | {u for u in miner_scores.keys() if u not in (hitl_miners or {})}
+                    )
+                    for uid in all_probe_relevant:
+                        ms = miner_scores.get(uid)
+                        contrib = probe_contributions.get(uid, 0.0)
+                        weight = weight_map.get(uid)
+                        weight_str = f"{weight:.4f}" if weight is not None else " ----- "
+                        registered_marker = "" if uid in probe_uids else " (gone)"
+                        if ms is not None:
+                            lifetime_str = (
+                                f"subs={ms.submissions} find={ms.findings_count} "
+                                f"bait={ms.bait_only_count} null={ms.null_count}"
+                            )
                         else:
-                            logger.warning("Failed to set weights for mechanism 0")
+                            lifetime_str = "subs=0 find=0 bait=0 null=0 (new)"
+                        logger.info(
+                            f"  UID {uid:>3} [PROBE{registered_marker}]: "
+                            f"contrib={contrib:.4f} weight={weight_str} | "
+                            f"lifetime {lifetime_str}"
+                        )
+
+                    if hitl_miners:
+                        logger.info(
+                            f"HITL miners: registered={len(hitl_miners)} "
+                            f"(mech 1, flat 1/N split)"
+                        )
+                        for uid in sorted(hitl_miners.keys()):
+                            ms = miner_scores.get(uid)
+                            if ms is not None:
+                                lifetime_str = (
+                                    f"subs={ms.submissions} find={ms.findings_count} "
+                                    f"bait={ms.bait_only_count} null={ms.null_count}"
+                                )
+                            else:
+                                lifetime_str = "subs=0 find=0 bait=0 null=0 (new)"
+                            logger.info(
+                                f"  UID {uid:>3} [HITL]: lifetime {lifetime_str}"
+                            )
+
+                    if burn_share > 0:
+                        burn_reason = (
+                            "no productive mining this cycle"
+                            if n_earned == 0
+                            else "owner_uid is also a productive miner"
+                        )
+                        logger.info(
+                            f"Burn floor: owner_uid={owner_uid} weight={burn_share:.4f} "
+                            f"(chain auto-burn — {burn_reason})"
+                        )
                     else:
-                        logger.warning("No scored probe miners, skipping mech 0 weight setting")
+                        logger.info(
+                            f"Burn floor: owner_uid={owner_uid} weight=0.0000 "
+                            f"(not engaged — productive cycle)"
+                        )
+
+                    # Bug E: set_weights blocks on tx inclusion (~12-24s
+                    # normally, but can hang on chain flakiness). Hard
+                    # timeout via _chain_call so it can't lock the loop
+                    # past the heartbeat watchdog.
+                    #
+                    # compute_weights always returns a non-empty vector (burn
+                    # floor → owner UID 1.0 when no miners earned), so there
+                    # is no skip-the-call branch — every tempo gets a
+                    # set_weights submission, defending the slot.
+                    success = _chain_call(
+                        subtensor.set_weights,
+                        wallet=wallet,
+                        netuid=netuid,
+                        uids=uids,
+                        weights=weights,
+                        mechid=0,
+                        wait_for_inclusion=True,
+                        wait_for_finalization=False,
+                        _timeout=CHAIN_TIMEOUT_SET_WEIGHTS,
+                    )
+                    if success:
+                        sorted_pairs = sorted(zip(uids, weights), key=lambda p: p[0])
+                        weights_str = ", ".join(
+                            f"{u}: {w:.4f}" for u, w in sorted_pairs
+                        )
+                        logger.info(f"Set weights (mech 0): {{{weights_str}}}")
+                        # Only reset the time-remaining until the next cycle
+                        # if this cycle actually collected fresh data. Otherwise
+                        # leave the timer at zero so the next loop iteration
+                        # retries dispatch as soon as a miner becomes reachable.
+                        if cycle_collected_fresh_data:
+                            last_weight_block = current_block
+                        else:
+                            logger.info(
+                                "Cycle set weights with burn floor only "
+                                "(no fresh data collected) — leaving time-remaining "
+                                "at zero so next iteration retries dispatch"
+                            )
+                        # Operator-facing state for dashboard
+                        last_set_weights_at = time.time()
+                        last_set_weights_block = current_block
+                        last_set_weights_payload = {
+                            str(u): round(w, 4) for u, w in sorted_pairs
+                        }
+                        last_burn_share = burn_share
+                        last_set_weights_success = True
+                        _cycle_now = time.time()
+                        _append_cycle_history({
+                            "timestamp": _cycle_now,
+                            "datetime": _iso(_cycle_now),
+                            "cycle_block": current_block,
+                            "n_registered": len(probe_uids),
+                            "n_dispatched": n_dispatched,
+                            "n_responded": n_responded,
+                            "n_earned": n_earned,
+                            "earned_total": round(earned_total, 6),
+                            "burn_share": round(burn_share, 6),
+                            "owner_uid": owner_uid,
+                            "submitted_weights": last_set_weights_payload,
+                            "had_fresh_data": cycle_collected_fresh_data,
+                        })
+                    else:
+                        logger.warning("Failed to set weights for mechanism 0")
+                        last_set_weights_success = False
+                        last_chain_error = "set_weights mech 0 returned False"
+                        last_chain_error_at = time.time()
 
                     # Mechanism 1: HITL miners (flat score for MVP — did they respond?)
                     if hitl_miners:
@@ -1371,14 +1607,43 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                 # heartbeat (last_heartbeat[0]) updates every iteration above;
                 # this is purely a UX log line for tail watchers.
                 heartbeat_iteration += 1
+                blocks_until_next = max(0, tempo - (current_block - last_weight_block))
                 if heartbeat_iteration % HEARTBEAT_LOG_INTERVAL_ITERATIONS == 0:
-                    blocks_until_next = max(0, tempo - (current_block - last_weight_block))
                     minutes_until = blocks_until_next * 12 / 60
                     logger.info(
                         f"Heartbeat: block {current_block}, next cycle in "
                         f"{blocks_until_next} blocks (~{minutes_until:.0f} min); "
                         f"probe_miners={len(probe_miners)} hitl_miners={len(hitl_miners)}"
                     )
+
+                # Operator-facing live status, written each tick. Dashboard
+                # reads this to render "is the validator alive" without
+                # tailing the log.
+                _tick_now = time.time()
+                _write_validator_status({
+                    "last_tick_at": _tick_now,
+                    "last_tick_datetime": _iso(_tick_now),
+                    "loop_iteration": heartbeat_iteration,
+                    "wallet_hotkey": my_hotkey,
+                    "my_uid": my_uid,
+                    "owner_uid": owner_uid,
+                    "network": network,
+                    "netuid": netuid,
+                    "current_block": current_block,
+                    "tempo": tempo,
+                    "blocks_until_next_cycle": blocks_until_next,
+                    "n_probe_miners": len(probe_miners),
+                    "n_hitl_miners": len(hitl_miners),
+                    "last_set_weights_at": last_set_weights_at,
+                    "last_set_weights_datetime": _iso(last_set_weights_at) if last_set_weights_at else None,
+                    "last_set_weights_block": last_set_weights_block,
+                    "last_set_weights_payload": last_set_weights_payload,
+                    "last_burn_share": round(last_burn_share, 6),
+                    "last_set_weights_success": last_set_weights_success,
+                    "last_chain_error": last_chain_error,
+                    "last_chain_error_at": last_chain_error_at,
+                    "last_chain_error_datetime": _iso(last_chain_error_at) if last_chain_error_at else None,
+                })
 
                 time.sleep(12)
 
@@ -1391,9 +1656,13 @@ def main(network: str, netuid: int, coldkey: str, hotkey: str, log_level: str):
                 # the next iteration.
                 logger.warning(f"Chain RPC timed out: {e}; retrying next iteration")
                 last_heartbeat[0] = time.time()
+                last_chain_error = f"chain RPC timeout: {e}"
+                last_chain_error_at = time.time()
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"Error in validator loop: {e}")
+                last_chain_error = f"{type(e).__name__}: {e}"
+                last_chain_error_at = time.time()
                 time.sleep(12)
     finally:
         stop_event.set()
