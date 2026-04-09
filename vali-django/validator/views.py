@@ -209,6 +209,16 @@ def registry(request: HttpRequest) -> JsonResponse:
 # --- Operator UI --------------------------------------------------------
 
 def operator_dashboard(request: HttpRequest) -> HttpResponse:
+    """Phase 3: full operator console for vali-django.
+
+    Shows everything the loop has accumulated in the DB — live status
+    + per-cycle history + per-miner roster + recent audit findings +
+    HITL queue. All data sources are the same tables the loop writes
+    to, so if the loop is alive and the dashboard shows stale values,
+    it's a dashboard bug not a loop bug.
+    """
+    from .models import CycleHistory, Evaluation, Finding, HitlCase, MinerScore
+
     vstatus = ValidatorStatus.get()
     targets = RegisteredTarget.objects.annotate(
         n_evals=Count("evaluations"),
@@ -222,11 +232,60 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     if vstatus.last_tick_at:
         tick_age = (now - vstatus.last_tick_at).total_seconds()
 
+    # ----- Phase 3: cycle history -----
+    # Most recent 20 cycles. Each row shows burn share, earned total,
+    # and the submitted weights payload. Sorted newest-first.
+    recent_cycles = CycleHistory.objects.order_by("-id")[:20]
+
+    # ----- Phase 3: miner roster -----
+    # One row per MinerScore. Annotate with lifetime evaluation count
+    # and the most recent raw contribution so the operator can spot
+    # productive vs dormant miners at a glance.
+    miners = MinerScore.objects.all().order_by("uid")
+
+    # ----- Phase 3: recent findings -----
+    # Last 10 Finding rows with their Evaluation context.
+    recent_findings = Finding.objects.select_related(
+        "evaluation", "evaluation__target"
+    ).order_by("-id")[:10]
+
+    # ----- Phase 3: HITL queue -----
+    # Pending HITL cases that nobody's labeled yet.
+    pending_hitl = HitlCase.objects.filter(
+        status=HitlCase.STATUS_PENDING
+    ).select_related("evaluation", "evaluation__target").order_by("-id")[:10]
+
+    # ----- Phase 3: audit throughput -----
+    # Totals for the scoreboard card.
+    n_evaluations_total = Evaluation.objects.count()
+    n_evaluations_audited = Evaluation.objects.filter(
+        audit_score__isnull=False
+    ).count()
+    n_findings_total = Finding.objects.count()
+    n_hitl_pending = HitlCase.objects.filter(
+        status=HitlCase.STATUS_PENDING
+    ).count()
+
+    # Burn share presentation hint — the FULL BURN chip fires at >=0.99
+    # (tolerate tiny float imprecision around the 1.0 boundary).
+    burn_share = float(vstatus.last_burn_share or 0.0)
+    full_burn = burn_share >= 0.99
+
     return render(request, "validator/operator_dashboard.html", {
         "vstatus": vstatus,
         "targets": targets,
         "weight_age": weight_age,
         "tick_age": tick_age,
+        "recent_cycles": recent_cycles,
+        "miners": miners,
+        "recent_findings": recent_findings,
+        "pending_hitl": pending_hitl,
+        "n_evaluations_total": n_evaluations_total,
+        "n_evaluations_audited": n_evaluations_audited,
+        "n_findings_total": n_findings_total,
+        "n_hitl_pending": n_hitl_pending,
+        "burn_share": burn_share,
+        "full_burn": full_burn,
         "settings": {
             "wallet": settings.VALIDATOR_WALLET,
             "hotkey": settings.VALIDATOR_HOTKEY,
