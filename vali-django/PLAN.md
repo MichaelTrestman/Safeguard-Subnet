@@ -719,8 +719,11 @@ Two new fields on `Evaluation`:
      refactor that changes the serializer breaks every commitment
      silently — golden tests are the only way to catch it.
 
-2. **`validator/views.py`** — new `POST /relay` view (async, Epistula-
-   authed). Roughly:
+2. **`validator/views.py`** — new `POST /probe/relay` view (async,
+   Epistula-authed). The `/probe/` prefix namespaces the miner-side
+   relay distinct from any future customer-facing relay; spec uses
+   bare `/relay`, vali-django diverges per locked open-question 1.
+   Roughly:
    ```python
    @csrf_exempt
    @require_http_methods(["POST"])
@@ -801,9 +804,10 @@ re-verification.)
 **Done criteria for Phase 2.9.**
 - Golden test file passes for the canonical-JSON serializer; the
   serializer cannot be silently broken by refactoring.
-- A v2-aware miner sending a probe through `POST /relay` receives a
-  signed commitment, includes it in its transcript submission, and
-  the audit worker marks the row `provenance_verified=True`.
+- A v2-aware miner sending a probe through `POST /probe/relay`
+  receives a signed commitment, includes it in its transcript
+  submission, and the audit worker marks the row
+  `provenance_verified=True`.
 - A miner attempting to fabricate a response (submitting a transcript
   with no commitment block, OR with a digest that doesn't match the
   stored preimage) is marked `provenance_verified=False` and gets
@@ -836,11 +840,24 @@ re-verification.)
 - **Hourly budget enforcement** — settings knob exists but the
   enforcement code (cache-key TTL or DB lookup) ships only when abuse
   is observed, not preemptively.
+- **Retroactive audit of `safeguard/evaluation_log.jsonl`** — explicit
+  user decision 2026-04-09: SKIP. The historical log is structurally
+  untrustworthy and there is no provenance data to recover from it.
+  The published Qwen3-32B-TEE safety report should be treated as
+  permanently tainted. v2 starts the trust chain fresh; nothing
+  pre-2.9 carries forward.
+- **Upgrading `safeguard/safeguard-example-miner/`** — this is the
+  in-tree minimal protocol example, deprecated as a starting point
+  for real miners. v2-awareness is added to the maintained
+  third-party reference rig at `../../safeguard-miner/` (separate
+  git repo, separate PR — see Dependencies below). The example
+  miner gets the v2 echo only as a copy-paste from the rig once that
+  ships, low priority.
 
 **Verification plan.**
 1. Stand up vali-django with `SAFEGUARD_RELAY_ENDPOINT` set; verify
-   `POST /relay` responds 200 to a valid Epistula-signed probe from
-   a registered miner.
+   `POST /probe/relay` responds 200 to a valid Epistula-signed probe
+   from a registered miner.
 2. Submit a probe → forward to demo-client → receive commitment →
    verify the digest matches `sha256(canonical_json(stored_preimage))`.
 3. Submit a transcript with the matching commitment block → audit
@@ -849,36 +866,50 @@ re-verification.)
    marks `provenance_verified=False` and severity 0.
 5. Submit a transcript with no commitment block (v1 mode) → audit
    worker marks `provenance_verified=None` and processes normally.
-6. Run the retroactive audit script against
-   `safeguard/evaluation_log.jsonl`; verify that the known-fabricated
-   UID 5 multi-turn entries are flagged.
-7. Dashboard renders the three states distinctly.
+6. Dashboard renders the three states distinctly.
 
 **Dependencies.**
 - vali-django Phases 2.0–2.8 (all shipped — done).
-- A v2-aware miner exists. The demo `safeguard-example-miner/` needs
-  a small upgrade to (a) call `safeguard_relay_endpoint` instead of
-  `target_validator_endpoint` when both are present in the task body,
-  and (b) echo the `response_commitment` into each per-turn entry of
-  its submission. ~30 lines, separate commit, can land in parallel
-  with the validator-side work but Phase 2.9 done criteria require
-  at least one such miner running.
-- No new third-party libraries. The canonical-JSON serializer is
-  pure-stdlib `json.dumps`. The hashing is pure-stdlib `hashlib`.
+- **A v2-aware miner exists.** The canonical upgrade target is the
+  maintained third-party reference rig at
+  [`../../safeguard-miner/`](../../safeguard-miner/) (sibling repo
+  to `safeguard/`, NOT inside it — distinct git history, separate
+  PR). Required miner-side changes per the spec §"Miner-side
+  protocol change": (a) call `safeguard_relay_endpoint` instead of
+  `target_validator_endpoint` when both are present in the dispatch
+  task body, and (b) echo `response_commitment` verbatim into each
+  per-turn entry of the submission transcript. Roughly ~30 lines in
+  `safeguard-miner/prober.py` and `safeguard-miner/miner.py`. The
+  vali-django Phase 2.9 done criterion "a v2-aware miner sending a
+  probe through `POST /probe/relay` receives a signed commitment"
+  cannot be checked off until the rig PR ships, but the validator-
+  side work can land independently and be smoke-tested with a minimal
+  curl-based reproduction in `tmp-scripts/`.
+- The deprecated in-tree `safeguard/safeguard-example-miner/` does
+  NOT need upgrading as part of 2.9. It's a minimal protocol example
+  marked deprecated in its own header docstring. If it gets the v2
+  echo at all, it's a copy-paste from the rig as a follow-up
+  housekeeping commit.
+- No new third-party libraries on the validator side. The canonical-
+  JSON serializer is pure-stdlib `json.dumps`. The hashing is
+  pure-stdlib `hashlib`.
 
-**Open questions for the user before 2.9 implementation starts.**
-1. **Endpoint URL naming.** The spec uses `POST /relay`. vali-django
-   already has a `/register` and `/evaluate` customer portal. Is
-   `/relay` the right URL, or should it be `/v2/relay` or `/probe/relay`
-   to avoid future namespace conflicts if a customer-facing relay is
-   ever needed?
-2. **Retroactive audit of existing `evaluation_log.jsonl`.** Yes/no?
-   If yes, the script lives in `tmp-scripts/audit_legacy_log.py` and
-   produces a markdown report; it does NOT modify the historical log.
-3. **`safeguard-example-miner/` upgrade.** Do this in the same PR as
-   vali-django Phase 2.9, or in a separate follow-up? My recommendation
-   is separate so the validator-side change can be reviewed in
-   isolation, but they need to land in the same week.
+**Open questions — resolved 2026-04-09.**
+1. ✅ **Endpoint URL naming.** Locked to `POST /probe/relay`. The
+   `/probe/` prefix namespaces the miner-side relay so a future
+   customer-facing relay (different audience, different auth) can
+   coexist on a different prefix without ambiguity. The
+   RELAY_PROTOCOL_V2 spec uses bare `/relay`; vali-django diverges
+   here for namespace hygiene. The spec section "Endpoint spec" should
+   be updated when 2.9 ships to reflect the actual deployed URL.
+2. ✅ **Retroactive audit of `safeguard/evaluation_log.jsonl`.** SKIP.
+   The historical log lacks provenance data and is structurally
+   untrustworthy. v2 starts the trust chain fresh; nothing pre-2.9
+   carries forward. See "Out of scope" above.
+3. ✅ **Miner upgrade sequencing.** Separate PR in separate git repo
+   at `../../safeguard-miner/` (the maintained third-party rig). The
+   in-tree `safeguard/safeguard-example-miner/` is deprecated and out
+   of scope for v2. See "Dependencies" above.
 
 ---
 
