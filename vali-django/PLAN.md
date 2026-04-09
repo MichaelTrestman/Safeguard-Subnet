@@ -33,11 +33,21 @@
 >   `validator/audit.py` for what actually shipped. Recent commits of
 >   note: `1cbe312` (2.0-2.4 + audit pipeline), `ce0e0e8` (2.5+2.6
 >   aggregation + set_weights burn floor).
-> - A new **Phase 2.8 (per-miner tempo gate)** was added below after
->   Phase 2.7 to fix the architectural complaint that the current cycle
->   gate can still make a mid-tempo-joining miner wait up to a full
->   tempo. Design is locked; 3 open questions still need user answers
->   before implementation (see the Phase 2.8 section below).
+> - **Phase 2.8 (per-miner tempo gate) shipped 2026-04-09** in commit
+>   `<TBD>`. Replaced the per-cycle gate (`last_cycle_block_local` +
+>   `last_dispatched_uids` set) with persistent per-miner state on
+>   `MinerScore`: `last_successful_dispatch_block` (BigInt) +
+>   `last_failed_dispatch_at` (DateTime). Two-half gate: tempo-elapsed
+>   + failure-cooldown. Cooldown is 5 min, no retry cap, applies ONLY
+>   on failures (success clears the cooldown). Migration `0004_phase_2_8`
+>   also adds `Evaluation.cycle` (FK → CycleHistory) and
+>   `Evaluation.cycle_block_at_creation` (BigInt) for race-free FK
+>   backfill at the next set_weights commit. Smoke-tested in 6
+>   scenarios via `tmp-scripts/smoke_per_miner_gate.py`. The
+>   open-question answers from the user: (1) no retry cap, retry
+>   every 5 min; (2) reset on EITHER tempo elapse OR successful
+>   dispatch; (3) FK added now with `cycle_block_at_creation`
+>   partition column for clean backfill semantics.
 > - **Miner public-IP bug** discovered via GCP deployment planning:
 >   `safeguard/safeguard-example-miner/main.py` used to rewrite
 >   `HOST=0.0.0.0` → `127.0.0.1` before the chain commit, which broke
@@ -413,7 +423,41 @@ deploy alone before any loop work)
 
 ---
 
-### Phase 2.8 — Per-miner tempo gate (architecture)
+### Phase 2.8 — Per-miner tempo gate ✅ SHIPPED 2026-04-09
+
+> **Status: shipped.** This section retains the original design notes
+> for context but the actual implementation diverged from the
+> "dispatch_attempts_this_tempo counter" recommendation in Decision 6
+> after the user picked "no retry cap, retry every 5 min" as the
+> answer to open question 1. The actual shipped data model is two
+> fields on `MinerScore`:
+>
+> - `last_successful_dispatch_block: BigIntegerField(null=True)`
+> - `last_failed_dispatch_at: DateTimeField(null=True)`
+>
+> The gate is applied per tick by `_eligible_miners_for_dispatch` in
+> `validator/loop.py`. Two halves, both must pass:
+>
+> 1. **Owed-this-tempo**: never dispatched OR
+>    `(current_block - last_successful_dispatch_block) >= tempo`
+> 2. **Failure cooldown**: `last_failed_dispatch_at IS NULL` OR
+>    `(now - last_failed_dispatch_at) >= DISPATCH_RETRY_COOLDOWN_S`
+>    (300s = 5 min)
+>
+> The cooldown gate ONLY fires on failures — successful dispatches
+> CLEAR `last_failed_dispatch_at`, so a just-succeeded miner is held
+> back only by the tempo gate. The "reset on either tempo boundary
+> OR successful dispatch" answer to open question 2 falls out for
+> free from this design — neither requires explicit reset code.
+>
+> Migration `0004_phase_2_8` also adds `Evaluation.cycle` (FK →
+> CycleHistory) and `Evaluation.cycle_block_at_creation` (BigInt) to
+> answer open question 3 (FK now). The partition column lets
+> `_record_set_weights_success` backfill the FK by chain block at
+> dispatch time, race-free against tempo boundaries that fire
+> mid-batch.
+>
+> Smoke-tested in 6 scenarios via `tmp-scripts/smoke_per_miner_gate.py`.
 
 **Motivation.** Dispatch cadence and `set_weights` cadence are two
 different clocks being run by the same variable. Tempo (360 blocks

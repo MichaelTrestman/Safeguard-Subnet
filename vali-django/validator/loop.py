@@ -32,6 +32,7 @@ import logging
 import random
 import time
 import uuid
+from datetime import timedelta
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
@@ -61,6 +62,14 @@ MINER_QUERY_TIMEOUT = 600.0
 # 8 is the PLAN.md default. With ~5 probe miners on testnet 444 today the
 # semaphore is currently a no-op, but it bounds the worst case at scale.
 MAX_PROBE_CONCURRENCY = 8
+
+# Sub-phase 2.8 — per-miner retry cooldown. After a failed dispatch
+# attempt, this many seconds must pass before we try the same miner
+# again. No retry cap — we retry indefinitely on this cadence until
+# either a tempo elapses (which would re-anchor the gate) or the
+# dispatch succeeds. 300s = 5 min, locked decision in PLAN.md sub-phase
+# 2.8.
+DISPATCH_RETRY_COOLDOWN_S = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +339,119 @@ def _upsert_discovered_miners(
 
 
 @sync_to_async
+def _eligible_miners_for_dispatch(
+    probe_miners: dict[int, str],
+    current_block: int,
+    tempo: int,
+) -> dict[int, str]:
+    """Sub-phase 2.8 — apply the per-miner tempo gate.
+
+    Returns the subset of `probe_miners` that should be dispatched to
+    THIS tick. The gate has two halves and a miner must pass BOTH:
+
+      1. Owed-this-tempo gate (tempo arithmetic):
+         last_successful_dispatch_block is NULL (never dispatched), OR
+         (current_block - last_successful_dispatch_block) >= tempo
+
+      2. Failure-cooldown gate (timestamp arithmetic, only fires
+         when there's a recorded failure):
+         last_failed_dispatch_at is NULL (no recent failure), OR
+         (now - last_failed_dispatch_at) >= DISPATCH_RETRY_COOLDOWN_S
+
+    The cooldown ONLY applies to failures — a successful dispatch
+    clears `last_failed_dispatch_at` so the miner is held back only
+    by the tempo gate, not by an artificial timer. This matches the
+    "no retry cap, retry every 5 min" semantics from PLAN.md sub-phase
+    2.8: the 5-min wait is between retries of a *failed* dispatch,
+    not between successful dispatches.
+
+    Miners that don't have a MinerScore row yet pass both gates by
+    default (they're brand new — never dispatched, no recorded
+    failures). The discovery upsert in `_upsert_discovered_miners`
+    runs BEFORE this helper each tick, so brand new miners always
+    have a row by the time we filter, but the unknown-uid case is
+    still handled defensively (treat as eligible).
+
+    Returns a dict {uid: endpoint} preserving the input shape so the
+    rest of the dispatch path is unchanged.
+    """
+    from .models import MinerScore
+
+    if not probe_miners:
+        return {}
+
+    rows = {
+        m.uid: m
+        for m in MinerScore.objects.filter(uid__in=list(probe_miners.keys()))
+    }
+    now = djtz.now()
+    cooldown = timedelta(seconds=DISPATCH_RETRY_COOLDOWN_S)
+    eligible: dict[int, str] = {}
+    for uid, endpoint in probe_miners.items():
+        m = rows.get(uid)
+        if m is None:
+            # No MinerScore row yet (race with the upsert): treat as
+            # never-dispatched, fully eligible.
+            eligible[uid] = endpoint
+            continue
+        # Owed-this-tempo gate
+        if m.last_successful_dispatch_block is not None:
+            blocks_since = current_block - m.last_successful_dispatch_block
+            if blocks_since < tempo:
+                # Already dispatched within this tempo, skip until tempo elapses
+                continue
+        # Failure-cooldown gate (only fires if there's a recent failure)
+        if m.last_failed_dispatch_at is not None:
+            if now - m.last_failed_dispatch_at < cooldown:
+                # Recent failure — wait for cooldown to elapse
+                continue
+        eligible[uid] = endpoint
+    return eligible
+
+
+@sync_to_async
+def _record_dispatch_outcomes(
+    current_block: int,
+    success_uids: list[int],
+    attempted_uids: list[int],
+) -> None:
+    """Sub-phase 2.8 — write per-miner dispatch state after a dispatch
+    batch completes. Two distinct updates:
+
+      - Successful dispatch: set last_successful_dispatch_block AND
+        clear last_failed_dispatch_at. The miner exits "owed" state
+        until the next tempo elapses, with no cooldown timer set.
+
+      - Failed dispatch: set last_failed_dispatch_at, leave
+        last_successful_dispatch_block unchanged. The miner stays
+        "owed" but the cooldown gate holds it off for
+        DISPATCH_RETRY_COOLDOWN_S.
+
+    `attempted_uids` is the full set we tried to dispatch to (the
+    eligible set for this tick); `success_uids` is the subset whose
+    probes returned a parseable response. Failures = attempted - success.
+    """
+    from .models import MinerScore
+
+    if not attempted_uids:
+        return
+
+    now = djtz.now()
+    success_set = set(success_uids)
+    failure_set = set(attempted_uids) - success_set
+
+    if success_set:
+        MinerScore.objects.filter(uid__in=list(success_set)).update(
+            last_successful_dispatch_block=current_block,
+            last_failed_dispatch_at=None,
+        )
+    if failure_set:
+        MinerScore.objects.filter(uid__in=list(failure_set)).update(
+            last_failed_dispatch_at=now,
+        )
+
+
+@sync_to_async
 def _list_targets() -> list:
     """Snapshot RegisteredTarget rows for one cycle. We materialize the
     queryset because crossing the sync→async boundary with a lazy
@@ -347,20 +469,27 @@ def _build_cycle_contributions(
     submission by aggregating audited Evaluation rows over the current
     tempo window.
 
-    Sub-phase 2.5 — decouples dispatch cadence from set_weights cadence
-    (per Decision 5 in Phase 2.8 design). Instead of reading the results
-    of a single cycle's dispatch, we sum `contribution` grouped by
-    `miner_uid` across all audited rows since the last successful
-    set_weights block. This is what makes "new miner joined mid-tempo"
-    work under 2.8 — every intra-tempo dispatch accumulates into the
-    same contribution map that gets committed at the next tempo
-    boundary.
+    Sub-phase 2.5 — decouples dispatch cadence from set_weights cadence.
+    Instead of reading the results of a single cycle's dispatch, we sum
+    `contribution` grouped by `miner_uid` across all audited rows whose
+    dispatch decision was made in this tempo window. This is what makes
+    "new miner joined mid-tempo" work under 2.8 — every intra-tempo
+    dispatch accumulates into the same contribution map that gets
+    committed at the next tempo boundary.
 
-    For now (pre-2.8) there's no per-row cycle cursor, so `since_block`
-    is unused — we sum all audited rows with contribution > 0. Once
-    2.8 adds an Evaluation→cycle FK or a timestamp-based window, this
-    helper gets the filter. Passing `since_block` now so the caller
-    signature doesn't change later.
+    Sub-phase 2.8 — partition by `cycle_block_at_creation`, the chain
+    block at which the dispatch decision was made (stamped on each row
+    in `_persist_in_progress_evaluations`). When `since_block` is None
+    (first boot — never set weights), include rows since validator
+    start. When it's set, include only rows with
+    `cycle_block_at_creation > since_block` so we don't re-credit
+    contributions that already drove an earlier set_weights commit.
+
+    Pre-2.8 rows have `cycle_block_at_creation IS NULL`. Those are
+    excluded from the partitioned query — they were already counted
+    in the historical commit that created them, OR they were never
+    counted (orphan rows from a crashed cycle), and we don't want
+    them double-counted now.
 
     Returns {uid: summed_contribution}. Miners with contribution == 0
     are absent from the dict (compute_weights' burn floor handles the
@@ -372,11 +501,10 @@ def _build_cycle_contributions(
     qs = Evaluation.objects.filter(
         audit_score__isnull=False,
         contribution__gt=0,
+        cycle_block_at_creation__isnull=False,
     )
-    # TODO 2.8: when we track which rows were already weighted, filter
-    # to rows since the last set_weights commit so we don't re-weight
-    # the same data repeatedly. For now this is idempotent enough —
-    # the chain rate limit prevents double-submission anyway.
+    if since_block is not None:
+        qs = qs.filter(cycle_block_at_creation__gt=since_block)
     aggregated = qs.values("miner_uid").annotate(total=Sum("contribution"))
     return {row["miner_uid"]: float(row["total"] or 0.0) for row in aggregated}
 
@@ -389,11 +517,24 @@ def _record_set_weights_success(
 ) -> None:
     """Atomically update ValidatorStatus after a successful mech-0
     set_weights and append a CycleHistory row mirroring the safeguard
-    validator's post-burn-floor cycle summary format."""
-    from django.db.models import Count
+    validator's post-burn-floor cycle summary format.
+
+    Sub-phase 2.8 — also backfills the `Evaluation.cycle` FK on every
+    audited row whose `cycle_block_at_creation` falls in this tempo
+    window (previous set_weights block, current_block]. Partitioning
+    by `cycle_block_at_creation` (frozen at dispatch time) instead of
+    `timestamp` is the race-free version: a tempo boundary that fires
+    mid-dispatch cannot misattribute rows, because the partition key
+    is set the moment the dispatch decision is made, not the moment
+    the row is created."""
+    from django.db.models import Sum
     from .models import CycleHistory, Evaluation, ValidatorStatus
 
     status = ValidatorStatus.get()
+    # Read previous set_weights block BEFORE updating it — this is the
+    # lower bound for the cycle window.
+    prev_set_weights_block = status.last_set_weights_block
+
     status.last_set_weights_at = djtz.now()
     status.last_set_weights_block = current_block
     status.last_set_weights_payload = payload
@@ -407,24 +548,29 @@ def _record_set_weights_success(
         "last_burn_share",
     ])
 
-    # Cycle history row for the dashboard. Counts are pulled from the
-    # Evaluation table — same data the weight math used, persisted as
-    # a row. These numbers are a snapshot of the full DB at the moment
-    # of the commit, not a per-cycle slice; the per-row cycle cursor
-    # comes in 2.8.
-    from django.db.models import Sum
-    audited_qs = Evaluation.objects.filter(audit_score__isnull=False)
-    earned_qs = audited_qs.filter(contribution__gt=0)
+    # Cycle history row for the dashboard, partitioned per 2.8 by
+    # cycle_block_at_creation rather than the historical "all rows"
+    # snapshot. Audited rows in (prev_set_weights_block, current_block]
+    # are this cycle's data.
+    cycle_qs = Evaluation.objects.filter(
+        audit_score__isnull=False,
+        cycle_block_at_creation__isnull=False,
+        cycle_block_at_creation__lte=current_block,
+    )
+    if prev_set_weights_block is not None:
+        cycle_qs = cycle_qs.filter(cycle_block_at_creation__gt=prev_set_weights_block)
+
+    earned_qs = cycle_qs.filter(contribution__gt=0)
     n_earned_uids = earned_qs.values("miner_uid").distinct().count()
     earned_total = float(
         earned_qs.aggregate(total=Sum("contribution")).get("total") or 0.0
     )
     n_registered = status.n_probe_miners
-    CycleHistory.objects.create(
+    cycle_row = CycleHistory.objects.create(
         cycle_block=current_block,
         n_registered=n_registered,
         n_dispatched=n_registered,
-        n_responded=audited_qs.count(),
+        n_responded=cycle_qs.count(),
         n_earned=n_earned_uids,
         earned_total=earned_total,
         burn_share=burn_share,
@@ -432,6 +578,14 @@ def _record_set_weights_success(
         submitted_weights=payload,
         had_fresh_data=True,
     )
+
+    # Sub-phase 2.8 — backfill the FK on every row in this cycle's
+    # window. We re-use the same filter; cycle IS NULL is implicit
+    # (rows already attached to a previous cycle have a non-null FK
+    # AND a cycle_block_at_creation outside this window, but we add
+    # the explicit cycle__isnull guard for safety against any
+    # accidental window overlap).
+    cycle_qs.filter(cycle__isnull=True).update(cycle=cycle_row)
 
 
 @sync_to_async
@@ -581,7 +735,11 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
 
 
 @sync_to_async
-def _persist_in_progress_evaluations(target_id: int, results: list[dict]) -> int:
+def _persist_in_progress_evaluations(
+    target_id: int,
+    results: list[dict],
+    cycle_block_at_creation: int,
+) -> int:
     """Persist one in-progress Evaluation row per successful probe response.
 
     "In-progress" means: miner_safety_score and transcript are populated
@@ -595,6 +753,11 @@ def _persist_in_progress_evaluations(target_id: int, results: list[dict]) -> int
     if the audit pipeline crashes after results come back, the transcripts
     are already in the DB and can be re-audited later instead of lost.
     PLAN.md sub-phase 2.3 done criterion.
+
+    `cycle_block_at_creation` is the chain block at which the dispatch
+    decision was made (sub-phase 2.8). Stamped on every row so the
+    `cycle` FK can be backfilled at the next set_weights commit
+    without timestamp races.
 
     Also bumps the target's last_probed_at timestamp.
 
@@ -619,6 +782,7 @@ def _persist_in_progress_evaluations(target_id: int, results: list[dict]) -> int
                     "category": r["category"],
                     "miner_safety_score": miner_safety_score,
                     "transcript": transcript,
+                    "cycle_block_at_creation": cycle_block_at_creation,
                     # audit fields stay at defaults — 2.4 fills them in
                 },
             )
@@ -925,34 +1089,35 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
         f"owner_uid={owner_uid}, netuid={netuid})"
     )
 
-    # Per-loop-instance state. These do NOT persist across uvicorn
-    # restarts — that's intentional; the cycle cadence resets cleanly on
-    # restart and the first cycle fires immediately. Once 2.6 lands,
-    # `last_cycle_block_local` will be replaced (or supplemented) by
-    # ValidatorStatus.last_set_weights_block which IS persistent.
+    # Per-loop-instance state. Most of the cycle gate state from
+    # sub-phase 2.3 (`last_cycle_block_local`, `last_dispatched_uids`)
+    # was deleted in sub-phase 2.8 — the per-miner gate is now driven
+    # by `MinerScore.last_successful_dispatch_block` and
+    # `MinerScore.last_dispatch_attempt_at`, which DO persist across
+    # restarts (in the DB). The only remaining instance state is
+    # `target_index` for round-robin target rotation and the dedup
+    # logging flags.
     #
-    # `last_cycle_block_local` ONLY advances on a cycle that actually
-    # dispatched — a cycle that found no targets or no miners leaves it
-    # alone so we retry on the next iteration. This is the vali-django
-    # equivalent of the legacy validator's cycle_collected_fresh_data
-    # flag (Decision D in PLAN.md, borrowed early from sub-phase 2.7).
-    # The alternative — marking an empty cycle complete — locks the
-    # loop out for a full tempo whenever a target registers late.
-    #
-    # `last_dispatched_uids` is the set of probe miner UIDs we attempted
-    # to dispatch to in the most recent productive cycle. The cycle gate
-    # below uses it to fire a fresh cycle the moment a new miner UID
-    # appears in chain commitments — without this, a long-running validator
-    # would have to wait a full tempo (~72 min) before noticing that a
-    # new miner had joined, which is the architectural complaint that
-    # motivated this state. Removed UIDs do NOT trigger a cycle (nothing
-    # to probe); only NEW UIDs do.
+    # Per-miner gate (sub-phase 2.8): each tick, we filter discovered
+    # probe miners through `_eligible_miners_for_dispatch`, which
+    # applies BOTH halves of the gate:
+    #   1. Owed-this-tempo: never dispatched OR tempo elapsed since last
+    #      successful dispatch
+    #   2. Retry cooldown: never attempted OR DISPATCH_RETRY_COOLDOWN_S
+    #      elapsed since last attempt (success or fail)
+    # A miner that passes both gets a probe; one that fails either
+    # waits. This makes the validator robust to:
+    #   - Mid-tempo miner joins (immediately eligible — no MinerScore row
+    #     for them yet, so they pass both gates trivially)
+    #   - Flaky miners (failed dispatch updates only the cooldown
+    #     timestamp; another attempt fires DISPATCH_RETRY_COOLDOWN_S
+    #     later, no retry cap)
+    #   - Long-running validators across uvicorn restarts (the gate
+    #     state lives in MinerScore rows, not in this Python frame)
     #
     # The `_logged` flags dedupe the "no targets" / "no miners" warnings
     # to state-transition logging so we don't spam the log every 12s.
     semaphore = asyncio.Semaphore(MAX_PROBE_CONCURRENCY)
-    last_cycle_block_local: int | None = None
-    last_dispatched_uids: set[int] = set()
     target_index = 0
     no_targets_logged = False
     no_miners_logged = False
@@ -1022,152 +1187,135 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                     f"block={current_block} until_next={blocks_until_next}"
                 )
 
-            # ----- Cycle gate -----
-            # Two triggers: tempo elapsed, OR a new miner appeared in
-            # chain commitments since the last productive cycle. The
-            # second trigger is what makes the validator robust to miners
-            # joining mid-tempo — without it, a new miner would wait a
-            # full tempo (~72 min) before getting probed.
-            #
-            # Removed UIDs are NOT a trigger (there's nothing to probe).
-            # Same-UID restarts (commit unchanged) are NOT a trigger
-            # either — those miners get re-probed on the next tempo.
-            newly_appeared_uids = set(probe_miners.keys()) - last_dispatched_uids
-            cycle_due = (
-                last_cycle_block_local is None  # first cycle on boot
-                or (current_block - last_cycle_block_local) >= tempo
-                or bool(newly_appeared_uids)
+            # ----- Sub-phase 2.8: per-miner eligibility filter -----
+            # Replaces the per-cycle "cycle_due" gate from sub-phase 2.3.
+            # We compute per tick which probe miners are eligible for a
+            # fresh dispatch using their MinerScore row state. A miner
+            # passes when:
+            #   1. They are owed a dispatch this tempo (never dispatched
+            #      OR tempo elapsed since last successful dispatch), AND
+            #   2. The DISPATCH_RETRY_COOLDOWN_S cooldown has elapsed
+            #      since the last attempt (success or fail).
+            # Missing both halves of the gate (== never seen): treated
+            # as fully eligible.
+            eligible_miners = await _eligible_miners_for_dispatch(
+                probe_miners, current_block, tempo,
             )
 
-            if cycle_due:
-                targets = await _list_targets()
-                if not targets:
-                    # No registered customer subnets yet. Don't advance
-                    # last_cycle_block_local — we want to retry as soon
-                    # as a target registers, not wait a full tempo.
-                    # State-transition log dedup to avoid spam every 12s.
-                    if not no_targets_logged:
-                        logger.warning(
-                            f"Block {current_block}: cycle due but no "
-                            f"registered targets — will retry each tick "
-                            f"until one appears"
-                        )
-                        no_targets_logged = True
-                elif not probe_miners:
-                    # Targets exist but chain discovery returned zero
-                    # probe miners. Same retry behavior — don't advance
-                    # last_cycle_block_local, just wait for a miner to
-                    # commit an endpoint. Burn floor (2.6) will land a
-                    # weight submission in this case even with no work,
-                    # but dispatch itself has nothing to do.
-                    if not no_miners_logged:
-                        logger.warning(
-                            f"Block {current_block}: cycle due but no "
-                            f"probe miners discovered — will retry each "
-                            f"tick until one commits an endpoint"
-                        )
-                        no_miners_logged = True
-                else:
-                    # Productive cycle: targets exist, miners exist, we
-                    # actually dispatched. Log the transition back to
-                    # healthy if we were previously stuck waiting.
-                    if no_targets_logged or no_miners_logged:
-                        logger.info(
-                            f"Block {current_block}: cycle unblocked "
-                            f"(targets={len(targets)}, "
-                            f"probe_miners={len(probe_miners)})"
-                        )
-                        no_targets_logged = False
-                        no_miners_logged = False
-                    # Distinguish trigger reason for operator visibility:
-                    # tempo expiry vs new-miner-joined are different
-                    # operational events.
-                    if newly_appeared_uids and last_cycle_block_local is not None:
-                        trigger_reason = (
-                            f"new probe miners joined: "
-                            f"+{sorted(newly_appeared_uids)}"
-                        )
-                    elif last_cycle_block_local is None:
-                        trigger_reason = "first cycle on boot"
-                    else:
-                        trigger_reason = (
-                            f"tempo elapsed (last cycle at block "
-                            f"{last_cycle_block_local}, +{current_block - last_cycle_block_local} blocks)"
-                        )
+            targets = await _list_targets()
+            if not targets:
+                # No registered customer subnets yet. Wait for one to
+                # appear; state-transition log dedup avoids spam every
+                # tick.
+                if not no_targets_logged:
+                    logger.warning(
+                        f"Block {current_block}: no registered targets — "
+                        f"will retry each tick until one appears"
+                    )
+                    no_targets_logged = True
+            elif not eligible_miners:
+                # Either no probe miners discovered, or all discovered
+                # miners are within their tempo / cooldown window. Both
+                # are quiet states — no log spam, just wait. Reset the
+                # warning flag if we previously had no miners at all so
+                # the recovery transition gets logged properly when the
+                # first miner becomes eligible again.
+                if not probe_miners and not no_miners_logged:
+                    logger.warning(
+                        f"Block {current_block}: no probe miners "
+                        f"discovered — will retry each tick until one "
+                        f"commits an endpoint"
+                    )
+                    no_miners_logged = True
+            else:
+                # Productive tick: targets exist AND at least one
+                # eligible miner.
+                if no_targets_logged or no_miners_logged:
                     logger.info(
-                        f"Block {current_block}: Running evaluation cycle "
-                        f"({trigger_reason})"
+                        f"Block {current_block}: dispatch unblocked "
+                        f"(targets={len(targets)}, "
+                        f"eligible_miners={len(eligible_miners)})"
                     )
-                    # Round-robin target selection. target_index persists
-                    # across iterations within this loop instance, so we
-                    # actually rotate over time.
-                    target = targets[target_index % len(targets)]
-                    target_index += 1
-                    logger.info(
-                        f"Cycle target: {target.name} ({target.relay_endpoint})"
-                    )
-                    n_dispatched, results = await _dispatch_target_to_miners(
-                        wallet, target, probe_miners, metagraph, semaphore,
-                    )
-                    n_responded = len(results)
-                    logger.info(
-                        f"Cycle results: {n_responded}/{n_dispatched} miners responded"
-                    )
-                    if results:
-                        n_persisted = await _persist_in_progress_evaluations(
-                            target.id, results,
-                        )
-                        logger.info(
-                            f"Persisted {n_persisted} in-progress Evaluation rows"
-                        )
+                    no_targets_logged = False
+                    no_miners_logged = False
 
-                        # ----- Sub-phase 2.4: audit each Evaluation -----
-                        # Run the tiered LLM judge on each row in
-                        # sequence (not gather — Chutes rate-limits
-                        # concurrent requests from the same key).
-                        # Each audit is ~3-30s of blocking httpx in a
-                        # worker thread. The audit backfills the row
-                        # in place, creates a Finding if accepted
-                        # severity crosses the threshold, and creates
-                        # a HitlCase on large miner/audit disagreement.
-                        n_audited = 0
-                        n_findings = 0
-                        n_hitl = 0
-                        total_contribution = 0.0
-                        for r in results:
-                            summary = await _audit_one_evaluation(
-                                r["task_id"], bait_library,
-                            )
-                            if summary is None:
-                                continue
-                            n_audited += 1
-                            if summary.get("skipped"):
-                                continue
-                            total_contribution += summary.get("contribution", 0.0)
-                            if summary.get("findings_reward", 0.0) >= 0.15:
-                                n_findings += 1
-                            if summary.get("hitl_routed"):
-                                n_hitl += 1
-                        logger.info(
-                            f"Audited {n_audited}/{len(results)} rows: "
-                            f"findings={n_findings} hitl={n_hitl} "
-                            f"total_contribution={total_contribution:.3f}"
-                        )
+                # Round-robin target selection. target_index persists
+                # across iterations within this loop instance, so we
+                # actually rotate over time.
+                target = targets[target_index % len(targets)]
+                target_index += 1
 
-                    # ONLY advance on productive cycles. Empty cycles
-                    # leave last_cycle_block_local alone so the next tick
-                    # retries. This is the partial port of the legacy
-                    # cycle_collected_fresh_data flag (Decision D, early
-                    # borrow from sub-phase 2.7).
-                    last_cycle_block_local = current_block
-                    # Snapshot the dispatched UID set so the next iteration's
-                    # cycle gate can detect new miners joining mid-tempo.
-                    # We snapshot the set we DISPATCHED to (regardless of
-                    # which actually responded) — a non-responding miner
-                    # was still given the chance to participate in this
-                    # cycle, and re-dispatching to it next tick would not
-                    # help.
-                    last_dispatched_uids = set(probe_miners.keys())
+                # How many of the discovered miners are still on cooldown
+                # this tick — operator visibility for the dashboard log.
+                n_skipped = len(probe_miners) - len(eligible_miners)
+                logger.info(
+                    f"Block {current_block}: dispatching to "
+                    f"{len(eligible_miners)} eligible miners "
+                    f"(skipped={n_skipped} on cooldown/tempo) "
+                    f"target={target.name}"
+                )
+
+                n_dispatched, results = await _dispatch_target_to_miners(
+                    wallet, target, eligible_miners, metagraph, semaphore,
+                )
+                n_responded = len(results)
+                logger.info(
+                    f"Block {current_block}: {n_responded}/{n_dispatched} "
+                    f"miners responded"
+                )
+
+                # ----- Sub-phase 2.8: write per-miner dispatch outcomes -----
+                # Success → updates BOTH last_successful_dispatch_block
+                # and last_dispatch_attempt_at, kicking the miner out of
+                # "owed" state until the next tempo. Failure → updates
+                # only last_dispatch_attempt_at, putting the miner on a
+                # 5-minute cooldown before the next retry.
+                success_uids = [r["uid"] for r in results]
+                attempted_uids = list(eligible_miners.keys())
+                await _record_dispatch_outcomes(
+                    current_block, success_uids, attempted_uids,
+                )
+
+                if results:
+                    n_persisted = await _persist_in_progress_evaluations(
+                        target.id, results, current_block,
+                    )
+                    logger.info(
+                        f"Persisted {n_persisted} in-progress Evaluation rows"
+                    )
+
+                    # ----- Sub-phase 2.4: audit each Evaluation -----
+                    # Run the tiered LLM judge on each row in
+                    # sequence (not gather — Chutes rate-limits
+                    # concurrent requests from the same key).
+                    # Each audit is ~3-30s of blocking httpx in a
+                    # worker thread. The audit backfills the row
+                    # in place, creates a Finding if accepted
+                    # severity crosses the threshold, and creates
+                    # a HitlCase on large miner/audit disagreement.
+                    n_audited = 0
+                    n_findings = 0
+                    n_hitl = 0
+                    total_contribution = 0.0
+                    for r in results:
+                        summary = await _audit_one_evaluation(
+                            r["task_id"], bait_library,
+                        )
+                        if summary is None:
+                            continue
+                        n_audited += 1
+                        if summary.get("skipped"):
+                            continue
+                        total_contribution += summary.get("contribution", 0.0)
+                        if summary.get("findings_reward", 0.0) >= 0.15:
+                            n_findings += 1
+                        if summary.get("hitl_routed"):
+                            n_hitl += 1
+                    logger.info(
+                        f"Audited {n_audited}/{len(results)} rows: "
+                        f"findings={n_findings} hitl={n_hitl} "
+                        f"total_contribution={total_contribution:.3f}"
+                    )
 
             # ----- Sub-phase 2.6: set_weights (tempo-gated) -----
             # Runs every iteration but gated internally on tempo, so
@@ -1194,7 +1342,6 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
             )
 
             # TODO sub-phase 2.7: full cycle_collected_fresh_data retry parity
-            # TODO sub-phase 2.8: per-miner tempo gate (see PLAN.md)
             #
             # Note on double-submit: the chain enforces a one-set_weights-
             # per-tempo rate limit per (hotkey, netuid). If another process

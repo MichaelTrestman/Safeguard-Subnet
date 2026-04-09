@@ -53,6 +53,28 @@ class Evaluation(models.Model):
     transcript = models.JSONField(default=list)
     hitl_routed = models.BooleanField(default=False, db_index=True)
 
+    # Sub-phase 2.8 — partition column. Stamped at dispatch time with
+    # the chain block at which the dispatch decision was made. Used to
+    # backfill the `cycle` FK at the next set_weights commit
+    # (_record_set_weights_success). The partition decision is frozen
+    # at dispatch, not at backfill, so a tempo boundary that races a
+    # mid-batch dispatch can't misattribute rows. Null on rows created
+    # before 2.8 — those will never get a `cycle` FK.
+    cycle_block_at_creation = models.BigIntegerField(
+        null=True, blank=True, db_index=True
+    )
+    # FK to the CycleHistory row this evaluation contributed to. Null
+    # at creation; backfilled in _record_set_weights_success at the
+    # next tempo boundary. Pre-2.8 rows stay null forever (no
+    # cycle_block_at_creation to partition by).
+    cycle = models.ForeignKey(
+        "CycleHistory",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="evaluations",
+    )
+
 
 class Finding(models.Model):
     """A single accepted finding extracted from an Evaluation."""
@@ -99,6 +121,34 @@ class MinerScore(models.Model):
     bait_only_count = models.IntegerField(default=0)
     null_count = models.IntegerField(default=0)
     last_contribution = models.FloatField(default=0.0)
+
+    # Sub-phase 2.8 — per-miner tempo gate state. Replaces the per-cycle
+    # `last_dispatched_uids` set in run_validator_loop with persistent,
+    # per-miner cooldown tracking.
+    #
+    #   last_successful_dispatch_block: chain block at which we last
+    #     successfully dispatched a probe to this miner. Drives the
+    #     "owed this tempo" half of the gate — a miner is owed a
+    #     dispatch when (current_block - last_successful_dispatch_block)
+    #     >= tempo, OR this field is null (never dispatched).
+    #
+    #   last_failed_dispatch_at: timestamp of the most recent FAILED
+    #     dispatch to this miner. Drives the retry cooldown — after a
+    #     failure, we wait DISPATCH_RETRY_COOLDOWN_S (300s = 5 min)
+    #     before another attempt. No retry cap. A successful dispatch
+    #     CLEARS this field (writes None) so the cooldown gate doesn't
+    #     fire on a fresh-success state — the only thing holding a
+    #     just-succeeded miner back is the tempo gate.
+    #
+    # Reset semantics fall out for free:
+    #   - On successful dispatch: write block, clear failure timestamp
+    #     → miner exits BOTH "owed" state and any prior cooldown
+    #   - On tempo boundary: arithmetic on last_successful_dispatch_block
+    #     re-opens the tempo gate, no explicit reset needed
+    #   - On failed dispatch: write failure timestamp, leave block alone
+    #     → miner stays "owed" but waits 5 min before next try
+    last_successful_dispatch_block = models.BigIntegerField(null=True, blank=True)
+    last_failed_dispatch_at = models.DateTimeField(null=True, blank=True)
 
 
 class ValidatorStatus(models.Model):
