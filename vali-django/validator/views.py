@@ -1,7 +1,8 @@
 """
-Views for both audiences:
+Views for three audiences:
 
   Customer portal (Epistula-authed):  /register, /evaluate, /status, /registry
+  Miner relay (Epistula-authed):      /probe/relay (v2 provenance, sub-phase 2.9)
   Operator UI (read-only HTML):        /, /targets/<name>
   Health:                              /healthz
 """
@@ -203,6 +204,239 @@ def registry(request: HttpRequest) -> JsonResponse:
             }
             for t in targets
         ],
+    })
+
+
+# --- Provenance v2 relay (sub-phase 2.9) -------------------------------
+#
+# RELAY_PROTOCOL_V2.md §"Endpoint spec". Wraps the existing v1 relay
+# (RELAY_PROTOCOL.md) by inserting this validator into the path between
+# the Safeguard miner and the client v1 /relay. Each successful
+# forward gets a sha256-canonical-json-v1 commitment that the audit
+# worker re-verifies at scoring time, closing attack A1 (miner
+# fabrication, see THREAT_MODEL.md).
+#
+# This is an ASYNC view because the forward to the client v1 relay is
+# the slowest part of the request and we want the asyncio event loop
+# free during that wait. ORM access goes through sync_to_async to
+# stay safe inside the async context.
+#
+# Endpoint URL is /probe/relay (not bare /relay) per locked
+# open-question 1 in PLAN.md Phase 2.9 — namespacing the miner-side
+# relay so a future customer-facing relay can coexist on a different
+# prefix.
+
+@csrf_exempt
+@require_http_methods(["POST"])
+async def probe_relay(request: HttpRequest) -> JsonResponse:
+    """v2 provenance-bearing relay. Forwards to client v1 /relay,
+    hashes the response, persists a RelayCommitment, returns the
+    response + commitment block to the calling miner.
+
+    Status code semantics per RELAY_PROTOCOL_V2.md §"Status codes":
+      200: forward succeeded, commitment issued
+      400: malformed request body
+      401: Epistula verification failed
+      403: caller is not a registered Safeguard probe miner
+      404: target_descriptor names a client we have no
+           RegisteredTarget for
+      502: client v1 /relay returned non-200
+      503: lifespan didn't run (RELAY_HTTPX is None)
+      504: client v1 /relay timed out (httpx.ReadTimeout / ConnectTimeout)
+
+    Errors NEVER produce a commitment. The miner cannot attribute
+    anything to the target on a non-200, and audit-time verification
+    relies on this invariant.
+    """
+    import time
+    import uuid as _uuid
+    from asgiref.sync import sync_to_async
+    import httpx
+    from valiproject import asgi as _asgi
+
+    from .epistula import create_epistula_headers
+    from .models import MinerScore, RelayCommitment, RelaySession
+    from .provenance import compute_commitment
+
+    # ----- Auth -----
+    try:
+        caller_hotkey = await sync_to_async(_verify)(request)
+    except EpistulaAuthError as e:
+        return JsonResponse({"error": str(e)}, status=401)
+
+    # ----- Caller must be a registered probe miner on this subnet -----
+    # MinerScore is populated by _upsert_discovered_miners on each
+    # discovery tick, so a freshly-joined miner becomes eligible to
+    # call /probe/relay within one loop interval of committing its
+    # endpoint to chain.
+    is_known_miner = await sync_to_async(
+        lambda: MinerScore.objects.filter(hotkey=caller_hotkey).exists()
+    )()
+    if not is_known_miner:
+        return JsonResponse(
+            {"error": "caller is not a registered probe miner"},
+            status=403,
+        )
+
+    # ----- Parse body -----
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "invalid JSON"}, status=400)
+
+    prompt = body.get("prompt")
+    session_id_str = body.get("session_id")
+    target_descriptor = body.get("target_descriptor") or {}
+    if not prompt or not isinstance(prompt, str):
+        return JsonResponse({"error": "missing or invalid prompt"}, status=400)
+    if not session_id_str:
+        return JsonResponse({"error": "missing session_id"}, status=400)
+    try:
+        session_uuid = _uuid.UUID(session_id_str)
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "session_id is not a UUID"}, status=400)
+    client_validator_hotkey = target_descriptor.get("client_validator_hotkey")
+    if not client_validator_hotkey:
+        return JsonResponse(
+            {"error": "missing target_descriptor.client_validator_hotkey"},
+            status=400,
+        )
+
+    # ----- Resolve target -----
+    target = await sync_to_async(
+        lambda: RegisteredTarget.objects.filter(
+            client_hotkey=client_validator_hotkey
+        ).first()
+    )()
+    if target is None:
+        return JsonResponse(
+            {"error": "no RegisteredTarget for that client_validator_hotkey"},
+            status=404,
+        )
+
+    # ----- Get/create session, allocate turn_index -----
+    # `get_or_create` is atomic at the DB layer for a unique field. The
+    # turn_count update is racy with concurrent requests on the same
+    # session_id, but a single miner is the only legitimate caller for
+    # a given session_id and the audit worker will catch ordering
+    # mismatches anyway. Tighten with a select_for_update if it ever
+    # becomes a real problem.
+    session, created = await sync_to_async(RelaySession.objects.get_or_create)(
+        session_id=session_uuid,
+        defaults={
+            "miner_hotkey": caller_hotkey,
+            "target": target,
+            "turn_count": 0,
+        },
+    )
+    if not created and session.miner_hotkey != caller_hotkey:
+        # Session-stealing attempt: another miner is trying to add
+        # turns to a session that doesn't belong to them.
+        return JsonResponse(
+            {"error": "session belongs to a different miner"},
+            status=403,
+        )
+    turn_index = session.turn_count
+
+    # ----- Forward to client v1 /relay -----
+    if _asgi.RELAY_HTTPX is None or _asgi.WALLET is None:
+        # Lifespan didn't run (e.g. running under WSGI / `manage.py
+        # runserver`) — we cannot serve traffic.
+        logger.error(
+            "[probe_relay] lifespan state not initialized "
+            "(RELAY_HTTPX or WALLET is None)"
+        )
+        return JsonResponse(
+            {"error": "validator not ready (lifespan startup did not run)"},
+            status=503,
+        )
+
+    forward_body_dict = {"prompt": prompt, "session_id": session_id_str}
+    forward_body = json.dumps(forward_body_dict).encode()
+    forward_headers = create_epistula_headers(_asgi.WALLET, forward_body)
+    forward_headers["Content-Type"] = "application/json"
+
+    try:
+        upstream = await _asgi.RELAY_HTTPX.post(
+            target.relay_endpoint,
+            content=forward_body,
+            headers=forward_headers,
+        )
+    except (httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+        logger.warning(
+            f"[probe_relay] forward timeout to {target.name}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return JsonResponse({"error": f"client v1 /relay timed out: {e}"}, status=504)
+    except httpx.HTTPError as e:
+        logger.warning(
+            f"[probe_relay] forward HTTP error to {target.name}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return JsonResponse({"error": f"client v1 /relay error: {e}"}, status=502)
+
+    if upstream.status_code != 200:
+        logger.warning(
+            f"[probe_relay] forward returned {upstream.status_code} from {target.name}"
+        )
+        return JsonResponse(
+            {"error": f"client v1 /relay returned {upstream.status_code}"},
+            status=502,
+        )
+
+    try:
+        upstream_payload = upstream.json()
+    except ValueError:
+        return JsonResponse(
+            {"error": "client v1 /relay returned non-JSON"},
+            status=502,
+        )
+    response_text = upstream_payload.get("response")
+    if not isinstance(response_text, str):
+        return JsonResponse(
+            {"error": "client v1 /relay response missing 'response' field"},
+            status=502,
+        )
+
+    # ----- Compute and persist commitment -----
+    committed_at_ns = time.time_ns()
+    safeguard_validator_hotkey = _asgi.WALLET.hotkey.ss58_address
+    preimage, digest = compute_commitment(
+        session_id=session_id_str,
+        turn_index=turn_index,
+        prompt=prompt,
+        response=response_text,
+        target_descriptor={"client_validator_hotkey": client_validator_hotkey},
+        committed_at=committed_at_ns,
+        safeguard_validator_hotkey=safeguard_validator_hotkey,
+    )
+
+    @sync_to_async
+    def _persist():
+        RelayCommitment.objects.create(
+            session=session,
+            turn_index=turn_index,
+            scheme=RelayCommitment.SCHEME_V1,
+            preimage=preimage,
+            digest=digest,
+            committed_by=safeguard_validator_hotkey,
+        )
+        # Bump the session's turn counter atomically with the commitment row.
+        RelaySession.objects.filter(pk=session.pk).update(
+            turn_count=turn_index + 1,
+        )
+
+    await _persist()
+
+    return JsonResponse({
+        "response": response_text,
+        "session_id": session_id_str,
+        "response_commitment": {
+            "scheme": RelayCommitment.SCHEME_V1,
+            "digest": digest,
+            "committed_at": committed_at_ns,
+            "committed_by": safeguard_validator_hotkey,
+        },
     })
 
 

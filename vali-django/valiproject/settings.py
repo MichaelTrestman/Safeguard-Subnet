@@ -88,6 +88,28 @@ LOOP_INTERVAL_S = float(os.environ.get("LOOP_INTERVAL_S", "12"))
 HEALTH_MAX_WEIGHT_AGE_S = float(os.environ.get("HEALTH_MAX_WEIGHT_AGE_S", "1800"))
 HEALTH_MAX_TICK_AGE_S = float(os.environ.get("HEALTH_MAX_TICK_AGE_S", "120"))
 
+# --- Provenance v2 (sub-phase 2.9) ---
+# The externally-reachable URL the loop stamps into each dispatched
+# task body so v2-aware miners know where to POST their probes.
+# Required for v2 dispatch; if unset the loop falls back to v1-style
+# dispatch (target_validator_endpoint only) and miners use the v1 path.
+SAFEGUARD_RELAY_ENDPOINT = os.environ.get("SAFEGUARD_RELAY_ENDPOINT", "")
+
+# Per-call timeouts for the /probe/relay forward to the client v1 relay.
+# Strictly nested below the miner's overall probe timeout
+# (~600s in loop.py) so that if the client hangs, our forward fails
+# with 504 long before the miner gives up on us.
+RELAY_FORWARD_READ_S = float(os.environ.get("RELAY_FORWARD_READ_S", "65"))
+RELAY_FORWARD_CONNECT_S = float(os.environ.get("RELAY_FORWARD_CONNECT_S", "5"))
+
+# Retention window for RelayCommitment rows. The retention loop deletes
+# commitments older than this AND whose Evaluation has already been
+# audited. Unaudited commitments are kept regardless of age — losing
+# them breaks audit-time re-verification.
+RELAY_COMMITMENT_RETENTION_HOURS = int(
+    os.environ.get("RELAY_COMMITMENT_RETENTION_HOURS", "48")
+)
+
 # Structured-ish stdout logging. k8s captures stdout; never write log files.
 LOGGING = {
     "version": 1,

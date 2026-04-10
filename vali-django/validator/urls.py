@@ -15,4 +15,7 @@ urlpatterns = [
     path("evaluate", views.evaluate, name="evaluate"),
     path("status/<str:client_hotkey>", views.status, name="status"),
     path("registry", views.registry, name="registry"),
+
+    # Provenance v2 — miner-side relay (sub-phase 2.9)
+    path("probe/relay", views.probe_relay, name="probe_relay"),
 ]
