@@ -456,7 +456,10 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     to, so if the loop is alive and the dashboard shows stale values,
     it's a dashboard bug not a loop bug.
     """
-    from .models import CycleHistory, Evaluation, Finding, HitlCase, MinerScore
+    from .models import (
+        CycleHistory, Evaluation, Finding, HitlCase, MinerScore,
+        RelayCommitment, RelaySession,
+    )
 
     vstatus = ValidatorStatus.get()
     targets = RegisteredTarget.objects.annotate(
@@ -471,31 +474,45 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     if vstatus.last_tick_at:
         tick_age = (now - vstatus.last_tick_at).total_seconds()
 
-    # ----- Phase 3: cycle history -----
-    # Most recent 20 cycles. Each row shows burn share, earned total,
-    # and the submitted weights payload. Sorted newest-first.
     recent_cycles = CycleHistory.objects.order_by("-id")[:20]
 
-    # ----- Phase 3: miner roster -----
-    # One row per MinerScore. Annotate with lifetime evaluation count
-    # and the most recent raw contribution so the operator can spot
-    # productive vs dormant miners at a glance.
-    miners = MinerScore.objects.all().order_by("uid")
+    # ----- Miner roster with dispatch state + per-miner eval counts -----
+    miners = list(MinerScore.objects.all().order_by("uid"))
+    for m in miners:
+        # Per-miner eval counts from Evaluation table
+        m_evals = Evaluation.objects.filter(miner_uid=m.uid, audit_score__isnull=False)
+        m.eval_count = m_evals.count()
+        m.finding_count = m_evals.filter(
+            accepted_severity__gt=0, findings_reward__gte=0.15
+        ).count()
+        m.contribution_total = sum(
+            e.contribution for e in m_evals.only("contribution")
+        )
+        m.prov_verified_count = m_evals.filter(provenance_verified=True).count()
+        m.prov_failed_count = m_evals.filter(provenance_verified=False).count()
+        # Dispatch state
+        m.dispatch_gap = None
+        if m.last_successful_dispatch_block and vstatus.current_block:
+            m.dispatch_gap = vstatus.current_block - m.last_successful_dispatch_block
+        m.cooldown_active = False
+        m.cooldown_remaining_s = 0
+        if m.last_failed_dispatch_at and hasattr(m, 'consecutive_dispatch_failures'):
+            elapsed = (now - m.last_failed_dispatch_at).total_seconds()
+            n = getattr(m, 'consecutive_dispatch_failures', 0) or 0
+            if n > 0:
+                backoff = min(5.0 * (2 ** (n - 1)), 4320)
+                if elapsed < backoff:
+                    m.cooldown_active = True
+                    m.cooldown_remaining_s = int(backoff - elapsed)
 
-    # ----- Phase 3: recent findings -----
-    # Last 10 Finding rows with their Evaluation context.
     recent_findings = Finding.objects.select_related(
         "evaluation", "evaluation__target"
     ).order_by("-id")[:10]
 
-    # ----- Phase 3: HITL queue -----
-    # Pending HITL cases that nobody's labeled yet.
     pending_hitl = HitlCase.objects.filter(
         status=HitlCase.STATUS_PENDING
     ).select_related("evaluation", "evaluation__target").order_by("-id")[:10]
 
-    # ----- Phase 3: audit throughput -----
-    # Totals for the scoreboard card.
     n_evaluations_total = Evaluation.objects.count()
     n_evaluations_audited = Evaluation.objects.filter(
         audit_score__isnull=False
@@ -505,8 +522,20 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
         status=HitlCase.STATUS_PENDING
     ).count()
 
-    # Burn share presentation hint — the FULL BURN chip fires at >=0.99
-    # (tolerate tiny float imprecision around the 1.0 boundary).
+    # ----- Provenance stats -----
+    prov_verified = Evaluation.objects.filter(provenance_verified=True).count()
+    prov_failed = Evaluation.objects.filter(provenance_verified=False).count()
+    prov_legacy = Evaluation.objects.filter(provenance_verified__isnull=True).count()
+
+    # ----- Fabrication suspects -----
+    fabrication_suspects = Evaluation.objects.filter(
+        provenance_verified=False,
+    ).select_related("target").order_by("-timestamp")[:20]
+
+    # ----- Relay stats -----
+    relay_sessions = RelaySession.objects.count()
+    relay_commitments = RelayCommitment.objects.count()
+
     burn_share = float(vstatus.last_burn_share or 0.0)
     full_burn = burn_share >= 0.99
 
@@ -523,6 +552,12 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
         "n_evaluations_audited": n_evaluations_audited,
         "n_findings_total": n_findings_total,
         "n_hitl_pending": n_hitl_pending,
+        "prov_verified": prov_verified,
+        "prov_failed": prov_failed,
+        "prov_legacy": prov_legacy,
+        "fabrication_suspects": fabrication_suspects,
+        "relay_sessions": relay_sessions,
+        "relay_commitments": relay_commitments,
         "burn_share": burn_share,
         "full_burn": full_burn,
         "settings": {

@@ -10,13 +10,21 @@
   .chip.high { background: #4a3311; color: #ffaa44; }
   .chip.medium { background: #3a3a11; color: #ffcc44; }
   .chip.disputed { background: #3a1a4a; color: #cc88ff; }
+  .chip.verified { background: #0a3a0a; color: #44cc44; }
+  .chip.fabricated { background: #3a1133; color: #ff66aa; }
+  .chip.legacy { background: #2a2a2a; color: #888; }
+  .chip.success { background: #0a3a0a; color: #44cc44; }
+  .chip.failed { background: #4a1111; color: #ff6666; }
+  .chip.cooldown { background: #3a3311; color: #ffcc44; }
   .muted { color: #555; }
   .finding-row { background: #1a1a1a; border-left: 3px solid #444;
                  padding: 0.75rem 1rem; margin-bottom: 0.5rem;
                  border-radius: 4px; }
   .finding-row.critical { border-left-color: #ff6666; }
+  .finding-row.fabricated { border-left-color: #ff66aa; }
   .num { font-variant-numeric: tabular-nums; text-align: right; }
   .small { font-size: 0.75rem; color: #666; }
+  .table-wrap { overflow-x: auto; }
 </style>
 
 <div class="grid">
@@ -45,6 +53,11 @@
     <div class="value">
       {% if weight_age %}
         {{ weight_age|floatformat:0 }}s ago
+        {% if vstatus.last_set_weights_success %}
+          <span class="chip success">OK</span>
+        {% else %}
+          <span class="chip failed">FAILED</span>
+        {% endif %}
       {% else %}
         <span class="warn">never</span>
       {% endif %}
@@ -60,7 +73,7 @@
       {% if vstatus.chain_connected %} · owner uid {{ vstatus.owner_uid }}{% endif %}
     </div>
     {% if vstatus.chain_connected %}
-    <div class="sub">block {{ vstatus.current_block|default:"—" }} · {{ vstatus.n_probe_miners }} probe / {{ vstatus.n_hitl_miners }} HITL miners</div>
+    <div class="sub">block {{ vstatus.current_block|default:"—" }} · {{ vstatus.n_probe_miners }} probe / {{ vstatus.n_hitl_miners }} HITL miners · {{ vstatus.blocks_until_next_cycle }} blocks to next cycle</div>
     {% endif %}
   </div>
 
@@ -101,6 +114,23 @@
       {% endif %}
     </div>
   </div>
+
+  <div class="card">
+    <h4>Provenance</h4>
+    <div class="value">
+      {% if prov_failed > 0 %}
+        <span class="err">{{ prov_verified }}/{{ prov_verified|add:prov_failed }}</span>
+        <span class="chip fabricated">{{ prov_failed }} SUSPECT{{ prov_failed|pluralize }}</span>
+      {% elif prov_verified > 0 %}
+        <span class="ok">{{ prov_verified }} verified</span>
+      {% else %}
+        <span class="muted">0</span>
+      {% endif %}
+    </div>
+    <div class="sub">
+      {{ prov_legacy }} legacy (no commitments) · {{ relay_sessions }} sessions · {{ relay_commitments }} commitments
+    </div>
+  </div>
 </div>
 
 {% if vstatus.last_chain_error %}
@@ -127,6 +157,7 @@
 
 <h3>Registered Targets ({{ targets.count }})</h3>
 {% if targets %}
+<div class="table-wrap">
 <table>
   <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th class="num">Evals</th><th>Registered</th></tr>
   {% for t in targets %}
@@ -139,12 +170,14 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
 <p style="color:#666">No targets registered yet.</p>
 {% endif %}
 
 <h3>Recent cycles ({{ recent_cycles|length }})</h3>
 {% if recent_cycles %}
+<div class="table-wrap">
 <table>
   <tr>
     <th>When</th>
@@ -181,44 +214,63 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
-<p style="color:#666">No cycles yet. Waiting for the first productive cycle.</p>
+<p style="color:#666">No cycles yet.</p>
 {% endif %}
 
 <h3>Miner roster ({{ miners|length }})</h3>
 {% if miners %}
+<div class="table-wrap">
 <table>
   <tr>
     <th class="num">UID</th>
     <th>Hotkey</th>
     <th>Last seen</th>
-    <th class="num">Subs</th>
+    <th class="num">Evals</th>
     <th class="num">Findings</th>
-    <th class="num">Bait-only</th>
-    <th class="num">Null</th>
-    <th class="num">Last contrib</th>
+    <th class="num">Contrib</th>
+    <th class="num">Prov</th>
+    <th class="num">Last disp</th>
+    <th>Status</th>
   </tr>
   {% for m in miners %}
   <tr>
     <td class="num"><strong>{{ m.uid }}</strong></td>
     <td><code>{{ m.hotkey|slice:":12" }}…</code></td>
     <td class="small">{{ m.last_seen|date:"H:i:s" }}</td>
-    <td class="num">{{ m.submissions }}</td>
+    <td class="num">{{ m.eval_count }}</td>
     <td class="num">
-      {% if m.findings_count > 0 %}<span class="ok">{{ m.findings_count }}</span>{% else %}<span class="muted">0</span>{% endif %}
+      {% if m.finding_count > 0 %}<span class="ok">{{ m.finding_count }}</span>{% else %}<span class="muted">0</span>{% endif %}
     </td>
-    <td class="num">{{ m.bait_only_count }}</td>
-    <td class="num {% if m.null_count > 0 %}warn{% endif %}">{{ m.null_count }}</td>
     <td class="num">
-      {% if m.last_contribution > 0 %}
-        {{ m.last_contribution|floatformat:3 }}
-      {% else %}
+      {% if m.contribution_total > 0 %}{{ m.contribution_total|floatformat:2 }}{% else %}<span class="muted">0</span>{% endif %}
+    </td>
+    <td class="num">
+      {% if m.prov_verified_count > 0 %}
+        <span class="ok">{{ m.prov_verified_count }}</span>
+      {% endif %}
+      {% if m.prov_failed_count > 0 %}
+        <span class="chip fabricated">{{ m.prov_failed_count }}</span>
+      {% endif %}
+      {% if m.prov_verified_count == 0 and m.prov_failed_count == 0 %}
         <span class="muted">—</span>
+      {% endif %}
+    </td>
+    <td class="num small">
+      {% if m.dispatch_gap is not None %}{{ m.dispatch_gap }} blks{% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    <td>
+      {% if m.cooldown_active %}
+        <span class="chip cooldown">{{ m.cooldown_remaining_s }}s</span>
+      {% else %}
+        <span class="muted">ready</span>
       {% endif %}
     </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
 <p style="color:#666">No miners discovered yet.</p>
 {% endif %}
@@ -235,6 +287,13 @@
     {% else %}
       <span class="chip medium">MED</span>
     {% endif %}
+    {% if f.evaluation.provenance_verified %}
+      <span class="chip verified">VERIFIED</span>
+    {% elif f.evaluation.provenance_verified == False %}
+      <span class="chip fabricated">FABRICATED</span>
+    {% else %}
+      <span class="chip legacy">LEGACY</span>
+    {% endif %}
     <strong>{{ f.category }}</strong>
     · severity <strong>{{ f.severity|floatformat:3 }}</strong>
     · UID {{ f.evaluation.miner_uid }}
@@ -247,11 +306,28 @@
 </div>
 {% endfor %}
 {% else %}
-<p style="color:#666">No findings yet. The audit pipeline creates a Finding row when <code>findings_reward ≥ FINDINGS_THRESHOLD</code> (0.15).</p>
+<p style="color:#666">No findings yet.</p>
+{% endif %}
+
+{% if fabrication_suspects %}
+<h3>Fabrication suspects ({{ fabrication_suspects|length }})</h3>
+{% for e in fabrication_suspects %}
+<div class="finding-row fabricated">
+  <div>
+    <span class="chip fabricated">FABRICATED</span>
+    <strong>{{ e.category }}</strong>
+    · UID {{ e.miner_uid }}
+    · target {{ e.target.name }}
+    · {{ e.timestamp|date:"Y-m-d H:i" }}
+  </div>
+  <div class="small" style="margin-top: 0.3rem;">{{ e.provenance_turns_verified }} turns verified before mismatch · task {{ e.task_id|slice:":8" }}…</div>
+</div>
+{% endfor %}
 {% endif %}
 
 <h3>HITL queue ({{ n_hitl_pending }} pending)</h3>
 {% if pending_hitl %}
+<div class="table-wrap">
 <table>
   <tr>
     <th>Routed</th>
@@ -274,8 +350,9 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
-<p style="color:#666">No pending HITL cases. A case is created when a finding's miner/audit disagreement exceeds 0.3.</p>
+<p style="color:#666">No pending HITL cases.</p>
 {% endif %}
 
 {% endblock %}

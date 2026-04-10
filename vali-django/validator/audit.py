@@ -252,10 +252,13 @@ class BaitLibrary:
 
 
 def load_default_bait_library() -> BaitLibrary:
-    """Load the legacy bait/library.json into a fresh BaitLibrary.
-    Called once at validator startup from acquire_resources()."""
+    """Load bait/library.json into a fresh BaitLibrary.
+    Tries the bundled copy first (Docker), falls back to the
+    sibling safeguard/ tree (local dev)."""
     library = BaitLibrary()
-    library_path = _SAFEGUARD_ROOT / "bait" / "library.json"
+    bundled = Path(__file__).resolve().parent / "bait" / "library.json"
+    legacy = _SAFEGUARD_ROOT / "bait" / "library.json"
+    library_path = bundled if bundled.exists() else legacy
     library.load(library_path)
     return library
 

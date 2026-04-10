@@ -30,8 +30,11 @@ spec:
               value: "test"
             - name: NETUID
               value: "444"
+            # Set this to your validator's public IP after deploying
+            # the LoadBalancer service. Miners use this URL to route
+            # probes through the provenance relay.
             - name: SAFEGUARD_RELAY_ENDPOINT
-              value: "http://vali-django:9090/probe/relay"
+              value: "http://VALIDATOR_PUBLIC_IP:9090/probe/relay"
             - name: DJANGO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
@@ -88,6 +91,7 @@ metadata:
   name: vali-django
   namespace: safeguard
 spec:
+  type: LoadBalancer
   selector: { app: vali-django }
   ports:
     - port: 9090
