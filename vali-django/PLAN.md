@@ -1,5 +1,7 @@
 # vali-django: Completion + Perfection Plan
 
+> **Remaining phases (3-10) absorbed into [`safeguard-ops/PLAN.md`](../../safeguard-ops/PLAN.md) as of 2026-04-10.** This file is retained as a historical record of the vali-django port (phases 2.0-2.9).
+
 > **Authoritative plan as of 2026-04-08, amended 2026-04-09.** Supersedes
 > and absorbs the earlier `safeguard/VALI_DJANGO_LOOP_PORT_PLAN.md`, which
 > has been deleted. The phasing below reflects the post-burn-floor /

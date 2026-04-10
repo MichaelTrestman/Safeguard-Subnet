@@ -42,6 +42,11 @@ spec:
                 secretKeyRef:
                   name: safeguard-secrets
                   key: chutes-api-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: database-url
             - name: ADMIN_USER
               valueFrom:
                 secretKeyRef:

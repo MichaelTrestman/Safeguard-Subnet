@@ -1,8 +1,9 @@
 # Safeguard Relay Protocol v2 — provenance commitments over v1
 
-**Status:** Design target, 2026-04-09. **Not yet implemented.** Partners
-integrating today should continue to use
-[`RELAY_PROTOCOL.md`](RELAY_PROTOCOL.md) (v1). This document is the single
+**Status:** Shipped 2026-04-10. Live on testnet 444 — enforced in vali-django audit pipeline. Partners
+should use v2 (`/probe/relay` on the Safeguard validator) for provenance-verified probing.
+V1 ([`RELAY_PROTOCOL.md`](RELAY_PROTOCOL.md)) is still supported but legacy miners earn zero contribution
+without provenance. This document is the single
 source of truth for the v2 design.
 
 ## Relationship to v1

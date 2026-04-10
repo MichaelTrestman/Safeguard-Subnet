@@ -10,6 +10,7 @@ dependencies = [
     "bittensor>=9.0",
     "bittensor-wallet>=3.0",
     "python-dotenv>=1.0",
+    "psycopg2-binary>=2.9",
 ]
 
 [build-system]
