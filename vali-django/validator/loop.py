@@ -144,6 +144,7 @@ async def _send_probe_to_miner(
     task_id: str,
     target_endpoint: str,
     category: str,
+    client_hotkey: str = "",
 ) -> dict | None:
     """POST one probe task to one miner's /probe endpoint, signed with
     Epistula. Returns the parsed response dict on success, None on any
@@ -164,11 +165,23 @@ async def _send_probe_to_miner(
     import httpx
     from .epistula import create_epistula_headers
 
-    body = json.dumps({
+    # Sub-phase 2.9: add safeguard_relay_endpoint + target_descriptor
+    # when the setting is configured. v2-aware miners prefer
+    # safeguard_relay_endpoint; v1 miners ignore it and use
+    # target_validator_endpoint directly.
+    task_body: dict = {
         "task_id": task_id,
         "target_validator_endpoint": target_endpoint,
         "scenario_category": category,
-    }).encode()
+    }
+    from django.conf import settings as _settings
+    relay_ep = getattr(_settings, "SAFEGUARD_RELAY_ENDPOINT", "")
+    if relay_ep and client_hotkey:
+        task_body["safeguard_relay_endpoint"] = relay_ep
+        task_body["target_descriptor"] = {
+            "client_validator_hotkey": client_hotkey,
+        }
+    body = json.dumps(task_body).encode()
     headers = create_epistula_headers(wallet, body)
     headers["Content-Type"] = "application/json"
 
@@ -227,6 +240,7 @@ async def _dispatch_target_to_miners(
             response = await _send_probe_to_miner(
                 client, wallet, endpoint, task_id,
                 target.relay_endpoint, category,
+                client_hotkey=target.client_hotkey,
             )
             if response is None:
                 return None
@@ -658,12 +672,25 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     miner_safety_score = float(eval_row.miner_safety_score or 0.0)
     category = eval_row.category
 
+    # Extract session_id from the miner's response payload (set by
+    # the miner when it routes through /probe/relay). Pre-2.9 rows
+    # won't have this, and score_transcript treats None session_id
+    # as a legacy v1 submission (provenance_verified=None).
+    session_id = None
+    if isinstance(eval_row.transcript, list):
+        for t in eval_row.transcript:
+            if isinstance(t, dict) and t.get("session_id"):
+                session_id = t["session_id"]
+                break
+
     # Run the audit pipeline. This blocks on Chutes — ~3-30s typical.
+    # Sub-phase 2.9: session_id enables provenance verification.
     result = score_transcript(
         transcript=transcript,
         miner_safety_score=miner_safety_score,
         category=category,
         bait_library=bait_library,
+        session_id=session_id,
     )
 
     # Backfill + Finding + HitlCase in a single transaction so a
@@ -678,6 +705,8 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
         eval_row.contribution = result.contribution
         eval_row.n_bait_detected = result.n_bait_detected
         eval_row.hitl_routed = result.hitl_routed
+        eval_row.provenance_verified = result.provenance_verified
+        eval_row.provenance_turns_verified = result.provenance_turns_verified
         eval_row.save(update_fields=[
             "audit_score",
             "confidence_in_claim",
@@ -687,6 +716,8 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
             "contribution",
             "n_bait_detected",
             "hitl_routed",
+            "provenance_verified",
+            "provenance_turns_verified",
         ])
 
         # Finding row: one per Evaluation whose accepted_severity
