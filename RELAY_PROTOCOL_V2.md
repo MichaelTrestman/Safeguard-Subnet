@@ -19,8 +19,8 @@ v2 is a Safeguard-side enhancement that decorates v1 with cryptographic
 provenance. The client's `/relay` stays where it is, runs unchanged, and
 remains the forwarding target. What moves is *who the Safeguard miner
 calls first*: instead of calling the client's `/relay` directly, the miner
-calls a new `/relay` endpoint on the **Safeguard validator**, which then
-calls the client's existing v1 `/relay` on the miner's behalf and adds a
+calls a new `/probe/relay` endpoint on the **Safeguard validator**, which
+then calls the client's existing v1 `/relay` on the miner's behalf and adds a
 signed commitment to the response on the way back.
 
 ## Why v2 exists
@@ -54,7 +54,7 @@ v1 flow:
     Safeguard miner ──HTTP──▶ client v1 /relay ──own auth──▶ client miner
 
 v2 flow:
-    Safeguard miner ──HTTP──▶ Safeguard /relay ──HTTP──▶ client v1 /relay ──own auth──▶ client miner
+    Safeguard miner ──HTTP──▶ Safeguard /probe/relay ──HTTP──▶ client v1 /relay ──own auth──▶ client miner
                                     │
                                     ├─ hashes response
                                     ├─ stores commitment in shared DB
@@ -99,8 +99,8 @@ stepping stone, not a dead end.
 
 | Participant | Role in v2 | Trust status |
 |---|---|---|
-| **Safeguard miner** | Sends per-turn prompts to Safeguard `/relay`, receives response + commitment, submits transcript with commitment echoed | Untrusted (this is the party the v2 commitments defend against) |
-| **Safeguard validator** | Hosts `/relay`, forwards to client v1 `/relay`, computes commitment, stores commitment in DB, re-verifies at audit time | Trusted for v2 purposes; A4 is the residual Byzantine case |
+| **Safeguard miner** | Sends per-turn prompts to Safeguard `/probe/relay`, receives response + commitment, submits transcript with commitment echoed | Untrusted (this is the party the v2 commitments defend against) |
+| **Safeguard validator** | Hosts `/probe/relay`, forwards to client v1 `/relay`, computes commitment, stores commitment in DB, re-verifies at audit time | Trusted for v2 purposes; A4 is the residual Byzantine case |
 | **Client (target subnet validator)** | Runs v1 `/relay` endpoint; unchanged from v1 | Same trust status as v1 — still subject to A3 sandbagging, which v2 does not mitigate |
 | **Client's miner** | Answers the relayed query as if it were any other validator query | Untrusted end-to-end, no change from v1 |
 
@@ -110,9 +110,11 @@ relay**. Everything else stays where it was.
 
 ## Endpoint spec
 
-### `POST /relay`
+### `POST /probe/relay`
 
 Hosted on the Safeguard validator, reachable by registered Safeguard miners.
+The `/probe/` prefix namespaces the miner-side relay so a future
+customer-facing relay can coexist on a different prefix.
 
 **Request:**
 
@@ -192,7 +194,7 @@ This is the part of v2 that matters. Everything else is plumbing.
 
 ### The scheme
 
-Each successful `/relay` call runs this procedure after receiving the
+Each successful `/probe/relay` call runs this procedure after receiving the
 client v1 relay's response:
 
 1. Safeguard validator receives the target response from the client v1
@@ -300,7 +302,7 @@ Existing miners (`safeguard-example-miner/`, any third-party miners) hit
 the client v1 `/relay` directly. To use v2, the miner does two things
 differently:
 
-1. **Routes per-turn prompts through Safeguard's `/relay`** instead of
+1. **Routes per-turn prompts through Safeguard's `/probe/relay`** instead of
    directly to the client's `/relay`. The new endpoint URL comes from the
    task dispatch message (see "Loop and audit integration" below — the
    loop stamps `safeguard_relay_endpoint` into each task).
@@ -471,7 +473,7 @@ not per-client:
 2. Loop stamps both `target_validator_endpoint` (v1) and
    `safeguard_relay_endpoint` (v2) into every dispatched task.
 3. Miners upgrade at their own pace. v2-aware miners route per-turn
-   prompts through the Safeguard `/relay` and include commitments in
+   prompts through the Safeguard `/probe/relay` and include commitments in
    their submissions; v1 miners keep hitting the client v1 relay
    directly.
 4. Once all known productive miners are on v2, the loop can optionally
@@ -529,7 +531,7 @@ path is visible, not because it needs to be done.
    (b) until the corresponding submission has been audited. Revise based
    on storage cost once operating data is available.
 3. **Multi-validator consistency.** If multiple Safeguard validators each
-   host `/relay` independently, two miners probing the same target at
+   host `/probe/relay` independently, two miners probing the same target at
    the same time will receive commitments from two different Safeguard
    validators. That is fine — each miner's scoring only needs
    self-consistency against the validator that issued their commitments,

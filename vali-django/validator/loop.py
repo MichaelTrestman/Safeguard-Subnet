@@ -355,39 +355,15 @@ def _upsert_discovered_miners(
 @sync_to_async
 def _eligible_miners_for_dispatch(
     probe_miners: dict[int, str],
-    current_block: int,
-    tempo: int,
 ) -> dict[int, str]:
-    """Sub-phase 2.8 — apply the per-miner tempo gate.
+    """Returns the subset of `probe_miners` eligible for dispatch this
+    tick. The only gate is the failure cooldown — after a failed
+    dispatch, wait DISPATCH_RETRY_COOLDOWN_S before retrying. All
+    successfully-dispatched miners are eligible every tick.
 
-    Returns the subset of `probe_miners` that should be dispatched to
-    THIS tick. The gate has two halves and a miner must pass BOTH:
-
-      1. Owed-this-tempo gate (tempo arithmetic):
-         last_successful_dispatch_block is NULL (never dispatched), OR
-         (current_block - last_successful_dispatch_block) >= tempo
-
-      2. Failure-cooldown gate (timestamp arithmetic, only fires
-         when there's a recorded failure):
-         last_failed_dispatch_at is NULL (no recent failure), OR
-         (now - last_failed_dispatch_at) >= DISPATCH_RETRY_COOLDOWN_S
-
-    The cooldown ONLY applies to failures — a successful dispatch
-    clears `last_failed_dispatch_at` so the miner is held back only
-    by the tempo gate, not by an artificial timer. This matches the
-    "no retry cap, retry every 5 min" semantics from PLAN.md sub-phase
-    2.8: the 5-min wait is between retries of a *failed* dispatch,
-    not between successful dispatches.
-
-    Miners that don't have a MinerScore row yet pass both gates by
-    default (they're brand new — never dispatched, no recorded
-    failures). The discovery upsert in `_upsert_discovered_miners`
-    runs BEFORE this helper each tick, so brand new miners always
-    have a row by the time we filter, but the unknown-uid case is
-    still handled defensively (treat as eligible).
-
-    Returns a dict {uid: endpoint} preserving the input shape so the
-    rest of the dispatch path is unchanged.
+    Dispatch cadence is independent of set_weights cadence. Miners
+    compete on throughput — the more probes they handle, the more
+    contribution they accumulate before the next set_weights.
     """
     from .models import MinerScore
 
@@ -408,12 +384,6 @@ def _eligible_miners_for_dispatch(
             # never-dispatched, fully eligible.
             eligible[uid] = endpoint
             continue
-        # Owed-this-tempo gate
-        if m.last_successful_dispatch_block is not None:
-            blocks_since = current_block - m.last_successful_dispatch_block
-            if blocks_since < tempo:
-                # Already dispatched within this tempo, skip until tempo elapses
-                continue
         # Failure-cooldown gate (only fires if there's a recent failure)
         if m.last_failed_dispatch_at is not None:
             if now - m.last_failed_dispatch_at < cooldown:
@@ -672,16 +642,22 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     miner_safety_score = float(eval_row.miner_safety_score or 0.0)
     category = eval_row.category
 
-    # Extract session_id from the miner's response payload (set by
-    # the miner when it routes through /probe/relay). Pre-2.9 rows
-    # won't have this, and score_transcript treats None session_id
-    # as a legacy v1 submission (provenance_verified=None).
+    # Extract session_id for provenance verification. The session_id
+    # is NOT in the transcript entries themselves — it's in the
+    # RelaySession table, linked via the commitment digests. Look up
+    # the first commitment block in the transcript and trace it back
+    # to its RelayCommitment → RelaySession.
     session_id = None
     if isinstance(eval_row.transcript, list):
+        from .models import RelayCommitment
         for t in eval_row.transcript:
-            if isinstance(t, dict) and t.get("session_id"):
-                session_id = t["session_id"]
-                break
+            if isinstance(t, dict) and t.get("response_commitment"):
+                digest = t["response_commitment"].get("digest", "")
+                if digest:
+                    rc = RelayCommitment.objects.filter(digest=digest).select_related("session").first()
+                    if rc:
+                        session_id = str(rc.session.session_id)
+                    break
 
     # Run the audit pipeline. This blocks on Chutes — ~3-30s typical.
     # Sub-phase 2.9: session_id enables provenance verification.
@@ -1230,7 +1206,7 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
             # Missing both halves of the gate (== never seen): treated
             # as fully eligible.
             eligible_miners = await _eligible_miners_for_dispatch(
-                probe_miners, current_block, tempo,
+                probe_miners,
             )
 
             targets = await _list_targets()

@@ -356,9 +356,14 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
     forward_headers = create_epistula_headers(_asgi.WALLET, forward_body)
     forward_headers["Content-Type"] = "application/json"
 
+    # Forward to the client's v1 /relay endpoint. The registered
+    # relay_endpoint is the base URL (e.g. http://host:port); the
+    # v1 relay path is /relay per RELAY_PROTOCOL.md.
+    forward_url = target.relay_endpoint.rstrip("/") + "/relay"
+
     try:
         upstream = await _asgi.RELAY_HTTPX.post(
-            target.relay_endpoint,
+            forward_url,
             content=forward_body,
             headers=forward_headers,
         )
