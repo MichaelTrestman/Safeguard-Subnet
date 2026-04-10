@@ -30,11 +30,8 @@ spec:
               value: "test"
             - name: NETUID
               value: "444"
-            # Set this to your validator's public IP after deploying
-            # the LoadBalancer service. Miners use this URL to route
-            # probes through the provenance relay.
             - name: SAFEGUARD_RELAY_ENDPOINT
-              value: "http://VALIDATOR_PUBLIC_IP:9090/probe/relay"
+              value: "http://35.188.58.40:9090/probe/relay"
             - name: DJANGO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
@@ -45,6 +42,16 @@ spec:
                 secretKeyRef:
                   name: safeguard-secrets
                   key: chutes-api-key
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: admin-user
+            - name: ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: admin-pass
             - name: HEALTH_MAX_TICK_AGE_S
               value: "120"
             - name: HEALTH_MAX_WEIGHT_AGE_S

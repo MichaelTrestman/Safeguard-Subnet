@@ -445,8 +445,11 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
     })
 
 
-# --- Operator UI --------------------------------------------------------
+# --- Operator UI (login required) ---------------------------------------
 
+from django.contrib.auth.decorators import login_required
+
+@login_required
 def operator_dashboard(request: HttpRequest) -> HttpResponse:
     """Phase 3: full operator console for vali-django.
 
@@ -569,6 +572,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     })
 
 
+@login_required
 def target_detail(request: HttpRequest, name: str) -> HttpResponse:
     target = get_object_or_404(RegisteredTarget, name=name)
     evals = target.evaluations.order_by("-timestamp")[:50]
