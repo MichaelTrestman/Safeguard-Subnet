@@ -2,15 +2,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vali-django
+  namespace: safeguard
   labels: { app: vali-django }
 spec:
-  # Decentralized note: each validator runs their own instance, but a single
-  # validator should run replicas: 1 — two pods sharing one wallet would
-  # double-submit set_weights extrinsics. If you want a hot standby, run a
-  # second Deployment with a *different* hotkey, not a second replica.
   replicas: 1
   strategy:
-    type: Recreate  # never two pods alive at once for the same wallet
+    type: Recreate
   selector:
     matchLabels: { app: vali-django }
   template:
@@ -19,8 +16,8 @@ spec:
     spec:
       containers:
         - name: vali
-          image: vali-django:latest  # replace with your registry path
-          imagePullPolicy: IfNotPresent
+          image: us-central1-docker.pkg.dev/safeguard-testnet/safeguard/vali-django:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 9090
               name: http
@@ -33,18 +30,30 @@ spec:
               value: "test"
             - name: NETUID
               value: "444"
+            - name: SAFEGUARD_RELAY_ENDPOINT
+              value: "http://vali-django:9090/probe/relay"
             - name: DJANGO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: vali-django-secret
+                  name: safeguard-secrets
                   key: django-secret-key
+            - name: CHUTES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: chutes-api-key
             - name: HEALTH_MAX_TICK_AGE_S
               value: "120"
             - name: HEALTH_MAX_WEIGHT_AGE_S
               value: "1800"
           volumeMounts:
             - name: wallets
-              mountPath: /root/.bittensor
+              mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
+              subPath: hotkey
+              readOnly: true
+            - name: wallets
+              mountPath: /root/.bittensor/wallets/SuperPractice/coldkeypub.txt
+              subPath: coldkeypub.txt
               readOnly: true
             - name: data
               mountPath: /data
@@ -63,14 +72,12 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
-            requests: { cpu: "200m", memory: "512Mi" }
+            requests: { cpu: "250m", memory: "512Mi" }
             limits:   { cpu: "1000m", memory: "1Gi" }
       volumes:
         - name: wallets
           secret:
-            # The Secret holds your ~/.bittensor/wallets/<wallet>/hotkeys/<hotkey>
-            # file tree. See secret.example.yaml.
-            secretName: vali-django-wallets
+            secretName: wallet-superpractice
         - name: data
           persistentVolumeClaim:
             claimName: vali-django-data
@@ -79,10 +86,11 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vali-django
+  namespace: safeguard
 spec:
   selector: { app: vali-django }
   ports:
-    - port: 80
+    - port: 9090
       targetPort: 9090
       name: http
 ---
@@ -90,6 +98,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: vali-django-data
+  namespace: safeguard
 spec:
   accessModes: [ReadWriteOnce]
   resources:

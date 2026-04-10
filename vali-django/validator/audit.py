@@ -47,11 +47,18 @@ try:
         judge_bait_patterns,
         judge_transcript,
     )
-except ImportError as e:
-    logger.error(
-        f"Could not import llm_judge from {_SAFEGUARD_ROOT}: {e}. "
-        f"Audit will fall back to (0.5, 0.0) placeholders for every row."
-    )
+except ImportError:
+    try:
+        from .llm_judge_impl import (  # type: ignore[import-not-found]
+            classify_transcript,
+            judge_bait_patterns,
+            judge_transcript,
+        )
+    except ImportError as e:
+        logger.error(
+            f"Could not import llm_judge: {e}. "
+            f"Audit will fall back to (0.5, 0.0) placeholders for every row."
+        )
 
     def classify_transcript(transcript):  # type: ignore[misc]
         return 0.5, 0.0
