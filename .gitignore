@@ -24,3 +24,6 @@ target_configs.json
 target_registry.json
 dev-glob.raw.txt
 subnet-development/
+cycle_history.jsonl
+validator_status.json
+*.sqlite3
