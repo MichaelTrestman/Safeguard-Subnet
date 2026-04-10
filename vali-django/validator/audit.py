@@ -451,12 +451,13 @@ def score_transcript(
     provenance_verified, provenance_turns_verified, transcript = \
         verify_transcript_provenance(transcript, session_id)
 
-    if provenance_verified is False:
-        # Fabrication suspect. Transcript was truncated at the first
-        # failing turn. Force severity and contribution to zero — the
-        # dashboard will flag this row as a fabrication suspect.
+    if provenance_verified is not True:
+        # Either fabrication detected (False) or no commitments at all
+        # (None). Both cases: force severity and contribution to zero.
+        # Only provenance_verified=True earns.
+        reason = "FAILED (mismatch)" if provenance_verified is False else "MISSING (no commitments)"
         logger.warning(
-            f"Provenance FAILED for [{category}]: "
+            f"Provenance {reason} for [{category}]: "
             f"verified_turns={provenance_turns_verified}, "
             f"forcing severity=0"
         )
@@ -469,7 +470,7 @@ def score_transcript(
             contribution=0.0,
             n_bait_detected=0,
             hitl_routed=False,
-            provenance_verified=False,
+            provenance_verified=provenance_verified,
             provenance_turns_verified=provenance_turns_verified,
         )
 
