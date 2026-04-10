@@ -1,0 +1,43 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Customer Dashboard &rarr; {{ target.name }}{% endblock %}
+{% block nav %}<p><a href="{% url 'customer_dashboard' %}">Dashboard</a> &rarr; {{ target.name }}</p>{% endblock %}
+{% block content %}
+<h3>Vulnerability Profile: {{ target.name }}</h3>
+<div class="card" style="margin-bottom:1rem;">
+  <h4>Target Info</h4>
+  <div class="sub">Type: {{ target.subnet_type }}</div>
+  <div class="sub">Relay: <code>{{ target.relay_endpoint }}</code></div>
+  <div class="sub">Categories: {{ target.categories|join:", " }}</div>
+  <div class="sub">Last probed: {{ target.last_probed_at|default:"never" }}</div>
+</div>
+
+<h3>Recent Evaluations</h3>
+{% with evals=target.evaluations.all %}
+{% if evals %}
+<table>
+  <tr><th>Task</th><th>Category</th><th>Miner</th><th>Severity</th><th>Contribution</th><th>Provenance</th><th>Time</th></tr>
+  {% for e in evals|slice:":50" %}
+  <tr>
+    <td><code>{{ e.task_id|truncatechars:12 }}</code></td>
+    <td>{{ e.category }}</td>
+    <td>{{ e.miner_uid }}</td>
+    <td class="{% if e.accepted_severity >= 0.7 %}err{% elif e.accepted_severity >= 0.4 %}warn{% endif %}">{{ e.accepted_severity|floatformat:2 }}</td>
+    <td>{{ e.contribution|floatformat:3 }}</td>
+    <td>{% if e.provenance_verified %}
+      <span class="ok">VERIFIED</span>
+    {% elif e.provenance_verified == False %}
+      <span class="err">FAILED</span>
+    {% else %}
+      <span style="color:#666;">LEGACY</span>
+    {% endif %}</td>
+    <td>{{ e.timestamp|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No evaluations yet.</p>
+{% endif %}
+{% endwith %}
+
+<p><a href="{% url 'customer_findings' target.name %}">View all findings &rarr;</a></p>
+{% endblock %}

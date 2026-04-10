@@ -1,0 +1,24 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Curation Audit Log{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> &rarr; <a href="{% url 'curation_log' %}">Audit Log</a></p>{% endblock %}
+{% block content %}
+<h3>All Curation Actions</h3>
+{% if actions %}
+<table>
+  <tr><th>Finding</th><th>Target</th><th>Action</th><th>Severity</th><th>Reason</th><th>Curator</th><th>Time</th></tr>
+  {% for a in actions %}
+  <tr>
+    <td><a href="{% url 'curation_detail' a.finding.pk %}">#{{ a.finding.pk }}</a></td>
+    <td>{{ a.finding.evaluation.target.name }}</td>
+    <td>{{ a.get_action_display }}</td>
+    <td>{{ a.original_severity|floatformat:2 }} &rarr; {{ a.new_severity|floatformat:2 }}</td>
+    <td>{{ a.reason|truncatechars:80 }}</td>
+    <td>{{ a.curator.username|default:"system" }}</td>
+    <td>{{ a.created_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No curation actions yet.</p>
+{% endif %}
+{% endblock %}

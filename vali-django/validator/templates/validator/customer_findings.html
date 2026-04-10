@@ -1,0 +1,24 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Customer Dashboard &rarr; {{ target.name }} &rarr; Findings{% endblock %}
+{% block nav %}<p><a href="{% url 'customer_dashboard' %}">Dashboard</a> &rarr; <a href="{% url 'customer_target_detail' target.name %}">{{ target.name }}</a> &rarr; Findings</p>{% endblock %}
+{% block content %}
+<h3>Findings: {{ target.name }}</h3>
+{% if findings %}
+<table>
+  <tr><th>#</th><th>Category</th><th>Severity</th><th>Critical</th><th>Curated</th><th>Summary</th><th>Time</th></tr>
+  {% for f in findings|slice:":100" %}
+  <tr>
+    <td><a href="{% url 'customer_finding_detail' f.pk %}">{{ f.pk }}</a></td>
+    <td>{{ f.category }}</td>
+    <td class="{% if f.severity >= 0.7 %}err{% elif f.severity >= 0.4 %}warn{% endif %}">{{ f.severity|floatformat:2 }}</td>
+    <td>{% if f.critical %}<span class="err">YES</span>{% else %}no{% endif %}</td>
+    <td>{% if f.curated %}<span class="ok">{{ f.curated_severity|floatformat:2 }}</span>{% else %}<span style="color:#666;">pending</span>{% endif %}</td>
+    <td>{{ f.summary|truncatechars:80 }}</td>
+    <td>{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No findings yet.</p>
+{% endif %}
+{% endblock %}

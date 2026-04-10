@@ -1,0 +1,85 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Curation &rarr; Finding #{{ finding.pk }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> &rarr; #{{ finding.pk }}</p>{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h4>Target</h4>
+    <div class="value">{{ finding.evaluation.target.name }}</div>
+  </div>
+  <div class="card">
+    <h4>Category</h4>
+    <div class="value">{{ finding.category }}</div>
+  </div>
+  <div class="card">
+    <h4>Severity</h4>
+    <div class="value err">{{ finding.severity|floatformat:2 }}</div>
+  </div>
+  <div class="card">
+    <h4>Miner</h4>
+    <div class="value">UID {{ finding.evaluation.miner_uid }}</div>
+    <div class="sub"><code>{{ finding.evaluation.miner_hotkey|truncatechars:16 }}</code></div>
+  </div>
+  <div class="card">
+    <h4>Audit Score</h4>
+    <div class="value">{{ finding.evaluation.audit_score|floatformat:2|default:"n/a" }}</div>
+  </div>
+  <div class="card">
+    <h4>Provenance</h4>
+    <div class="value">{% if finding.evaluation.provenance_verified %}<span class="ok">VERIFIED</span>{% elif finding.evaluation.provenance_verified == False %}<span class="err">FAILED</span>{% else %}<span style="color:#666;">LEGACY</span>{% endif %}</div>
+  </div>
+</div>
+
+<h3>Summary</h3>
+<div class="card"><p>{{ finding.summary|default:"No summary." }}</p></div>
+
+<h3>Transcript</h3>
+<div class="card">
+{% for turn in finding.evaluation.transcript %}
+  <div style="margin-bottom:0.8rem;padding:0.5rem;background:{% if turn.role == 'user' %}#1a1a2e{% else %}#1a2e1a{% endif %};border-radius:4px;">
+    <div style="color:#888;font-size:0.75rem;margin-bottom:0.3rem;">{{ turn.role|upper }}</div>
+    <div style="white-space:pre-wrap;font-family:monospace;font-size:0.85rem;">{{ turn.content }}</div>
+  </div>
+{% endfor %}
+</div>
+
+{% if actions %}
+<h3>Curation History</h3>
+<table>
+  <tr><th>Action</th><th>Severity</th><th>Reason</th><th>Curator</th><th>Time</th></tr>
+  {% for a in actions %}
+  <tr>
+    <td>{{ a.get_action_display }}</td>
+    <td>{{ a.original_severity|floatformat:2 }} &rarr; {{ a.new_severity|floatformat:2 }}</td>
+    <td>{{ a.reason }}</td>
+    <td>{{ a.curator.username|default:"system" }}</td>
+    <td>{{ a.created_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h3>{% if finding.curated %}Update Curation{% else %}Curate This Finding{% endif %}</h3>
+<div class="card">
+  <form method="post" action="{% url 'curation_action' finding.pk %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Action</label><br>
+      <select name="action" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;">
+        <option value="confirm">Confirm</option>
+        <option value="downgrade">Downgrade</option>
+        <option value="escalate">Escalate</option>
+      </select>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">New Severity (for downgrade/escalate)</label><br>
+      <input type="number" name="new_severity" step="0.01" min="0" max="1" value="{{ finding.severity|floatformat:2 }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Reason (required)</label><br>
+      <textarea name="reason" rows="3" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;" placeholder="Why are you taking this action?"></textarea>
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Submit</button>
+  </form>
+</div>
+{% endblock %}

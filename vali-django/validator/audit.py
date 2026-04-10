@@ -46,6 +46,8 @@ try:
         classify_transcript,
         judge_bait_patterns,
         judge_transcript,
+        classify_opsafety_transcript,
+        judge_opsafety_transcript,
     )
 except ImportError:
     try:
@@ -68,6 +70,12 @@ except ImportError:
 
     def judge_bait_patterns(transcript, patterns):  # type: ignore[misc]
         return 0
+
+    def classify_opsafety_transcript(transcript, model=None):  # type: ignore[misc]
+        return 0.5, 0.0
+
+    def judge_opsafety_transcript(transcript, model=None):  # type: ignore[misc]
+        return 0.5, 0.0, "NONE", [], ""
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +169,32 @@ class BaitLibrary:
         self.patterns.append(pattern)
         self.by_category.setdefault(pattern.category, []).append(pattern)
 
+    def load_from_db(self) -> None:
+        """Load patterns from the BaitPattern Django model."""
+        from .models import BaitPattern as BaitPatternModel
+        rows = BaitPatternModel.objects.all()
+        if not rows.exists():
+            raise ValueError("No BaitPattern rows in DB")
+        loaded = 0
+        for row in rows:
+            pattern = BaitPattern(
+                id=row.id_slug,
+                category=row.category,
+                severity=row.severity,
+                title=row.title,
+                description=row.description,
+                detection_cues=list(row.detection_cues or []),
+                example_prompts=list(row.example_prompts or []),
+                references=list(row.references or []),
+                related_patterns=list(row.related_patterns or []),
+            )
+            self.add(pattern)
+            loaded += 1
+        logger.info(
+            f"Loaded bait library from DB: {loaded} patterns across "
+            f"{len(self.by_category)} categories"
+        )
+
     def load(self, library_path: str | Path) -> None:
         path = Path(library_path)
         if not path.exists():
@@ -252,14 +286,19 @@ class BaitLibrary:
 
 
 def load_default_bait_library() -> BaitLibrary:
-    """Load bait/library.json into a fresh BaitLibrary.
-    Tries the bundled copy first (Docker), falls back to the
-    sibling safeguard/ tree (local dev)."""
+    """Load bait patterns from the DB (BaitPattern model), falling back
+    to the JSON file if the DB table is empty or unavailable (e.g.,
+    during tests before migrations run).
+    """
     library = BaitLibrary()
-    bundled = Path(__file__).resolve().parent / "bait" / "library.json"
-    legacy = _SAFEGUARD_ROOT / "bait" / "library.json"
-    library_path = bundled if bundled.exists() else legacy
-    library.load(library_path)
+    try:
+        library.load_from_db()
+    except Exception:
+        logger.warning("Failed to load bait library from DB, falling back to JSON")
+        bundled = Path(__file__).resolve().parent / "bait" / "library.json"
+        legacy = _SAFEGUARD_ROOT / "bait" / "library.json"
+        library_path = bundled if bundled.exists() else legacy
+        library.load(library_path)
     return library
 
 
@@ -408,6 +447,7 @@ def verify_transcript_provenance(
 def tiered_audit(
     transcript: list[dict],
     miner_safety_score: float,
+    category: str = "",
 ) -> tuple[float, float]:
     """Run the tier-1 classifier, then tier-2 judge if tier-1 wasn't
     confident enough. Returns (audit_score, confidence_in_claim).
@@ -416,7 +456,13 @@ def tiered_audit(
     but without the HITL escalation side-effect — the caller decides
     what to do with disagreement, based on the returned tuple + the
     miner_safety_score delta.
+
+    For operational-safety transcripts, routes to the inverted-rubric
+    opsafety judge instead of the content-safety judge.
     """
+    if category == "operational-safety":
+        return _tiered_audit_opsafety(transcript, miner_safety_score)
+
     t1_score, t1_conf = classify_transcript(transcript)
     if t1_conf >= CLASSIFIER_THRESHOLD:
         return t1_score, _confidence_in_claim(miner_safety_score, t1_score)
@@ -425,9 +471,24 @@ def tiered_audit(
     if t2_conf >= CLASSIFIER_THRESHOLD:
         return t2_score, _confidence_in_claim(miner_safety_score, t2_score)
 
-    # Both tiers returned low-confidence — average them as a
-    # best-effort audit score while we wait for HITL to weigh in.
-    # Pending score is consistent with legacy behavior.
+    pending_score = (t1_score + t2_score) / 2.0
+    return pending_score, _confidence_in_claim(miner_safety_score, pending_score)
+
+
+def _tiered_audit_opsafety(
+    transcript: list[dict],
+    miner_safety_score: float,
+) -> tuple[float, float]:
+    """Operational-safety audit path: inverted rubric judges."""
+    t1_score, t1_conf = classify_opsafety_transcript(transcript)
+    if t1_conf >= CLASSIFIER_THRESHOLD:
+        return t1_score, _confidence_in_claim(miner_safety_score, t1_score)
+
+    t2_result = judge_opsafety_transcript(transcript)
+    t2_score, t2_conf = t2_result[0], t2_result[1]
+    if t2_conf >= CLASSIFIER_THRESHOLD:
+        return t2_score, _confidence_in_claim(miner_safety_score, t2_score)
+
     pending_score = (t1_score + t2_score) / 2.0
     return pending_score, _confidence_in_claim(miner_safety_score, pending_score)
 
@@ -485,7 +546,7 @@ def score_transcript(
         )
 
     # ----- Tiered audit -----
-    audit_score, confidence = tiered_audit(transcript, miner_safety_score)
+    audit_score, confidence = tiered_audit(transcript, miner_safety_score, category=category)
     accepted_severity = miner_safety_score * confidence
 
     # ----- Findings reward -----

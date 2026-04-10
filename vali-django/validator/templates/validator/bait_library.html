@@ -1,0 +1,22 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Bait Pattern Library{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'bait_library' %}">Bait Library</a></p>{% endblock %}
+{% block content %}
+<p><a href="{% url 'bait_create' %}" style="background:#336;color:#fff;padding:0.4rem 1rem;border-radius:4px;display:inline-block;">+ Add Pattern</a></p>
+
+{% for category, patterns in categories.items %}
+<h3>{{ category }} ({{ patterns|length }})</h3>
+<table>
+  <tr><th>ID</th><th>Title</th><th>Severity</th><th>Prompts</th><th>Updated</th></tr>
+  {% for p in patterns %}
+  <tr>
+    <td><a href="{% url 'bait_detail' p.id_slug %}"><code>{{ p.id_slug }}</code></a></td>
+    <td>{{ p.title }}</td>
+    <td>{{ p.severity }}</td>
+    <td>{{ p.example_prompts|length }}</td>
+    <td>{{ p.updated_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endfor %}
+{% endblock %}

@@ -14,8 +14,10 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import Avg, Count, Sum
+from functools import wraps
+
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import redirect, render, get_object_or_404
 from django.utils import timezone as djtz
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -62,7 +64,40 @@ def _epistula_required(view):
     return wrapped
 
 
-# --- Customer portal ----------------------------------------------------
+# --- Role-based auth decorators -----------------------------------------
+
+from django.contrib.auth.decorators import login_required
+
+
+def staff_required(view_func):
+    """Login required + user.is_staff. Returns 403 for non-staff."""
+    @login_required
+    @wraps(view_func)
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_staff:
+            return HttpResponse("Forbidden: staff only", status=403)
+        return view_func(request, *args, **kwargs)
+    return wrapped
+
+
+def customer_required(view_func):
+    """Login required + user must have a CustomerProfile.
+    Attaches request.customer_profile for downstream use."""
+    @login_required
+    @wraps(view_func)
+    def wrapped(request, *args, **kwargs):
+        from .models import CustomerProfile
+        try:
+            request.customer_profile = request.user.customer_profile
+        except CustomerProfile.DoesNotExist:
+            if request.user.is_staff:
+                return redirect("operator_dashboard")
+            return HttpResponse("Forbidden: not a customer account", status=403)
+        return view_func(request, *args, **kwargs)
+    return wrapped
+
+
+# --- Customer portal (Epistula-authed API) ------------------------------
 
 @csrf_exempt
 @require_http_methods(["POST", "DELETE"])
@@ -445,11 +480,23 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
     })
 
 
-# --- Operator UI (login required) ---------------------------------------
+# --- Root dispatch (routes by user role) ---------------------------------
 
-from django.contrib.auth.decorators import login_required
 
 @login_required
+def root_dispatch(request: HttpRequest) -> HttpResponse:
+    """Route / by user type: staff -> operator dashboard, customer -> /dashboard/."""
+    if request.user.is_staff:
+        return operator_dashboard(request)
+    if hasattr(request.user, "customer_profile"):
+        return redirect("customer_dashboard")
+    return HttpResponse("No dashboard configured for this account", status=403)
+
+
+# --- Operator UI (staff only) -------------------------------------------
+
+
+@staff_required
 def operator_dashboard(request: HttpRequest) -> HttpResponse:
     """Phase 3: full operator console for vali-django.
 
@@ -572,7 +619,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     })
 
 
-@login_required
+@staff_required
 def target_detail(request: HttpRequest, name: str) -> HttpResponse:
     target = get_object_or_404(RegisteredTarget, name=name)
     evals = target.evaluations.order_by("-timestamp")[:50]
@@ -617,3 +664,177 @@ def healthz(request: HttpRequest) -> JsonResponse:
             status=503,
         )
     return JsonResponse({"status": "ok", "iteration": vstatus.loop_iteration})
+
+
+# --- Customer dashboard (stub views, implemented in task 8) -------------
+
+
+@customer_required
+def customer_dashboard(request: HttpRequest) -> HttpResponse:
+    """Customer landing page: list of targets with safety posture summary."""
+    targets = request.customer_profile.targets.all()
+    return render(request, "validator/customer_dashboard.html", {"targets": targets})
+
+
+@customer_required
+def customer_target_detail(request: HttpRequest, name: str) -> HttpResponse:
+    """Per-target vulnerability-outcome profile."""
+    target = get_object_or_404(request.customer_profile.targets, name=name)
+    return render(request, "validator/customer_target_detail.html", {"target": target})
+
+
+@customer_required
+def customer_findings(request: HttpRequest, name: str) -> HttpResponse:
+    """Filterable findings list for a customer's target."""
+    target = get_object_or_404(request.customer_profile.targets, name=name)
+    from .models import Finding
+    findings = Finding.objects.filter(evaluation__target=target).select_related("evaluation").order_by("-evaluation__timestamp")
+    return render(request, "validator/customer_findings.html", {"target": target, "findings": findings})
+
+
+@customer_required
+def customer_finding_detail(request: HttpRequest, finding_id: int) -> HttpResponse:
+    """Single finding with full transcript and curation status."""
+    from .models import Finding
+    customer_targets = request.customer_profile.targets.all()
+    finding = get_object_or_404(
+        Finding.objects.select_related("evaluation", "evaluation__target"),
+        pk=finding_id,
+        evaluation__target__in=customer_targets,
+    )
+    return render(request, "validator/customer_finding_detail.html", {"finding": finding})
+
+
+# --- Curation (stub views, implemented in task 9) -----------------------
+
+
+@staff_required
+def curation_queue(request: HttpRequest) -> HttpResponse:
+    """Pending critical findings for operator review."""
+    from .models import Finding
+    pending = Finding.objects.filter(critical=True, curated=False).select_related("evaluation", "evaluation__target").order_by("-severity")
+    curated = Finding.objects.filter(curated=True).select_related("evaluation", "evaluation__target").order_by("-curated_at")[:20]
+    return render(request, "validator/curation_queue.html", {"pending": pending, "curated": curated})
+
+
+@staff_required
+def curation_detail(request: HttpRequest, finding_id: int) -> HttpResponse:
+    """Finding detail with evaluation context + curation form."""
+    from .models import Finding
+    finding = get_object_or_404(Finding.objects.select_related("evaluation", "evaluation__target"), pk=finding_id)
+    actions = finding.curation_actions.select_related("curator").all()
+    return render(request, "validator/curation_detail.html", {"finding": finding, "actions": actions})
+
+
+@csrf_exempt
+@staff_required
+@require_http_methods(["POST"])
+def curation_action(request: HttpRequest, finding_id: int) -> HttpResponse:
+    """POST handler: create a CurationAction and update Finding cached fields."""
+    from django.db import transaction
+    from .models import CurationAction as CurationActionModel, Finding
+
+    finding = get_object_or_404(Finding, pk=finding_id)
+
+    action_type = request.POST.get("action", "").strip()
+    reason = request.POST.get("reason", "").strip()
+    if action_type not in ("confirm", "downgrade", "escalate"):
+        return HttpResponse("Invalid action", status=400)
+    if not reason:
+        return HttpResponse("Reason is required", status=400)
+
+    try:
+        new_severity = float(request.POST.get("new_severity", finding.severity))
+    except (ValueError, TypeError):
+        new_severity = finding.severity
+
+    with transaction.atomic():
+        CurationActionModel.objects.create(
+            finding=finding,
+            action=action_type,
+            reason=reason,
+            original_severity=finding.severity,
+            new_severity=new_severity,
+            curator=request.user,
+        )
+        finding.curated = True
+        finding.curated_severity = new_severity
+        finding.curated_at = djtz.now()
+        finding.save(update_fields=["curated", "curated_severity", "curated_at"])
+
+    return redirect("curation_detail", finding_id=finding_id)
+
+
+@staff_required
+def curation_log(request: HttpRequest) -> HttpResponse:
+    """Full audit trail of all curation actions."""
+    from .models import CurationAction as CurationActionModel
+    actions = CurationActionModel.objects.select_related("finding", "finding__evaluation__target", "curator").all()[:200]
+    return render(request, "validator/curation_log.html", {"actions": actions})
+
+
+# --- Bait management (stub views, implemented in task 7) ----------------
+
+
+@staff_required
+def bait_library(request: HttpRequest) -> HttpResponse:
+    """List all BaitPattern rows, grouped by category."""
+    from .models import BaitPattern
+    patterns = BaitPattern.objects.all()
+    categories = {}
+    for p in patterns:
+        categories.setdefault(p.category, []).append(p)
+    return render(request, "validator/bait_library.html", {"categories": categories})
+
+
+@staff_required
+def bait_detail(request: HttpRequest, slug: str) -> HttpResponse:
+    """View a single bait pattern."""
+    from .models import BaitPattern
+    pattern = get_object_or_404(BaitPattern, id_slug=slug)
+    return render(request, "validator/bait_detail.html", {"pattern": pattern})
+
+
+@staff_required
+@require_http_methods(["POST"])
+def bait_edit(request: HttpRequest, slug: str) -> HttpResponse:
+    """Edit a bait pattern."""
+    from .models import BaitPattern
+    pattern = get_object_or_404(BaitPattern, id_slug=slug)
+    pattern.title = request.POST.get("title", pattern.title)
+    pattern.category = request.POST.get("category", pattern.category)
+    pattern.severity = request.POST.get("severity", pattern.severity)
+    pattern.description = request.POST.get("description", pattern.description)
+    pattern.detection_cues = [
+        line.strip() for line in request.POST.get("detection_cues", "").split("\n") if line.strip()
+    ]
+    pattern.example_prompts = [
+        line.strip() for line in request.POST.get("example_prompts", "").split("\n") if line.strip()
+    ]
+    pattern.save()
+    return redirect("bait_detail", slug=slug)
+
+
+@staff_required
+def bait_create(request: HttpRequest) -> HttpResponse:
+    """Create a new bait pattern."""
+    from .models import BaitPattern
+    if request.method == "POST":
+        slug = request.POST.get("id_slug", "").strip()
+        if not slug:
+            return HttpResponse("id_slug is required", status=400)
+        BaitPattern.objects.create(
+            id_slug=slug,
+            category=request.POST.get("category", ""),
+            severity=request.POST.get("severity", ""),
+            title=request.POST.get("title", ""),
+            description=request.POST.get("description", ""),
+            detection_cues=[
+                line.strip() for line in request.POST.get("detection_cues", "").split("\n") if line.strip()
+            ],
+            example_prompts=[
+                line.strip() for line in request.POST.get("example_prompts", "").split("\n") if line.strip()
+            ],
+        )
+        return redirect("bait_detail", slug=slug)
+    return render(request, "validator/bait_create.html", {})

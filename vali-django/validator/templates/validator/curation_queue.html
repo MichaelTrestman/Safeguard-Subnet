@@ -1,0 +1,43 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Curation Queue{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> | <a href="{% url 'curation_log' %}">Audit Log</a></p>{% endblock %}
+{% block content %}
+<h3>Pending Review ({{ pending|length }})</h3>
+{% if pending %}
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Severity</th><th>Summary</th><th>Time</th><th></th></tr>
+  {% for f in pending %}
+  <tr>
+    <td>{{ f.pk }}</td>
+    <td>{{ f.evaluation.target.name }}</td>
+    <td>{{ f.category }}</td>
+    <td class="err">{{ f.severity|floatformat:2 }}</td>
+    <td>{{ f.summary|truncatechars:60 }}</td>
+    <td>{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
+    <td><a href="{% url 'curation_detail' f.pk %}">Review &rarr;</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="ok">No pending findings.</p>
+{% endif %}
+
+<h3>Recently Curated</h3>
+{% if curated %}
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Original</th><th>Curated</th><th>Time</th></tr>
+  {% for f in curated %}
+  <tr>
+    <td><a href="{% url 'curation_detail' f.pk %}">{{ f.pk }}</a></td>
+    <td>{{ f.evaluation.target.name }}</td>
+    <td>{{ f.category }}</td>
+    <td>{{ f.severity|floatformat:2 }}</td>
+    <td>{{ f.curated_severity|floatformat:2 }}</td>
+    <td>{{ f.curated_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No curated findings yet.</p>
+{% endif %}
+{% endblock %}

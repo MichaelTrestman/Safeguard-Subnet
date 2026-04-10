@@ -1,0 +1,21 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Customer Dashboard{% endblock %}
+{% block nav %}<p><a href="{% url 'customer_dashboard' %}">Dashboard</a></p>{% endblock %}
+{% block content %}
+<h3>My Targets</h3>
+{% if targets %}
+<div class="grid">
+{% for t in targets %}
+  <div class="card">
+    <h4>{{ t.name }}</h4>
+    <div class="value">{{ t.evaluations_completed }}</div>
+    <div class="sub">evaluations</div>
+    <div class="sub">{{ t.subnet_type }} &middot; registered {{ t.registered_at|date:"Y-m-d" }}</div>
+    <div class="sub"><a href="{% url 'customer_target_detail' t.name %}">View profile &rarr;</a></div>
+  </div>
+{% endfor %}
+</div>
+{% else %}
+<p>No targets registered yet.</p>
+{% endif %}
+{% endblock %}

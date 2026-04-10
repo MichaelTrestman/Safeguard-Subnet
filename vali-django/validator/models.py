@@ -10,6 +10,7 @@ Replaces the file-based state in safeguard/:
                               owns current standing and lifetime earnings)
   cycle_history.jsonl      -> CycleHistory
   validator_status.json    -> ValidatorStatus singleton
+  bait/library.json        -> BaitPattern
 """
 from django.db import models
 
@@ -101,6 +102,13 @@ class Finding(models.Model):
     severity = models.FloatField()
     summary = models.TextField(blank=True)
     critical = models.BooleanField(default=False, db_index=True)
+
+    # Denormalized curation state — write-through cache updated in the
+    # same transaction as each CurationAction. Avoids subquery joins on
+    # every customer dashboard load. Source of truth is CurationAction.
+    curated = models.BooleanField(default=False, db_index=True)
+    curated_severity = models.FloatField(null=True, blank=True)
+    curated_at = models.DateTimeField(null=True, blank=True)
 
 
 class HitlCase(models.Model):
@@ -228,6 +236,115 @@ class CycleHistory(models.Model):
     owner_uid = models.IntegerField(default=0)
     submitted_weights = models.JSONField(default=dict, blank=True)
     had_fresh_data = models.BooleanField(default=False)
+
+
+# ---------------------------------------------------------------------------
+# Bait pattern library (replaces bait/library.json)
+# ---------------------------------------------------------------------------
+
+
+class BaitPattern(models.Model):
+    """A single adversarial probe pattern the validator can recognize.
+
+    Migrated from bait/library.json to the DB so operators can CRUD
+    patterns via the dashboard without redeploying. The validator's
+    cheap detection tier substring-matches the transcript against
+    example_prompts; the optional rich tier feeds description +
+    detection_cues to an LLM judge.
+
+    The legacy JSON file is retained as a seed source — the data
+    migration reads it to bootstrap the initial rows.
+    """
+    id_slug = models.CharField(max_length=100, unique=True)
+    category = models.CharField(max_length=50, db_index=True)
+    severity = models.CharField(max_length=10)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    detection_cues = models.JSONField(default=list)
+    example_prompts = models.JSONField(default=list)
+    references = models.JSONField(default=list)
+    related_patterns = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["category", "id_slug"]
+
+    def __str__(self) -> str:
+        return f"{self.id_slug} ({self.category}/{self.severity})"
+
+
+# ---------------------------------------------------------------------------
+# Curation — validator operator review of findings
+# ---------------------------------------------------------------------------
+
+
+class CurationAction(models.Model):
+    """Append-only audit trail for validator operator review of findings.
+
+    Multiple CurationActions can exist for one Finding (e.g., confirm
+    then later escalate). The most recent action determines the
+    Finding's current curated state (denormalized onto Finding.curated*
+    fields in the same transaction).
+
+    Visible to all validators for Yuma consensus alignment — when
+    multiple validators exist, they need to see each other's curation
+    decisions or consensus will penalize them.
+    """
+    ACTION_CONFIRM = "confirm"
+    ACTION_DOWNGRADE = "downgrade"
+    ACTION_ESCALATE = "escalate"
+    ACTION_CHOICES = [
+        (ACTION_CONFIRM, "Confirm"),
+        (ACTION_DOWNGRADE, "Downgrade"),
+        (ACTION_ESCALATE, "Escalate"),
+    ]
+
+    finding = models.ForeignKey(
+        Finding, on_delete=models.CASCADE, related_name="curation_actions"
+    )
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES, db_index=True)
+    reason = models.TextField()
+    original_severity = models.FloatField()
+    new_severity = models.FloatField()
+    curator = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True,
+        related_name="curation_actions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["finding", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.action} on Finding#{self.finding_id}"
+
+
+# ---------------------------------------------------------------------------
+# Customer profiles (dashboard access)
+# ---------------------------------------------------------------------------
+
+
+class CustomerProfile(models.Model):
+    """Associates a Django User (username/password login) with one or more
+    RegisteredTargets. A customer logs into the Safeguard validator
+    dashboard and sees only their own targets' vulnerability profiles.
+
+    The operator creates this association via management command or
+    future operator UI. A single User can own multiple targets (a
+    company with multiple AI services).
+    """
+    user = models.OneToOneField(
+        "auth.User", on_delete=models.CASCADE, related_name="customer_profile"
+    )
+    targets = models.ManyToManyField(
+        RegisteredTarget, related_name="customer_profiles", blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"CustomerProfile({self.user.username})"
 
 
 # ---------------------------------------------------------------------------

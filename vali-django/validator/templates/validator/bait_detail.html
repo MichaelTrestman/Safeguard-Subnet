@@ -1,0 +1,75 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Bait &rarr; {{ pattern.id_slug }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'bait_library' %}">Bait Library</a> &rarr; {{ pattern.id_slug }}</p>{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h4>Category</h4>
+    <div class="value">{{ pattern.category }}</div>
+  </div>
+  <div class="card">
+    <h4>Severity</h4>
+    <div class="value">{{ pattern.severity }}</div>
+  </div>
+  <div class="card">
+    <h4>Last Updated</h4>
+    <div class="value" style="font-size:1rem;">{{ pattern.updated_at|date:"Y-m-d H:i" }}</div>
+  </div>
+</div>
+
+<h3>{{ pattern.title }}</h3>
+<div class="card"><p>{{ pattern.description }}</p></div>
+
+<h3>Detection Cues</h3>
+<div class="card">
+<ul>{% for cue in pattern.detection_cues %}<li>{{ cue }}</li>{% endfor %}</ul>
+</div>
+
+<h3>Example Prompts</h3>
+<div class="card">
+{% for prompt in pattern.example_prompts %}
+<div style="margin-bottom:0.5rem;padding:0.4rem;background:#111;border-radius:4px;font-family:monospace;font-size:0.85rem;">{{ prompt }}</div>
+{% endfor %}
+</div>
+
+{% if pattern.related_patterns %}
+<h3>Related Patterns</h3>
+<div class="card">
+{% for rp in pattern.related_patterns %}<code>{{ rp }}</code> {% endfor %}
+</div>
+{% endif %}
+
+<h3>Edit</h3>
+<div class="card">
+  <form method="post" action="{% url 'bait_edit' pattern.id_slug %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Title</label><br>
+      <input type="text" name="title" value="{{ pattern.title }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Category</label><br>
+      <input type="text" name="category" value="{{ pattern.category }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:20rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Severity</label><br>
+      <input type="text" name="severity" value="{{ pattern.severity }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Description</label><br>
+      <textarea name="description" rows="4" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{{ pattern.description }}</textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Detection Cues (one per line)</label><br>
+      <textarea name="detection_cues" rows="4" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for c in pattern.detection_cues %}{{ c }}
+{% endfor %}</textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Example Prompts (one per line)</label><br>
+      <textarea name="example_prompts" rows="6" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for p in pattern.example_prompts %}{{ p }}
+{% endfor %}</textarea>
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Save</button>
+  </form>
+</div>
+{% endblock %}

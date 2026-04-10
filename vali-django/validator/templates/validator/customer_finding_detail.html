@@ -1,0 +1,53 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Finding #{{ finding.pk }}{% endblock %}
+{% block nav %}<p><a href="{% url 'customer_dashboard' %}">Dashboard</a> &rarr; <a href="{% url 'customer_target_detail' finding.evaluation.target.name %}">{{ finding.evaluation.target.name }}</a> &rarr; Finding #{{ finding.pk }}</p>{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h4>Category</h4>
+    <div class="value">{{ finding.category }}</div>
+  </div>
+  <div class="card">
+    <h4>Severity</h4>
+    <div class="value {% if finding.severity >= 0.7 %}err{% elif finding.severity >= 0.4 %}warn{% endif %}">{{ finding.severity|floatformat:2 }}</div>
+    {% if finding.curated %}<div class="sub">Curated: {{ finding.curated_severity|floatformat:2 }}</div>{% endif %}
+  </div>
+  <div class="card">
+    <h4>Critical</h4>
+    <div class="value {% if finding.critical %}err{% else %}ok{% endif %}">{% if finding.critical %}YES{% else %}NO{% endif %}</div>
+  </div>
+  <div class="card">
+    <h4>Curation</h4>
+    <div class="value">{% if finding.curated %}<span class="ok">Curated</span>{% else %}<span style="color:#666;">Pending</span>{% endif %}</div>
+  </div>
+</div>
+
+<h3>Summary</h3>
+<div class="card"><p>{{ finding.summary|default:"No summary." }}</p></div>
+
+<h3>Transcript</h3>
+<div class="card">
+{% for turn in finding.evaluation.transcript %}
+  <div style="margin-bottom:0.8rem;padding:0.5rem;background:{% if turn.role == 'user' %}#1a1a2e{% else %}#1a2e1a{% endif %};border-radius:4px;">
+    <div style="color:#888;font-size:0.75rem;margin-bottom:0.3rem;">{{ turn.role|upper }}</div>
+    <div style="white-space:pre-wrap;font-family:monospace;font-size:0.85rem;">{{ turn.content }}</div>
+  </div>
+{% endfor %}
+</div>
+
+{% if finding.curation_actions.exists %}
+<h3>Curation History</h3>
+<table>
+  <tr><th>Action</th><th>Severity</th><th>Reason</th><th>Curator</th><th>Time</th></tr>
+  {% for a in finding.curation_actions.all %}
+  <tr>
+    <td>{{ a.get_action_display }}</td>
+    <td>{{ a.original_severity|floatformat:2 }} &rarr; {{ a.new_severity|floatformat:2 }}</td>
+    <td>{{ a.reason }}</td>
+    <td>{{ a.curator.username|default:"system" }}</td>
+    <td>{{ a.created_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
