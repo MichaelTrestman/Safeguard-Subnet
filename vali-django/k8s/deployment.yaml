@@ -59,8 +59,14 @@ spec:
                   key: admin-pass
             - name: HEALTH_MAX_TICK_AGE_S
               value: "600"
+            # Tempo is 360 blocks (~72 min); set_weights only fires at
+            # tempo boundaries, so the age naturally grows up to that
+            # full tempo between calls. 5400s = 90 min gives tempo + 18
+            # min headroom. Upstream default of 1800 caused /healthz
+            # to flap to 503 for roughly half of every cycle and took
+            # the pod out of the LB endpoint pool on each flap.
             - name: HEALTH_MAX_WEIGHT_AGE_S
-              value: "1800"
+              value: "5400"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
