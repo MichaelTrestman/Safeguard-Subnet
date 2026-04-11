@@ -170,6 +170,46 @@
   </form>
 </div>
 
+{# --- Concerns v2: recent findings from this concern ---------------- #}
+<h3>Recent findings from this concern ({{ recent_findings|length }})</h3>
+<div class="card">
+{% if recent_findings %}
+<table>
+  <tr>
+    <th>When</th>
+    <th>Severity</th>
+    <th>Category</th>
+    <th>Miner UID</th>
+    <th>Target</th>
+    <th>Cues</th>
+    <th>Task</th>
+  </tr>
+  {% for f in recent_findings %}
+  <tr>
+    <td class="small">{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
+    <td>
+      {% if f.critical %}
+        <span class="chip" style="background:#4a1111;color:#ff6666;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem;">CRIT</span>
+      {% elif f.severity >= 0.5 %}
+        <span class="chip" style="background:#4a3311;color:#ffaa44;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem;">HIGH</span>
+      {% else %}
+        <span class="chip" style="background:#3a3a11;color:#ffcc44;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.7rem;">MED</span>
+      {% endif %}
+      {{ f.severity|floatformat:2 }}
+    </td>
+    <td class="small" style="color:#888;">{{ f.category }}</td>
+    <td>{{ f.evaluation.miner_uid }}</td>
+    <td>{{ f.evaluation.target.name }}</td>
+    <td>{{ f.matched_cues.count }}</td>
+    <td><a href="{% url 'eval_detail' f.evaluation.task_id %}"><code>{{ f.evaluation.task_id|slice:":8" }}&hellip;</code></a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p style="color:#888;">No findings from this concern yet.</p>
+{% endif %}
+</div>
+
 <h3>Retire / Activate</h3>
 <div class="card">
   {% if concern.active %}

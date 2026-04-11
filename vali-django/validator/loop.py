@@ -1456,20 +1456,26 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                 },
             )
 
-        # Concerns v2 — Workstream 3: UserTrigger credit updates.
+        # Concerns v2 — Workstream TA-V.3: UserTrigger credit updates.
         #
-        # Every Evaluation that references a known concern (via the
-        # miner-supplied `concern_id_slug`) bumps `invocation_count`
-        # on all active triggers of that concern. If the finding
-        # fired on this evaluation, also bump `success_count`.
-        #
-        # Coarse-grained credit: the miner's /probe response doesn't
-        # identify which specific trigger it picked, only the
-        # concern, so we spread the credit across all active triggers
-        # uniformly.
-        # TODO(concerns-v2.1): miner submits trigger_id → attribute
-        # success per-trigger.
-        if concern_id_slug:
+        # If the miner told us which specific UserTrigger it seeded
+        # this probe from (via `trigger_id` in the /probe response,
+        # resolved into eval_row.trigger at persist time), credit ONLY
+        # that trigger. Otherwise fall back to the coarse Workstream 3
+        # behavior: spread credit across all active triggers of the
+        # concern. The coarse path still fires for pre-attribution
+        # miner builds and for empty-catalog fallbacks, and can be
+        # removed once every miner in the wild ships with trigger_id
+        # attribution.
+        if eval_row.trigger_id is not None:
+            UserTrigger.objects.filter(pk=eval_row.trigger_id).update(
+                invocation_count=F("invocation_count") + 1,
+            )
+            if finding_fired:
+                UserTrigger.objects.filter(pk=eval_row.trigger_id).update(
+                    success_count=F("success_count") + 1,
+                )
+        elif concern_id_slug:
             concern_row = Concern.objects.filter(
                 id_slug=concern_id_slug, active=True,
             ).first()
@@ -1526,13 +1532,14 @@ def _persist_in_progress_evaluations(
     Returns the number of rows created or updated.
     """
     from django.db import transaction
-    from .models import Evaluation, RegisteredTarget
+    from .models import Evaluation, RegisteredTarget, UserTrigger
 
     target = RegisteredTarget.objects.get(id=target_id)
     count = 0
     with transaction.atomic():
         for r in results:
             response = r["response"]
+            uid = r["uid"]
             transcript = response.get("transcript", [])
             miner_safety_score = float(response.get("miner_safety_score", 0.0))
             # Concerns v2 — Workstream 3. The miner tells us which
@@ -1541,17 +1548,45 @@ def _persist_in_progress_evaluations(
             # v1 miner); we store "" rather than None so the DB field
             # is non-nullable.
             concern_id_slug = response.get("concern_id_slug", "") or ""
+
+            # Concerns v2 — TA-V.2. The miner may also attach a
+            # `trigger_id` pointing at the specific UserTrigger row it
+            # used as a seed for this probe. Absent / null / missing
+            # means the miner didn't attribute (empty catalog, concern
+            # had no triggers, or pre-attribution miner build). Resolve
+            # to the row here (rather than raw-assigning the pk) so a
+            # race with trigger deletion ends up with trigger=None
+            # instead of an IntegrityError.
+            trigger_id_raw = response.get("trigger_id")
+            trigger_row = None
+            if trigger_id_raw is not None:
+                try:
+                    trigger_id = int(trigger_id_raw)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Bad trigger_id in probe response from uid={uid}: "
+                        f"{trigger_id_raw!r}"
+                    )
+                else:
+                    trigger_row = UserTrigger.objects.filter(pk=trigger_id).first()
+                    if trigger_row is None:
+                        logger.warning(
+                            f"Unknown trigger_id {trigger_id} in probe response "
+                            f"from uid={uid}; storing Evaluation with trigger=None"
+                        )
+
             Evaluation.objects.update_or_create(
                 task_id=r["task_id"],
                 defaults={
                     "target": target,
-                    "miner_uid": r["uid"],
+                    "miner_uid": uid,
                     "miner_hotkey": r["hotkey"],
                     "category": r["category"],
                     "miner_safety_score": miner_safety_score,
                     "transcript": transcript,
                     "cycle_block_at_creation": cycle_block_at_creation,
                     "concern_id_slug": concern_id_slug,
+                    "trigger": trigger_row,
                     # audit fields stay at defaults — 2.4 fills them in
                 },
             )

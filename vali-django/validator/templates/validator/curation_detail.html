@@ -2,6 +2,61 @@
 {% block subtitle %}Curation &rarr; Finding #{{ finding.pk }}{% endblock %}
 {% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> &rarr; #{{ finding.pk }}</p>{% endblock %}
 {% block content %}
+
+{# --- Concerns v2: concern-context card ----------------------------- #}
+{# Curators answer "did the AI actually exhibit the operator's concern?" #}
+{# They need to see the probe's intent before ruling on the finding. #}
+<h3>Concern context</h3>
+<div class="card" style="border-left:3px solid #47a;">
+{% if eval.concern_id_slug %}
+  {% if concern %}
+  <div style="margin-bottom:0.6rem;">
+    <strong><a href="{% url 'concern_detail' concern.id_slug %}" style="color:#9cf;">{{ concern.title }}</a></strong>
+    <code style="background:#222;color:#8af;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.75rem;margin-left:0.4rem;">{{ concern.id_slug }}</code>
+  </div>
+  <div style="margin-bottom:0.6rem;">
+    <div style="color:#888;font-size:0.75rem;text-transform:uppercase;">Concern text</div>
+    <p style="white-space:pre-wrap;margin:0.2rem 0 0 0;">{{ concern.concern_text }}</p>
+  </div>
+  {% else %}
+  <div style="margin-bottom:0.6rem;">
+    <span class="warn">concern <code>{{ eval.concern_id_slug }}</code> not found in library (retired or deleted)</span>
+  </div>
+  {% endif %}
+  <div style="margin-bottom:0.6rem;">
+    <div style="color:#888;font-size:0.75rem;text-transform:uppercase;">Category</div>
+    <div>{{ eval.category }}</div>
+  </div>
+  <div style="margin-bottom:0.6rem;">
+    <div style="color:#888;font-size:0.75rem;text-transform:uppercase;">Matched detection cues</div>
+    {% if matched_cues %}
+    <div style="display:grid;grid-template-columns:6rem 1fr 8rem;gap:0.4rem;margin-top:0.3rem;">
+      {% for cue in matched_cues %}
+      <div><span class="chip" style="background:#223355;color:#88aaff;">{{ cue.kind }}</span></div>
+      <div style="font-family:monospace;font-size:0.8rem;color:#ccc;" title="{{ cue.cue_text }}">{{ cue.cue_text|truncatechars:100 }}</div>
+      <div style="font-size:0.8rem;"><a href="{% url 'concern_detail' cue.concern.id_slug %}" style="color:#88f;">{{ cue.concern.id_slug }}</a></div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="small" style="color:#aaa;">No tier-2 cue matches (tier-3 judge may still have scored using concern context)</div>
+    {% endif %}
+  </div>
+  <div>
+    <div style="color:#888;font-size:0.75rem;text-transform:uppercase;">User trigger</div>
+    {% if eval_trigger %}
+    <div style="margin-top:0.3rem;">
+      <span class="chip" style="background:#335533;color:#88ff88;">{{ eval_trigger.kind }}</span>
+      <span style="margin-left:0.4rem;">{{ eval_trigger.trigger_text }}</span>
+    </div>
+    {% else %}
+    <div class="small" style="color:#aaa;">Trigger attribution not recorded on this probe</div>
+    {% endif %}
+  </div>
+{% else %}
+  <p style="color:#888;margin:0;">No concern attribution (pre-v2 probe or empty-catalog fallback)</p>
+{% endif %}
+</div>
+
 <div class="grid">
   <div class="card">
     <h4>Target</h4>

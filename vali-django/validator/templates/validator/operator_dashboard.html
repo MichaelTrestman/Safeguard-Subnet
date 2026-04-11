@@ -303,6 +303,13 @@
   {% if f.summary %}
   <div class="small" style="margin-top: 0.3rem;">{{ f.summary }}</div>
   {% endif %}
+  {% if f.evaluation.concern_id_slug %}
+  <div class="small muted" style="margin-top: 0.3rem;">
+    &#8618; concern:
+    <a href="{% url 'concern_detail' f.evaluation.concern_id_slug %}" style="color:#88f;">{{ f.evaluation.concern_id_slug }}</a>
+    &middot; cues matched: {{ f.matched_cues.count }}
+  </div>
+  {% endif %}
 </a>
 {% endfor %}
 {% else %}
@@ -336,6 +343,7 @@
     <th class="num">Audit</th>
     <th class="num">Delta</th>
     <th>Category</th>
+    <th>Concern</th>
     <th>Target</th>
   </tr>
   {% for h in pending_hitl %}
@@ -346,6 +354,13 @@
     <td class="num">{{ h.evaluation.audit_score|floatformat:2 }}</td>
     <td class="num"><span class="chip disputed">Δ</span></td>
     <td>{{ h.evaluation.category }}</td>
+    <td class="small">
+      {% if h.evaluation.concern_id_slug %}
+        <a href="{% url 'concern_detail' h.evaluation.concern_id_slug %}" onclick="event.stopPropagation();" style="color:#88f;">{{ h.evaluation.concern_id_slug }}</a>
+      {% else %}
+        <span class="muted">—</span>
+      {% endif %}
+    </td>
     <td>{{ h.evaluation.target.name }}</td>
   </tr>
   {% endfor %}

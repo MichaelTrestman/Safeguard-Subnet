@@ -70,6 +70,14 @@ class Evaluation(models.Model):
             "(empty catalog or v1 miner)."
         ),
     )
+    trigger = models.ForeignKey(
+        "UserTrigger",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="evaluations",
+        help_text="Which specific UserTrigger the miner used as a seed when generating this probe. Null if the miner didn't select a specific trigger (empty catalog, concern had no triggers, or pre-attribution miner build). SET_NULL on delete so retiring a trigger doesn't cascade-delete historical evaluations.",
+    )
     audit_score = models.FloatField(null=True, blank=True)  # validator audit
     accepted_severity = models.FloatField(default=0.0)
     confidence_in_claim = models.FloatField(default=0.0)

@@ -558,7 +558,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
 
     recent_findings = Finding.objects.select_related(
         "evaluation", "evaluation__target"
-    ).order_by("-id")[:10]
+    ).prefetch_related("matched_cues").order_by("-id")[:10]
 
     pending_hitl = HitlCase.objects.filter(
         status=HitlCase.STATUS_PENDING
@@ -675,12 +675,14 @@ def eval_detail(request: HttpRequest, task_id: str) -> HttpResponse:
     """Universal evaluation inspector. Shows transcript + both scores +
     findings + HITL status + provenance for ANY evaluation, whether it
     has a finding, a HITL case, a fabrication flag, or nothing."""
-    from .models import Evaluation, Finding, HitlCase
+    from .models import Concern, Evaluation, Finding, HitlCase
     eval_row = get_object_or_404(
         Evaluation.objects.select_related("target"),
         task_id=task_id,
     )
-    findings = Finding.objects.filter(evaluation=eval_row)
+    findings = Finding.objects.filter(
+        evaluation=eval_row
+    ).prefetch_related("matched_cues__concern")
     try:
         hitl = eval_row.hitl
     except HitlCase.DoesNotExist:
@@ -689,11 +691,39 @@ def eval_detail(request: HttpRequest, task_id: str) -> HttpResponse:
     delta = None
     if eval_row.audit_score is not None:
         delta = eval_row.miner_safety_score - eval_row.audit_score
+
+    # Concerns v2 — resolve the concern this probe was generated against,
+    # if the miner reported one. Empty slug = v1 miner or empty-catalog
+    # fallback; render a fallback string in the template.
+    concern = None
+    if eval_row.concern_id_slug:
+        concern = Concern.objects.filter(id_slug=eval_row.concern_id_slug).first()
+
+    # Flatten matched cues across all findings for the concern-context
+    # card. A single evaluation can have multiple findings, each with
+    # their own cue set; the card shows the union.
+    matched_cues = []
+    seen_cue_ids = set()
+    for f in findings:
+        for cue in f.matched_cues.all():
+            if cue.id in seen_cue_ids:
+                continue
+            seen_cue_ids.add(cue.id)
+            matched_cues.append(cue)
+
+    # Trigger attribution — parallel workstream may or may not have
+    # landed the FK. Defensively resolve it here so the template only
+    # sees a concrete object-or-None and doesn't have to introspect.
+    eval_trigger = getattr(eval_row, "trigger", None)
+
     return render(request, "validator/eval_detail.html", {
         "eval": eval_row,
         "findings": findings,
         "hitl": hitl,
         "delta": delta,
+        "concern": concern,
+        "matched_cues": matched_cues,
+        "eval_trigger": eval_trigger,
     })
 
 
@@ -763,6 +793,8 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
         .select_related("evaluation", "evaluation__target")
         .order_by("routed_at")
     )
+    # Concerns v2 — expose concern_id_slug on each pending hitl case
+    # (already prefetched via select_related("evaluation")).
     hitl_dispatched = (
         HitlCase.objects
         .filter(status=HitlCase.STATUS_DISPATCHED)
@@ -843,10 +875,37 @@ def hitl_case_remove(request: HttpRequest, case_id: int) -> HttpResponse:
 @staff_required
 def curation_detail(request: HttpRequest, finding_id: int) -> HttpResponse:
     """Finding detail with evaluation context + curation form."""
-    from .models import Finding
-    finding = get_object_or_404(Finding.objects.select_related("evaluation", "evaluation__target"), pk=finding_id)
+    from .models import Concern, Finding
+    finding = get_object_or_404(
+        Finding.objects
+        .select_related("evaluation", "evaluation__target")
+        .prefetch_related("matched_cues__concern"),
+        pk=finding_id,
+    )
     actions = finding.curation_actions.select_related("curator").all()
-    return render(request, "validator/curation_detail.html", {"finding": finding, "actions": actions})
+
+    # Concerns v2 — human curators especially need to see WHAT the
+    # probe was trying to elicit, so they can answer "did the AI
+    # actually exhibit the concern the operator worried about?".
+    eval_row = finding.evaluation
+    concern = None
+    if eval_row.concern_id_slug:
+        concern = Concern.objects.filter(id_slug=eval_row.concern_id_slug).first()
+
+    matched_cues = list(finding.matched_cues.all())
+    # Trigger attribution — parallel workstream may or may not have
+    # landed the FK. Use getattr so this renders as None if the
+    # field doesn't exist yet.
+    eval_trigger = getattr(eval_row, "trigger", None)
+
+    return render(request, "validator/curation_detail.html", {
+        "finding": finding,
+        "actions": actions,
+        "eval": eval_row,
+        "concern": concern,
+        "matched_cues": matched_cues,
+        "eval_trigger": eval_trigger,
+    })
 
 
 @csrf_exempt
@@ -985,7 +1044,20 @@ def concern_library(request: HttpRequest) -> HttpResponse:
     concerns pass through validator curation before active".
     """
     from .models import Concern, CustomerProfile
-    qs = Concern.objects.all().order_by("category", "id_slug")
+    # Concerns v2 — annotate each concern with the counts an operator
+    # needs at a glance: how many cues, how many triggers, and the
+    # total cue-hit count across all cues. Operators use the last
+    # number to tell "which concerns are actually producing findings"
+    # without clicking into each one.
+    qs = (
+        Concern.objects
+        .annotate(
+            n_cues=Count("cues", distinct=True),
+            n_triggers=Count("triggers", distinct=True),
+            total_hits=Sum("cues__hit_count"),
+        )
+        .order_by("category", "id_slug")
+    )
     filter_arg = request.GET.get("filter", "")
     if filter_arg == "pending-customer":
         customer_user_ids = CustomerProfile.objects.values_list(
@@ -1005,7 +1077,7 @@ def concern_library(request: HttpRequest) -> HttpResponse:
 @staff_required
 def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
     """View a single concern plus its version history."""
-    from .models import Concern
+    from .models import Concern, Finding
     concern = get_object_or_404(Concern, id_slug=slug)
     revisions = concern.revisions.select_related("editor").all()
     all_other = Concern.objects.filter(active=True).exclude(pk=concern.pk).order_by(
@@ -1014,11 +1086,22 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
     related_ids = set(
         concern.related_concerns.values_list("pk", flat=True)
     )
+    # Concerns v2 — last 20 findings tagged with this concern's slug.
+    # Gives operators a direct answer to "what has this concern
+    # actually caught?" at the bottom of its detail page.
+    recent_findings = (
+        Finding.objects
+        .filter(evaluation__concern_id_slug=concern.id_slug)
+        .select_related("evaluation", "evaluation__target")
+        .prefetch_related("matched_cues")
+        .order_by("-id")[:20]
+    )
     return render(request, "validator/concern_detail.html", {
         "concern": concern,
         "revisions": revisions,
         "all_other": all_other,
         "related_ids": related_ids,
+        "recent_findings": recent_findings,
     })
 
 

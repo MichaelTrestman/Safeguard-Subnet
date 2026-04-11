@@ -17,12 +17,19 @@
 <h4>Pending ({{ hitl_counts.pending }})</h4>
 {% if hitl_pending %}
 <table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>Miner UID</th><th>Claim</th><th>Audit</th><th>Routed</th><th>Remove</th></tr>
+  <tr><th>#</th><th>Category</th><th>Concern</th><th>Target</th><th>Miner UID</th><th>Claim</th><th>Audit</th><th>Routed</th><th>Remove</th></tr>
   {% for c in hitl_pending %}
   <tr>
     <td>{{ c.pk }}</td>
-    <td>{{ c.evaluation.target.name }}</td>
     <td>{{ c.evaluation.category }}</td>
+    <td>
+      {% if c.evaluation.concern_id_slug %}
+        <a href="{% url 'concern_detail' c.evaluation.concern_id_slug %}">{{ c.evaluation.concern_id_slug }}</a>
+      {% else %}
+        &mdash;
+      {% endif %}
+    </td>
+    <td>{{ c.evaluation.target.name }}</td>
     <td>{{ c.evaluation.miner_uid }}</td>
     <td>{{ c.evaluation.miner_safety_score|floatformat:2 }}</td>
     <td>{{ c.evaluation.audit_score|floatformat:2 }}</td>
