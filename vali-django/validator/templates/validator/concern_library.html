@@ -1,0 +1,30 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Concern Library{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a>{% if filter_arg %} &rarr; filter: {{ filter_arg }}{% endif %}</p>{% endblock %}
+{% block content %}
+<p>
+  <a href="{% url 'concern_create' %}" style="background:#336;color:#fff;padding:0.4rem 1rem;border-radius:4px;display:inline-block;">+ Add Concern</a>
+  &nbsp;
+  <a href="{% url 'concern_library' %}" style="color:#88f;">all</a>
+  &middot;
+  <a href="{% url 'concern_library' %}?filter=pending-customer" style="color:#88f;">pending-customer</a>
+</p>
+
+{% for category, concerns in categories.items %}
+<h3>{{ category }} ({{ concerns|length }})</h3>
+<table>
+  <tr><th>ID</th><th>Title</th><th>Version</th><th>Prior</th><th>Active</th><th>Prompts</th><th>Updated</th></tr>
+  {% for c in concerns %}
+  <tr>
+    <td><a href="{% url 'concern_detail' c.id_slug %}"><code>{{ c.id_slug }}</code></a></td>
+    <td>{{ c.title }}</td>
+    <td>v{{ c.version }}</td>
+    <td>{{ c.severity_prior }}</td>
+    <td>{% if c.active %}<span class="ok">active</span>{% else %}<span class="warn">retired</span>{% endif %}</td>
+    <td>{{ c.example_prompts|length }}</td>
+    <td>{{ c.updated_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endfor %}
+{% endblock %}

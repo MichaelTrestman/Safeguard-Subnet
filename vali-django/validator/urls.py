@@ -1,4 +1,5 @@
 from django.urls import path
+from django.views.generic import RedirectView
 
 from . import views
 
@@ -15,6 +16,7 @@ urlpatterns = [
     path("dashboard/", views.customer_dashboard, name="customer_dashboard"),
     path("dashboard/target/<str:name>/", views.customer_target_detail, name="customer_target_detail"),
     path("dashboard/target/<str:name>/findings/", views.customer_findings, name="customer_findings"),
+    path("dashboard/target/<str:name>/concerns/new/", views.customer_concern_new, name="customer_concern_new"),
     path("dashboard/finding/<int:finding_id>/", views.customer_finding_detail, name="customer_finding_detail"),
 
     # Curation (staff only)
@@ -22,12 +24,43 @@ urlpatterns = [
     path("curation/finding/<int:finding_id>/", views.curation_detail, name="curation_detail"),
     path("curation/finding/<int:finding_id>/action/", views.curation_action, name="curation_action"),
     path("curation/log/", views.curation_log, name="curation_log"),
+    # Sub-work A.2 — HITL queue management (operator remove only; no reorder/assign)
+    path("curation/hitl/<int:case_id>/remove/", views.hitl_case_remove, name="hitl_case_remove"),
 
-    # Bait management (staff only)
-    path("bait/", views.bait_library, name="bait_library"),
-    path("bait/create/", views.bait_create, name="bait_create"),
-    path("bait/<str:slug>/", views.bait_detail, name="bait_detail"),
-    path("bait/<str:slug>/edit/", views.bait_edit, name="bait_edit"),
+    # Concern curation (staff only) — DESIGN.md §2
+    path("concerns/", views.concern_library, name="concern_library"),
+    path("concerns/create/", views.concern_create, name="concern_create"),
+    path("concerns/<str:slug>/", views.concern_detail, name="concern_detail"),
+    path("concerns/<str:slug>/edit/", views.concern_edit, name="concern_edit"),
+    path("concerns/<str:slug>/retire/", views.concern_retire, name="concern_retire"),
+    path("concerns/<str:slug>/activate/", views.concern_activate, name="concern_activate"),
+
+    # Concern catalog distribution (Epistula API).
+    # Mounted under /api/ so the bare /concerns URL can redirect to
+    # the trailing-slash operator UI via Django's APPEND_SLASH
+    # middleware — otherwise a human typing /concerns hits this
+    # machine endpoint and gets an "x-epistula-timestamp missing"
+    # 400 which is a terrible UX trap.
+    path("api/concerns", views.concerns_catalog, name="concerns_catalog"),
+
+    # Legacy /bait/* — 301 redirects to /concerns/* for one release.
+    # Retired in a follow-up after miners and tests stop hitting /bait.
+    path(
+        "bait/",
+        RedirectView.as_view(pattern_name="concern_library", permanent=True),
+    ),
+    path(
+        "bait/create/",
+        RedirectView.as_view(pattern_name="concern_create", permanent=True),
+    ),
+    path(
+        "bait/<str:slug>/",
+        RedirectView.as_view(pattern_name="concern_detail", permanent=True),
+    ),
+    path(
+        "bait/<str:slug>/edit/",
+        RedirectView.as_view(pattern_name="concern_edit", permanent=True),
+    ),
 
     # Health
     path("healthz", views.healthz, name="healthz"),

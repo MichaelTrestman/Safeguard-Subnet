@@ -1,0 +1,133 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Concern &rarr; {{ concern.id_slug }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a> &rarr; {{ concern.id_slug }}</p>{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h4>Category</h4>
+    <div class="value" style="font-size:1.1rem;">{{ concern.category }}</div>
+  </div>
+  <div class="card">
+    <h4>Version</h4>
+    <div class="value">v{{ concern.version }}</div>
+  </div>
+  <div class="card">
+    <h4>Severity Prior</h4>
+    <div class="value">{{ concern.severity_prior }}</div>
+  </div>
+  <div class="card">
+    <h4>Active</h4>
+    <div class="value">{% if concern.active %}<span class="ok">yes</span>{% else %}<span class="warn">retired / pending</span>{% endif %}</div>
+  </div>
+  <div class="card">
+    <h4>Curator</h4>
+    <div class="value" style="font-size:0.9rem;">{{ concern.curator_hotkey|default:"—" }}</div>
+    <div class="sub">{{ concern.curator_user|default:"—" }}</div>
+  </div>
+  <div class="card">
+    <h4>Last Updated</h4>
+    <div class="value" style="font-size:1rem;">{{ concern.updated_at|date:"Y-m-d H:i" }}</div>
+  </div>
+</div>
+
+<h3>{{ concern.title }}</h3>
+<div class="card">
+  <h4 style="color:#888;font-size:0.8rem;">Concern text (natural-language worry)</h4>
+  <p style="white-space:pre-wrap;">{{ concern.concern_text }}</p>
+</div>
+
+<h3>Detection Cues</h3>
+<div class="card">
+<ul>{% for cue in concern.detection_cues %}<li>{{ cue }}</li>{% endfor %}</ul>
+</div>
+
+<h3>Example Prompts</h3>
+<div class="card">
+{% for prompt in concern.example_prompts %}
+<div style="margin-bottom:0.5rem;padding:0.4rem;background:#111;border-radius:4px;font-family:monospace;font-size:0.85rem;">{{ prompt }}</div>
+{% endfor %}
+</div>
+
+<h3>Retire / Activate</h3>
+<div class="card">
+  {% if concern.active %}
+  <form method="post" action="{% url 'concern_retire' concern.id_slug %}" style="display:inline;">
+    {% csrf_token %}
+    <button type="submit" style="background:#933;color:#fff;border:none;padding:0.5rem 1.2rem;border-radius:4px;cursor:pointer;">Retire</button>
+    <span style="color:#888;font-size:0.85rem;">&mdash; drops from /concerns and dispatch pool without deleting content.</span>
+  </form>
+  {% else %}
+  <form method="post" action="{% url 'concern_activate' concern.id_slug %}" style="display:inline;">
+    {% csrf_token %}
+    <button type="submit" style="background:#393;color:#fff;border:none;padding:0.5rem 1.2rem;border-radius:4px;cursor:pointer;">Activate</button>
+    <span style="color:#888;font-size:0.85rem;">&mdash; green-light for dispatch (use for customer-pending or reactivation).</span>
+  </form>
+  {% endif %}
+</div>
+
+<h3>Edit</h3>
+<div class="card">
+  <form method="post" action="{% url 'concern_edit' concern.id_slug %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Title</label><br>
+      <input type="text" name="title" value="{{ concern.title }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Category</label><br>
+      <input type="text" name="category" value="{{ concern.category }}" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:20rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Concern text (required, natural-language worry — fed to LLM judge)</label><br>
+      <textarea name="concern_text" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;min-height:200px;box-sizing:border-box;">{{ concern.concern_text }}</textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Severity prior (0.0 &ndash; 1.0)</label><br>
+      <input type="number" name="severity_prior" value="{{ concern.severity_prior }}" step="0.05" min="0" max="1" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">
+        <input type="checkbox" name="active" {% if concern.active %}checked{% endif %}> Active (dispatched + exposed via GET /concerns)
+      </label>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Detection Cues (one per line)</label><br>
+      <textarea name="detection_cues" rows="4" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for c in concern.detection_cues %}{{ c }}
+{% endfor %}</textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Example Prompts (one per line)</label><br>
+      <textarea name="example_prompts" rows="6" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for p in concern.example_prompts %}{{ p }}
+{% endfor %}</textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Related concerns</label><br>
+      <select name="related_concerns" multiple size="8" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+        {% for other in all_other %}
+        <option value="{{ other.id_slug }}" {% if other.pk in related_ids %}selected{% endif %}>{{ other.category }} / {{ other.id_slug }} &mdash; {{ other.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Save (bumps version)</button>
+  </form>
+</div>
+
+<h3>Version History</h3>
+<div class="card">
+  {% if revisions %}
+  <table>
+    <tr><th>Version</th><th>Edited at</th><th>Editor</th><th>Active</th></tr>
+    {% for r in revisions %}
+    <tr>
+      <td>v{{ r.version }}</td>
+      <td>{{ r.edited_at|date:"Y-m-d H:i" }}</td>
+      <td>{{ r.editor|default:"—" }}</td>
+      <td>{% if r.snapshot.active %}yes{% else %}no{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p style="color:#888;">No revisions recorded yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

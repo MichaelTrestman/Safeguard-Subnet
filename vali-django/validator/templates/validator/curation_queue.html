@@ -2,7 +2,99 @@
 {% block subtitle %}Curation Queue{% endblock %}
 {% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> | <a href="{% url 'curation_log' %}">Audit Log</a></p>{% endblock %}
 {% block content %}
-<h3>Pending Review ({{ pending|length }})</h3>
+
+<h3>HITL Queue</h3>
+<p>
+  pending: <strong>{{ hitl_counts.pending }}</strong> |
+  dispatched: <strong>{{ hitl_counts.dispatched }}</strong> |
+  labeled: <strong>{{ hitl_counts.labeled }}</strong> |
+  timed_out: <strong>{{ hitl_counts.timed_out }}</strong> |
+  removed: <strong>{{ hitl_counts.removed }}</strong>
+</p>
+<p><em>Dispatch is uniform-random over eligible HITL miners; the operator
+  can remove cases but cannot assign or reorder them.</em></p>
+
+<h4>Pending ({{ hitl_counts.pending }})</h4>
+{% if hitl_pending %}
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Miner UID</th><th>Claim</th><th>Audit</th><th>Routed</th><th>Remove</th></tr>
+  {% for c in hitl_pending %}
+  <tr>
+    <td>{{ c.pk }}</td>
+    <td>{{ c.evaluation.target.name }}</td>
+    <td>{{ c.evaluation.category }}</td>
+    <td>{{ c.evaluation.miner_uid }}</td>
+    <td>{{ c.evaluation.miner_safety_score|floatformat:2 }}</td>
+    <td>{{ c.evaluation.audit_score|floatformat:2 }}</td>
+    <td>{{ c.routed_at|date:"M d H:i" }}</td>
+    <td>
+      <form method="post" action="{% url 'hitl_case_remove' c.pk %}" style="display:inline">
+        {% csrf_token %}
+        <textarea name="reason" rows="1" cols="20" required placeholder="reason"></textarea>
+        <button type="submit">Remove</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="ok">No pending HITL cases.</p>
+{% endif %}
+
+<h4>In Flight ({{ hitl_counts.dispatched }})</h4>
+{% if hitl_dispatched %}
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>To UID</th><th>Dispatched</th></tr>
+  {% for c in hitl_dispatched %}
+  <tr>
+    <td>{{ c.pk }}</td>
+    <td>{{ c.evaluation.target.name }}</td>
+    <td>{{ c.evaluation.category }}</td>
+    <td>{{ c.dispatched_to_uid }}</td>
+    <td>{{ c.dispatched_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No in-flight HITL cases.</p>
+{% endif %}
+
+{% if hitl_recent_labeled %}
+<h4>Recently Labeled</h4>
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Miner UID</th><th>Labeled At</th></tr>
+  {% for c in hitl_recent_labeled %}
+  <tr>
+    <td>{{ c.pk }}</td>
+    <td>{{ c.evaluation.target.name }}</td>
+    <td>{{ c.evaluation.category }}</td>
+    <td>{{ c.evaluation.miner_uid }}</td>
+    <td>{{ c.labeled_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if hitl_recent_removed %}
+<h4>Recently Removed</h4>
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Removed By</th><th>Reason</th><th>Removed At</th></tr>
+  {% for c in hitl_recent_removed %}
+  <tr>
+    <td>{{ c.pk }}</td>
+    <td>{{ c.evaluation.target.name }}</td>
+    <td>{{ c.evaluation.category }}</td>
+    <td>{{ c.removed_by.username|default:"—" }}</td>
+    <td>{{ c.removed_reason|truncatechars:60 }}</td>
+    <td>{{ c.removed_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<hr>
+
+<h3>Pending Finding Review ({{ pending|length }})</h3>
 {% if pending %}
 <table>
   <tr><th>#</th><th>Target</th><th>Category</th><th>Severity</th><th>Summary</th><th>Time</th><th></th></tr>

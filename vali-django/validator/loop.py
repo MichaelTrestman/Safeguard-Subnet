@@ -71,6 +71,33 @@ MAX_PROBE_CONCURRENCY = 8
 # 2.8.
 DISPATCH_RETRY_COOLDOWN_S = 300.0
 
+# ---------------------------------------------------------------------------
+# Sub-work A.2 — HITL dispatch constants
+# ---------------------------------------------------------------------------
+
+# Per-tick cap on pending HitlCase rows we attempt to dispatch. Keeps a
+# full-batch dispatch bounded so one slow tick doesn't fill the asyncio
+# event loop with 54 outbound HTTP calls. Pending cases that don't fit
+# this tick get picked up next tick, oldest-first.
+HITL_DISPATCH_BATCH = 10
+
+# HTTP request timeout for POST /hitl_task. The miner's human-wait
+# timeout defaults to 600s; we add a 60s margin to let the miner flush
+# response IO before our client gives up.
+HITL_REQUEST_TIMEOUT = 660.0
+
+# HITL cooldown durations, keyed by failure kind. All values in seconds.
+#
+#   504 (human didn't label in time): short cooldown — the human might
+#     be back in 5 minutes, we want to retry this miner soon.
+#   503 (operator paused the HITL role): longer cooldown — this is
+#     explicit "I'm not working right now", don't hammer them.
+#   other (network / HTTP error / exception): medium cooldown, roughly
+#     matches the probe dispatch cooldown.
+HITL_COOLDOWN_S_504 = 300.0   # 5 min
+HITL_COOLDOWN_S_503 = 900.0   # 15 min
+HITL_COOLDOWN_S_OTHER = 600.0  # 10 min
+
 
 # ---------------------------------------------------------------------------
 # Chain RPC plumbing
@@ -227,9 +254,41 @@ async def _dispatch_target_to_miners(
     """
     import httpx
 
-    categories = target.categories or DEFAULT_SCENARIO_CATEGORIES
-    if not categories:
-        categories = DEFAULT_SCENARIO_CATEGORIES
+    # DESIGN.md §2 "Customer-scoped concerns via RegisteredTarget".
+    # When the target has at least one active Concern wired through
+    # RegisteredTarget.concerns, restrict the category pool to the
+    # categories those concerns are filed under. Empty set ->
+    # fall back to the operator-configured `target.categories`
+    # (legacy dispatch) -> fall back to DEFAULT_SCENARIO_CATEGORIES.
+    #
+    # Must wrap in sync_to_async: `target.concerns.filter(...)` is a
+    # Django ORM call and this function runs inside the asyncio loop.
+    # Without the wrap, Django raises SynchronousOnlyOperation and the
+    # outer try/except swallows it on every dispatch — the feature
+    # never works and the log gets a warning per tick.
+    @sync_to_async
+    def _resolve_scoped_categories() -> list[str]:
+        try:
+            return sorted({
+                c for c in target.concerns.filter(active=True).values_list(
+                    "category", flat=True
+                ) if c
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[dispatch] failed to read target.concerns for "
+                f"{target.name}: {e}"
+            )
+            return []
+
+    scoped_categories = await _resolve_scoped_categories()
+
+    if scoped_categories:
+        categories = scoped_categories
+    else:
+        categories = target.categories or DEFAULT_SCENARIO_CATEGORIES
+        if not categories:
+            categories = DEFAULT_SCENARIO_CATEGORIES
 
     hotkeys = list(metagraph.hotkeys)
 
@@ -261,6 +320,34 @@ async def _dispatch_target_to_miners(
     return n_dispatched, successes
 
 
+def _commitment_role_set(data: dict) -> set[str]:
+    """Normalize a chain-commitment JSON payload into the set of roles
+    it advertises.
+
+    Contract (Sub-work A.1 / A.2): the canonical shape is
+        {"types": ["probe", "hitl"], "endpoint": "http://..."}
+    A single hotkey can only hold one commitment slot, so a hybrid
+    miner MUST use the list form to advertise both roles at once.
+
+    Legacy back-compat: old probe-only miners wrote
+        {"type": "probe", "endpoint": "..."}
+    and old HITL-only miners wrote
+        {"type": "hitl", "endpoint": "..."}.
+    A bare scalar `type` field is treated as a one-element `types`
+    list. Commitments with neither `types` nor `type` default to
+    probe-only (matches legacy probe-miner commitment shape that just
+    carried `endpoint`).
+    """
+    types_field = data.get("types")
+    if isinstance(types_field, list):
+        return {str(t) for t in types_field if t}
+    legacy = data.get("type")
+    if isinstance(legacy, str) and legacy:
+        return {legacy}
+    # Default legacy shape: endpoint only → treat as probe.
+    return {"probe"}
+
+
 def _discover_miners_sync(
     subtensor,
     netuid: int,
@@ -268,10 +355,16 @@ def _discover_miners_sync(
 ) -> tuple[dict[int, str], dict[int, str]]:
     """Discover miner HTTP endpoints from chain commitments.
 
-    Miners commit JSON to chain like {"endpoint": "http://host:port"}.
-    HITL miners commit {"type": "hitl", "endpoint": "http://host:port"}.
+    Canonical commitment shape (Sub-work A.1 contract):
+        {"types": ["probe", "hitl"], "endpoint": "http://host:port"}
+
+    A single hotkey holds a single commitment slot on chain, so a
+    hybrid miner advertises both roles via the `types` list. Legacy
+    probe-only and HITL-only miners wrote a scalar `type` string
+    instead; those are handled by `_commitment_role_set`.
 
     Returns (probe_miners, hitl_miners) as {uid: endpoint_url} dicts.
+    A hybrid miner appears in BOTH dicts with the same endpoint.
 
     Ported from safeguard/validator.py:discover_miners(). Synchronous —
     wrapped via _chain_call for the per-call timeout. The legacy version's
@@ -296,13 +389,16 @@ def _discover_miners_sync(
         except (json.JSONDecodeError, TypeError):
             logger.debug(f"UID {uid}: could not parse commitment: {data_str!r}")
             continue
+        if not isinstance(data, dict):
+            continue
         endpoint = data.get("endpoint", "")
         if not endpoint:
             continue
-        if data.get("type") == "hitl":
-            hitl_miners[uid] = endpoint
-        else:
+        roles = _commitment_role_set(data)
+        if "probe" in roles:
             probe_miners[uid] = endpoint
+        if "hitl" in roles:
+            hitl_miners[uid] = endpoint
 
     return probe_miners, hitl_miners
 
@@ -445,6 +541,565 @@ def _list_targets() -> list:
     return list(RegisteredTarget.objects.all().order_by("id"))
 
 
+# ---------------------------------------------------------------------------
+# Sub-work A.2 — HITL dispatch
+#
+# The validator's outbound side of the HITL wire. Reads pending HitlCase
+# rows, discovers eligible HITL miners from the metagraph commitments,
+# picks one uniformly at random per case, POSTs the transcript + audit
+# bundle to the miner's `/hitl_task` endpoint under Epistula auth, and
+# folds the returned label into the evaluation + scoring state.
+#
+# Architectural constraint (trust-minimization, NON-NEGOTIABLE per
+# `/Users/michaeltrestman/.claude/plans/linear-leaping-stonebraker.md`):
+# miner selection MUST be uniform-random over eligible miners, with no
+# dependence on the case's category, severity, claim, or miner UID.
+# `_select_hitl_miner_uniform` is the single place this rule is enforced;
+# it uses `random.SystemRandom` and ignores everything except the
+# eligible-miner list. The uniform-random property is covered by
+# `tests/test_hitl_dispatch.py::test_hitl_miner_selection_is_uniform`.
+# ---------------------------------------------------------------------------
+
+
+# Module-level SystemRandom instance for dispatch selection. Held here
+# so tests can monkey-patch it; production code never touches it directly
+# and must not pass in a seeded RNG.
+_HITL_RNG = random.SystemRandom()
+
+
+def _select_hitl_miner_uniform(
+    eligible: list[tuple[int, str]],
+    rng: random.Random | None = None,
+) -> tuple[int, str] | None:
+    """Uniform-random pick of one (uid, endpoint) from `eligible`.
+
+    This is the single, load-bearing trust property of the dispatch
+    path: the validator MUST NOT be able to route a specific HitlCase
+    to a specific HITL miner. The signature here is deliberately
+    minimal — no case argument, no category, no severity, no claim.
+    If a future change tries to add any of those as inputs to bias
+    selection, reviewers should reject the change on sight.
+
+    `rng` is accepted as a parameter for test injection ONLY. In
+    production we use the module-level `_HITL_RNG` (SystemRandom).
+    The tests monkey-patch `_HITL_RNG` or pass in a seeded PRNG to
+    make distribution-checks reproducible.
+
+    Returns None if `eligible` is empty.
+    """
+    if not eligible:
+        return None
+    chosen = (rng or _HITL_RNG).choice(eligible)
+    return chosen
+
+
+@sync_to_async
+def _list_pending_hitl_cases(limit: int = HITL_DISPATCH_BATCH) -> list[dict]:
+    """Snapshot pending HitlCase rows with enough context for dispatch.
+
+    Oldest-first ordering by `routed_at` to drain the queue FIFO. We
+    pre-materialize the transcript, miner claim, and audit output so
+    the caller can build the HITL request body without re-hitting the
+    DB from inside the asyncio loop.
+    """
+    from .models import HitlCase
+
+    cases = (
+        HitlCase.objects
+        .filter(status=HitlCase.STATUS_PENDING)
+        .select_related("evaluation", "evaluation__target")
+        .order_by("routed_at")[:limit]
+    )
+    out: list[dict] = []
+    for c in cases:
+        ev = c.evaluation
+        out.append({
+            "case_id": c.id,
+            "task_id": ev.task_id,
+            "evaluation_id": ev.id,
+            "miner_uid": ev.miner_uid,
+            "miner_hotkey": ev.miner_hotkey,
+            "category": ev.category,
+            "miner_safety_score": float(ev.miner_safety_score or 0.0),
+            "audit_score": (
+                float(ev.audit_score) if ev.audit_score is not None else None
+            ),
+            "accepted_severity": float(ev.accepted_severity or 0.0),
+            "confidence_in_claim": float(ev.confidence_in_claim or 0.0),
+            "findings_reward": float(ev.findings_reward or 0.0),
+            "transcript": ev.transcript or [],
+        })
+    return out
+
+
+@sync_to_async
+def _eligible_hitl_miners(
+    hitl_miners: dict[int, str],
+) -> list[tuple[int, str, str]]:
+    """Filter discovered HITL miners through the HITL-specific cooldown
+    gate (`MinerScore.hitl_cooldown_until`). Returns a list of
+    (uid, hotkey, endpoint) triples sorted by uid for deterministic
+    test output. Selection fairness does NOT depend on this ordering —
+    `_select_hitl_miner_uniform` picks uniformly regardless.
+    """
+    from .models import MinerScore
+
+    if not hitl_miners:
+        return []
+    rows = {
+        m.uid: m
+        for m in MinerScore.objects.filter(uid__in=list(hitl_miners.keys()))
+    }
+    now = djtz.now()
+    out: list[tuple[int, str, str]] = []
+    for uid in sorted(hitl_miners.keys()):
+        endpoint = hitl_miners[uid]
+        m = rows.get(uid)
+        if m is not None and m.hitl_cooldown_until is not None:
+            if m.hitl_cooldown_until > now:
+                continue  # still on cooldown
+        hotkey = m.hotkey if m is not None else ""
+        out.append((uid, hotkey, endpoint))
+    return out
+
+
+@sync_to_async
+def _mark_hitl_dispatched(case_id: int, miner_uid: int) -> bool:
+    """Transition a HitlCase from pending → dispatched and stamp the
+    target miner uid. Idempotent under contention: if the row is not
+    still pending when we try to flip it (another tick beat us), we
+    return False so the caller skips the POST.
+    """
+    from django.db import transaction
+    from .models import HitlCase
+
+    with transaction.atomic():
+        updated = HitlCase.objects.filter(
+            id=case_id, status=HitlCase.STATUS_PENDING
+        ).update(
+            status=HitlCase.STATUS_DISPATCHED,
+            dispatched_at=djtz.now(),
+            dispatched_to_uid=miner_uid,
+        )
+    return updated == 1
+
+
+@sync_to_async
+def _revert_hitl_case_to_pending(
+    case_id: int, new_status: str | None = None,
+) -> None:
+    """Revert a dispatched case back to pending so the next tick tries
+    a (different, uniformly-picked) HITL miner, OR transition it to
+    a terminal state if `new_status` is passed (currently only used
+    for `timed_out` on 504 after repeated failures; the default path
+    is to leave the case pending and retry).
+    """
+    from .models import HitlCase
+
+    fields = {"status": new_status or HitlCase.STATUS_PENDING}
+    HitlCase.objects.filter(id=case_id).update(**fields)
+
+
+@sync_to_async
+def _apply_hitl_cooldown(miner_uid: int, duration_s: float) -> None:
+    """Set `MinerScore.hitl_cooldown_until = now() + duration_s` for
+    one miner. No-op if the MinerScore row doesn't exist (race with
+    a miner joining / churning out of discovery)."""
+    from .models import MinerScore
+
+    until = djtz.now() + timedelta(seconds=duration_s)
+    MinerScore.objects.filter(uid=miner_uid).update(hitl_cooldown_until=until)
+
+
+@sync_to_async
+def _record_hitl_label(
+    case_id: int,
+    evaluation_id: int,
+    label: dict,
+) -> None:
+    """Commit a successful HITL label:
+
+      1. Append `label` to `HitlCase.labels`, flip status → labeled,
+         stamp labeled_at.
+      2. Update the linked Evaluation's curated fields (`curated=True`,
+         `curated_severity=label.severity`, `curated_at=now()`) so the
+         customer dashboard sees the human ground truth.
+      3. Write a `PendingContributionAdjustment` row with
+         `applied=False` — drained by `_build_cycle_contributions` at
+         the next set_weights tempo boundary, per DESIGN.md §"Effects
+         of a label" (deferred, next-tempo).
+
+    All three writes are in one transaction so a reader can't catch
+    the case labeled but the Evaluation un-curated.
+    """
+    from django.db import transaction
+    from .models import (
+        Evaluation, Finding, HitlCase, PendingContributionAdjustment,
+    )
+
+    # Trust-boundary clamp: the miner is untrusted and the Epistula
+    # signature only proves who sent the label, not that its numeric
+    # content is well-formed. A.1's dashboard form enforces the slider
+    # range client-side but nothing on the wire does. Clamp to [0, 1]
+    # before anything downstream reads it — Finding.curated_severity,
+    # PendingContributionAdjustment.ground_truth_severity, and the
+    # eventual contribution delta all assume a normalized severity.
+    raw_severity = label.get("severity")
+    try:
+        ground_truth_severity = float(raw_severity) if raw_severity is not None else 0.0
+    except (TypeError, ValueError):
+        logger.warning(
+            f"HITL label for case={case_id} had non-numeric severity "
+            f"{raw_severity!r}; coercing to 0.0"
+        )
+        ground_truth_severity = 0.0
+    if ground_truth_severity < 0.0 or ground_truth_severity > 1.0:
+        logger.warning(
+            f"HITL label for case={case_id} had out-of-range severity "
+            f"{ground_truth_severity}; clamping to [0.0, 1.0]"
+        )
+        ground_truth_severity = max(0.0, min(1.0, ground_truth_severity))
+
+    now = djtz.now()
+
+    with transaction.atomic():
+        case = HitlCase.objects.select_related("evaluation").get(id=case_id)
+        ev = case.evaluation
+        original_severity = float(ev.accepted_severity or 0.0)
+
+        labels = list(case.labels or [])
+        labels.append(label)
+        case.labels = labels
+        case.status = HitlCase.STATUS_LABELED
+        case.labeled_at = now
+        case.save(update_fields=["labels", "status", "labeled_at"])
+
+        # Update the linked Evaluation's curation fields so the
+        # customer dashboard picks up the ground-truth severity. This
+        # is equivalent to what CurationAction.save() does on the
+        # operator curation path, minus the audit-trail row (the
+        # audit trail for HITL labels lives in HitlCase.labels +
+        # PendingContributionAdjustment).
+        Finding.objects.filter(evaluation=ev).update(
+            curated=True,
+            curated_severity=ground_truth_severity,
+            curated_at=now,
+        )
+
+        PendingContributionAdjustment.objects.create(
+            evaluation=ev,
+            original_severity=original_severity,
+            ground_truth_severity=ground_truth_severity,
+            probe_miner_hotkey=ev.miner_hotkey,
+            probe_miner_uid=ev.miner_uid,
+            label_source=PendingContributionAdjustment.SOURCE_HITL_DISPATCH,
+        )
+
+
+async def _post_hitl_task(
+    client,
+    wallet,
+    miner_endpoint: str,
+    request_body: dict,
+):
+    """POST /hitl_task to one HITL miner, Epistula-signed. Returns the
+    raw httpx.Response object (caller branches on `response.status_code`).
+    Raises on network error / timeout / non-HTTP exceptions; the caller
+    catches and applies the "other failure" cooldown.
+
+    Reuses `create_epistula_headers` — the SAME signer that probe
+    dispatch and `/probe/relay` forwarding use. Per the plan's
+    "do NOT re-implement Epistula signing" constraint.
+    """
+    from .epistula import create_epistula_headers
+
+    body = json.dumps(request_body).encode()
+    headers = create_epistula_headers(wallet, body)
+    headers["Content-Type"] = "application/json"
+    response = await client.post(
+        f"{miner_endpoint}/hitl_task",
+        content=body,
+        headers=headers,
+        timeout=HITL_REQUEST_TIMEOUT,
+    )
+    return response
+
+
+def _build_hitl_request_body(case: dict) -> dict:
+    """Build the rich POST body for `/hitl_task` per Sub-work A.1's
+    contract:
+        {task_id, transcript, miner_claim, validator_audit}
+
+    The miner's parser accepts both this shape and the legacy flat
+    shape; we use the richer one so the human labeler sees both the
+    miner's claim and the validator's audit output side by side.
+    """
+    miner_claim = {
+        "miner_safety_score": case["miner_safety_score"],
+        "miner_uid": case["miner_uid"],
+        "miner_hotkey": case["miner_hotkey"],
+        "category": case["category"],
+    }
+    validator_audit = {
+        "audit_score": case["audit_score"],
+        "accepted_severity": case["accepted_severity"],
+        "confidence_in_claim": case["confidence_in_claim"],
+        "findings_reward": case["findings_reward"],
+    }
+    return {
+        "task_id": case["task_id"],
+        "transcript": case["transcript"],
+        "miner_claim": miner_claim,
+        "validator_audit": validator_audit,
+    }
+
+
+async def _dispatch_one_hitl_case(
+    client,
+    wallet,
+    case: dict,
+    eligible: list[tuple[int, str, str]],
+    rng: random.Random | None = None,
+) -> dict:
+    """Dispatch one pending HitlCase to one uniformly-picked HITL miner.
+
+    Returns a small result dict for the batch caller:
+        {case_id, status: "labeled"|"retryable"|"skipped", ...}
+
+    "skipped" means the pending→dispatched transition failed (another
+    worker already claimed the case). "retryable" means the case was
+    reverted to pending and a cooldown was applied to the miner —
+    the same case will be considered again on the next tick (and
+    will, with probability ~1 because of the uniform RNG, pick a
+    different miner if any other are eligible).
+    """
+    # The (uid, endpoint) pair is all selection depends on — we strip
+    # hotkey out of the selection input so tests can prove selection
+    # doesn't peek at anything else. Hotkey is looked up later for
+    # logging / bookkeeping.
+    ep_pairs: list[tuple[int, str]] = [(uid, ep) for uid, _, ep in eligible]
+    chosen = _select_hitl_miner_uniform(ep_pairs, rng=rng)
+    if chosen is None:
+        return {"case_id": case["case_id"], "status": "skipped"}
+    chosen_uid, chosen_endpoint = chosen
+
+    # Atomic pending → dispatched transition.
+    ok = await _mark_hitl_dispatched(case["case_id"], chosen_uid)
+    if not ok:
+        return {"case_id": case["case_id"], "status": "skipped"}
+
+    body = _build_hitl_request_body(case)
+    try:
+        response = await _post_hitl_task(
+            client, wallet, chosen_endpoint, body,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"HITL POST to uid={chosen_uid} {chosen_endpoint} raised: "
+            f"{type(e).__name__}: {e}"
+        )
+        await _revert_hitl_case_to_pending(case["case_id"])
+        await _apply_hitl_cooldown(chosen_uid, HITL_COOLDOWN_S_OTHER)
+        return {"case_id": case["case_id"], "status": "retryable", "uid": chosen_uid}
+
+    status_code = response.status_code
+    if status_code == 200:
+        try:
+            label = response.json()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"HITL uid={chosen_uid} returned 200 but invalid JSON: {e}"
+            )
+            await _revert_hitl_case_to_pending(case["case_id"])
+            await _apply_hitl_cooldown(chosen_uid, HITL_COOLDOWN_S_OTHER)
+            return {
+                "case_id": case["case_id"],
+                "status": "retryable",
+                "uid": chosen_uid,
+            }
+        # Contract A.1: response is {task_id, status: "labeled",
+        # severity, categories, reasoning}. Float severity is ground
+        # truth.
+        await _record_hitl_label(
+            case["case_id"], case["evaluation_id"], label,
+        )
+        logger.info(
+            f"HITL labeled: case={case['case_id']} "
+            f"task={case['task_id'][:8]} uid={chosen_uid} "
+            f"severity={label.get('severity')}"
+        )
+        return {
+            "case_id": case["case_id"],
+            "status": "labeled",
+            "uid": chosen_uid,
+            "severity": label.get("severity"),
+        }
+    if status_code == 504:
+        logger.info(
+            f"HITL 504 from uid={chosen_uid}: human didn't label in time; "
+            f"retry with different miner next tick"
+        )
+        await _revert_hitl_case_to_pending(case["case_id"])
+        await _apply_hitl_cooldown(chosen_uid, HITL_COOLDOWN_S_504)
+        return {
+            "case_id": case["case_id"],
+            "status": "retryable",
+            "uid": chosen_uid,
+            "code": 504,
+        }
+    if status_code == 503:
+        logger.info(
+            f"HITL 503 from uid={chosen_uid}: role paused; "
+            f"longer cooldown, retry next tick"
+        )
+        await _revert_hitl_case_to_pending(case["case_id"])
+        await _apply_hitl_cooldown(chosen_uid, HITL_COOLDOWN_S_503)
+        return {
+            "case_id": case["case_id"],
+            "status": "retryable",
+            "uid": chosen_uid,
+            "code": 503,
+        }
+    logger.warning(
+        f"HITL uid={chosen_uid} returned unexpected {status_code}: "
+        f"{response.text[:200]!r}"
+    )
+    await _revert_hitl_case_to_pending(case["case_id"])
+    await _apply_hitl_cooldown(chosen_uid, HITL_COOLDOWN_S_OTHER)
+    return {
+        "case_id": case["case_id"],
+        "status": "retryable",
+        "uid": chosen_uid,
+        "code": status_code,
+    }
+
+
+async def _dispatch_hitl_cases(
+    wallet,
+    hitl_miners: dict[int, str],
+    *,
+    http_client=None,
+    rng: random.Random | None = None,
+) -> dict:
+    """One tick of the validator's outbound HITL dispatch step.
+
+    Algorithm (spec A2.2):
+
+      1. Pending pending HitlCases, oldest first, bounded by batch size.
+      2. Eligible HITL miners from discovery, minus those on HITL
+         cooldown.
+      3. For each pending case: pick one miner uniformly at random via
+         `_select_hitl_miner_uniform`, transition pending → dispatched,
+         POST /hitl_task, branch on the response (200 / 504 / 503 / other).
+      4. On 200: record label, curate evaluation, queue deferred
+         contribution adjustment (drained at next set_weights).
+      5. On 504 / 503 / other: revert to pending and cooldown the miner
+         for the kind-specific duration.
+
+    `http_client` is an optional injected httpx.AsyncClient for tests;
+    production path constructs its own per-call client so a stuck
+    connection can't outlive a single dispatch tick.
+    """
+    import httpx
+
+    pending = await _list_pending_hitl_cases(limit=HITL_DISPATCH_BATCH)
+    if not pending:
+        return {"dispatched": 0, "labeled": 0, "retryable": 0, "skipped": 0}
+
+    eligible = await _eligible_hitl_miners(hitl_miners)
+    if not eligible:
+        logger.info(
+            f"HITL dispatch: {len(pending)} pending cases but no eligible "
+            f"miners (all on cooldown or none discovered)"
+        )
+        return {
+            "dispatched": 0,
+            "labeled": 0,
+            "retryable": 0,
+            "skipped": 0,
+            "pending": len(pending),
+            "eligible": 0,
+        }
+
+    logger.info(
+        f"HITL dispatch: {len(pending)} pending cases, "
+        f"{len(eligible)} eligible miners"
+    )
+
+    labeled = 0
+    retryable = 0
+    skipped = 0
+    own_client = False
+    if http_client is None:
+        http_client = httpx.AsyncClient()
+        own_client = True
+    try:
+        for case in pending:
+            result = await _dispatch_one_hitl_case(
+                http_client, wallet, case, eligible, rng=rng,
+            )
+            status = result.get("status")
+            if status == "labeled":
+                labeled += 1
+            elif status == "retryable":
+                retryable += 1
+            else:
+                skipped += 1
+    finally:
+        if own_client:
+            await http_client.aclose()
+
+    return {
+        "dispatched": len(pending),
+        "labeled": labeled,
+        "retryable": retryable,
+        "skipped": skipped,
+        "pending": len(pending),
+        "eligible": len(eligible),
+    }
+
+
+# Module-level tracking for the fire-and-forget HITL dispatch tasks.
+# The main loop launches `_run_hitl_dispatch_bg` as a background task
+# on each tick that finds no in-flight dispatch. Holding the Task in
+# this set prevents asyncio from garbage-collecting the task mid-flight
+# (which silently cancels it) and lets subsequent ticks see whether a
+# previous dispatch is still running.
+_active_hitl_dispatches: set[asyncio.Task] = set()
+
+
+async def _run_hitl_dispatch_bg(
+    wallet,
+    hitl_miners: dict[int, str],
+) -> None:
+    """Background wrapper around `_dispatch_hitl_cases` that logs its
+    outcome and swallows exceptions so a single failure never crashes
+    the main loop or the whole asyncio event loop.
+
+    Called via `asyncio.create_task` from the main loop — the main
+    loop does NOT await this. That is the whole point: HITL POSTs
+    block for up to 660s each, and blocking the main tick on that
+    freezes probe dispatch, metagraph sync, set_weights, and
+    /healthz. Decoupling HITL dispatch into its own background task
+    was added after the smoke-test discovery that the inline
+    `await _dispatch_hitl_cases(...)` call froze the validator for
+    10+ minutes per in-flight HITL POST.
+    """
+    try:
+        summary = await _dispatch_hitl_cases(wallet, hitl_miners)
+        if summary.get("dispatched", 0) > 0:
+            logger.info(
+                f"HITL tick: dispatched={summary['dispatched']} "
+                f"labeled={summary.get('labeled', 0)} "
+                f"retryable={summary.get('retryable', 0)} "
+                f"skipped={summary.get('skipped', 0)}"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            f"HITL dispatch background task raised: {type(e).__name__}: {e}"
+        )
+
+
 @sync_to_async
 def _build_cycle_contributions(
     since_block: int | None = None,
@@ -475,12 +1130,22 @@ def _build_cycle_contributions(
     counted (orphan rows from a crashed cycle), and we don't want
     them double-counted now.
 
+    Sub-work A.2.3 — apply deferred HITL-label adjustments before
+    returning. Per DESIGN.md §"Effects of a label", a labeled HitlCase
+    updates the probe miner's contribution in the NEXT tempo. We drain
+    `PendingContributionAdjustment.objects.filter(applied=False)` here,
+    compute a delta = (ground_truth_severity - original_severity) per
+    row, fold the delta into the miner's in-memory contribution entry,
+    and flip `applied=True` atomically before the caller sees the map.
+    The rows stay in the table as an audit trail.
+
     Returns {uid: summed_contribution}. Miners with contribution == 0
     are absent from the dict (compute_weights' burn floor handles the
     empty case).
     """
+    from django.db import transaction
     from django.db.models import Sum
-    from .models import Evaluation
+    from .models import Evaluation, PendingContributionAdjustment
 
     qs = Evaluation.objects.filter(
         audit_score__isnull=False,
@@ -490,7 +1155,48 @@ def _build_cycle_contributions(
     if since_block is not None:
         qs = qs.filter(cycle_block_at_creation__gt=since_block)
     aggregated = qs.values("miner_uid").annotate(total=Sum("contribution"))
-    return {row["miner_uid"]: float(row["total"] or 0.0) for row in aggregated}
+    contributions: dict[int, float] = {
+        row["miner_uid"]: float(row["total"] or 0.0) for row in aggregated
+    }
+
+    # ----- Sub-work A.2.3: drain pending HITL-label adjustments -----
+    # Minimal delta model: the human label's ground-truth severity
+    # replaces the audit's severity at scoring time. We approximate
+    # this as (ground_truth - original) added to the probe miner's
+    # contribution. The full scoring-formula rework (DESIGN.md §"Open
+    # research problems" #2) will replace this path with a
+    # per-evaluation re-score; for now this is the simplest thing
+    # that lets a label move a miner's contribution.
+    with transaction.atomic():
+        pending = list(
+            PendingContributionAdjustment.objects
+            .select_for_update(skip_locked=True)
+            .filter(applied=False)
+        )
+        applied_ids: list[int] = []
+        for adj in pending:
+            delta = adj.ground_truth_severity - adj.original_severity
+            uid = adj.probe_miner_uid
+            contributions[uid] = contributions.get(uid, 0.0) + delta
+            # Negative contribution is allowed in the interim delta,
+            # but compute_weights only rewards positive values — so
+            # a strongly-negative label effectively zeros the miner
+            # for this tempo. Consistent with DESIGN.md's "labels
+            # override the audit" framing.
+            applied_ids.append(adj.id)
+            logger.info(
+                f"HITL adjustment applied: eval={adj.evaluation_id} "
+                f"uid={uid} {adj.original_severity:.2f}"
+                f"→{adj.ground_truth_severity:.2f} "
+                f"delta={delta:+.2f}"
+            )
+        if applied_ids:
+            now = djtz.now()
+            PendingContributionAdjustment.objects.filter(
+                id__in=applied_ids
+            ).update(applied=True, applied_at=now)
+
+    return contributions
 
 
 @sync_to_async
@@ -1129,11 +1835,16 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
     no_targets_logged = False
     no_miners_logged = False
 
-    # Bait library loaded once at loop start — the underlying JSON is
-    # static (safeguard/bait/library.json) and we don't want to re-parse
-    # it on every cycle. Phase 2.4.
+    # Concern catalog loaded once at loop start. Post-concerns-migration
+    # (B.4), this is a Django ORM query (`Concern.objects.filter(active=True)`)
+    # and MUST be wrapped in `sync_to_async` — calling it raw from an
+    # async context raises `SynchronousOnlyOperation`, which then
+    # propagates out of this task as an unretrieved exception, leaving
+    # `/healthz` stuck at 503 forever. The pre-concerns version loaded
+    # from a JSON file on disk so there was no ORM call and no wrap
+    # was needed.
     from .audit import load_default_bait_library
-    bait_library = load_default_bait_library()
+    bait_library = await sync_to_async(load_default_bait_library)()
 
     while True:
         try:
@@ -1323,6 +2034,34 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                         f"findings={n_findings} hitl={n_hitl} "
                         f"total_contribution={total_contribution:.3f}"
                     )
+
+            # ----- Sub-work A.2: HITL dispatch (background) -----
+            # Outbound wire to registered HITL miners. Runs as a
+            # fire-and-forget background task — MUST NOT block the main
+            # tick, because each HITL POST awaits up to 660s waiting for
+            # a human label on the miner side. If we awaited it inline,
+            # one in-flight HITL POST would freeze probe dispatch,
+            # metagraph sync, set_weights, and /healthz for 10+ minutes.
+            #
+            # Module-level task tracking enforces two invariants:
+            #   1. Only one HITL dispatch runs at a time (we don't want
+            #      a new dispatch launching before the previous one
+            #      drains; that would cause duplicate dispatches of the
+            #      same case and wasted work).
+            #   2. Task references are held until completion so asyncio
+            #      doesn't garbage-collect them mid-flight.
+            #
+            # Selection across eligible miners is still uniform-random
+            # via _select_hitl_miner_uniform — the validator operator
+            # CANNOT route a specific case to a specific miner.
+            # See `tests/test_hitl_dispatch.py` for the uniformity
+            # property test.
+            if not any(not t.done() for t in _active_hitl_dispatches):
+                task = asyncio.create_task(
+                    _run_hitl_dispatch_bg(wallet, hitl_miners)
+                )
+                _active_hitl_dispatches.add(task)
+                task.add_done_callback(_active_hitl_dispatches.discard)
 
             # ----- Sub-phase 2.6: set_weights (tempo-gated) -----
             # Runs every iteration but gated internally on tempo, so

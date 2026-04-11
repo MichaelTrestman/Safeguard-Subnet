@@ -26,11 +26,20 @@
     th { color: #888; font-size: 0.8rem; text-transform: uppercase; }
     tr:hover { background: #111; }
     code { background: #1a1a1a; padding: 0.1rem 0.4rem; border-radius: 3px; }
+    .topnav { margin: 0 0 1.5rem; padding: 0.5rem 0; border-bottom: 1px solid #222;
+              font-size: 0.9rem; }
+    .topnav a { margin-right: 1.5rem; color: #88f; }
+    .topnav a.active { color: #fff; font-weight: bold; }
   </style>
 </head>
 <body>
   <h1>Safeguard Validator</h1>
   <h2>{% block subtitle %}Operator console{% endblock %}</h2>
+  <nav class="topnav">
+    <a href="{% url 'operator_dashboard' %}">Operator</a>
+    <a href="{% url 'concern_library' %}">Concerns</a>
+    <a href="{% url 'curation_queue' %}">Curation</a>
+  </nav>
   {% block nav %}{% endblock %}
   {% block content %}{% endblock %}
 </body>

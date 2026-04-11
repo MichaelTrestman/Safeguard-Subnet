@@ -1,0 +1,45 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Create Concern{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a> &rarr; New</p>{% endblock %}
+{% block content %}
+<h3>New Concern</h3>
+<div class="card">
+  <form method="post" action="{% url 'concern_create' %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">ID Slug (unique, e.g. my-new-concern)</label><br>
+      <input type="text" name="id_slug" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:20rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Title</label><br>
+      <input type="text" name="title" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Category</label><br>
+      <input type="text" name="category" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:20rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Concern text (required)</label><br>
+      <textarea name="concern_text" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;min-height:200px;box-sizing:border-box;"></textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Severity prior (0.0 &ndash; 1.0)</label><br>
+      <input type="number" name="severity_prior" value="0.5" step="0.05" min="0" max="1" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">
+        <input type="checkbox" name="active" checked> Active on create
+      </label>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Detection Cues (one per line)</label><br>
+      <textarea name="detection_cues" rows="4" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;"></textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Example Prompts (one per line)</label><br>
+      <textarea name="example_prompts" rows="6" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;"></textarea>
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Create</button>
+  </form>
+</div>
+{% endblock %}

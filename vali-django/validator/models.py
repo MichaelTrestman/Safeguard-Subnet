@@ -22,6 +22,16 @@ class RegisteredTarget(models.Model):
     relay_endpoint = models.URLField(max_length=500)
     subnet_type = models.CharField(max_length=64, default="llm-chat")
     categories = models.JSONField(default=list)
+    # Customer-scoped concern selection. When set (non-empty), the
+    # dispatch loop restricts this target's probes to the subset of
+    # the active concern catalog that the customer/operator has opted
+    # into. When empty, the loop falls back to the global active
+    # catalog. DESIGN.md §"Customer-scoped concerns via
+    # RegisteredTarget". Populated via customer dashboard or operator
+    # UI after a `Concern` has been created.
+    concerns = models.ManyToManyField(
+        "Concern", blank=True, related_name="targets",
+    )
     registered_at = models.DateTimeField(auto_now_add=True)
     last_probed_at = models.DateTimeField(null=True, blank=True)
     evaluations_completed = models.PositiveIntegerField(default=0)
@@ -112,10 +122,27 @@ class Finding(models.Model):
 
 
 class HitlCase(models.Model):
-    """An evaluation routed to human review (miner/audit disagreement)."""
+    """An evaluation routed to human review (miner/audit disagreement).
+
+    Status transitions (A2.1 / Workstream A.2):
+        pending    → dispatched (validator sent it to a HITL miner, awaiting reply)
+        dispatched → labeled (HITL miner returned a human label)
+        dispatched → pending (HITL miner returned 503/504/error; retryable)
+        dispatched → timed_out (miner explicitly returned 504 "human didn't label in time")
+        pending    → removed (operator pulled the case from the queue)
+    """
     STATUS_PENDING = "pending"
+    STATUS_DISPATCHED = "dispatched"
     STATUS_LABELED = "labeled"
-    STATUS_CHOICES = [(STATUS_PENDING, "pending"), (STATUS_LABELED, "labeled")]
+    STATUS_TIMED_OUT = "timed_out"
+    STATUS_REMOVED = "removed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "pending"),
+        (STATUS_DISPATCHED, "dispatched"),
+        (STATUS_LABELED, "labeled"),
+        (STATUS_TIMED_OUT, "timed_out"),
+        (STATUS_REMOVED, "removed"),
+    ]
 
     evaluation = models.OneToOneField(
         Evaluation, on_delete=models.CASCADE, related_name="hitl"
@@ -125,6 +152,25 @@ class HitlCase(models.Model):
     )
     routed_at = models.DateTimeField(auto_now_add=True)
     labels = models.JSONField(default=list)
+
+    # Sub-work A.2 — operator removal
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="removed_hitl_cases",
+    )
+    removed_reason = models.TextField(blank=True)
+
+    # Sub-work A.2 — dispatch bookkeeping
+    # `dispatched_to_uid` records the LAST miner this case was dispatched
+    # to, for debugging / audit only. It is intentionally NOT consulted
+    # by the dispatch selection function — selection is uniform-random
+    # over eligible miners each tick, per the trust-minimization
+    # requirement in the plan. Reading this field to adjust fairness
+    # would regress the "no cherry-picking" property.
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    dispatched_to_uid = models.IntegerField(null=True, blank=True)
+    labeled_at = models.DateTimeField(null=True, blank=True)
 
 
 class MinerScore(models.Model):
@@ -173,6 +219,23 @@ class MinerScore(models.Model):
     #     → miner stays "owed" but waits 5 min before next try
     last_successful_dispatch_block = models.BigIntegerField(null=True, blank=True)
     last_failed_dispatch_at = models.DateTimeField(null=True, blank=True)
+
+    # Sub-work A.2 — HITL dispatch cooldown.
+    #
+    # Kept SEPARATE from `last_failed_dispatch_at` (probe dispatch) on
+    # purpose: a hybrid miner that advertises `types=["probe","hitl"]`
+    # can be healthy on probes while a human labeler is briefly
+    # unavailable, or vice versa. Collapsing the two cooldowns into a
+    # single field would let a transient HITL hiccup block probe
+    # dispatch (or vice versa), which is censorship.
+    #
+    # `hitl_cooldown_until` is an absolute deadline rather than a
+    # last-failure timestamp so we can encode different cooldown
+    # durations for different failure modes (504 = short, 503 = long,
+    # other = medium) in one column. A miner is "on HITL cooldown"
+    # when `now() < hitl_cooldown_until`. Clearing is implicit (the
+    # next eligibility check reads the current time).
+    hitl_cooldown_until = models.DateTimeField(null=True, blank=True)
 
 
 class ValidatorStatus(models.Model):
@@ -275,6 +338,94 @@ class BaitPattern(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Concern — DESIGN.md §2 "Concerns, curated by validators"
+#
+# The successor to BaitPattern. Brings a natural-language worry
+# (`concern_text`) to the front, adds versioning + curator attribution +
+# an `active` retirement flag + customer-scoped selection through
+# RegisteredTarget.concerns. One release of back-compat overlap with
+# BaitPattern; the old class stays in place until a follow-up release
+# removes it.
+# ---------------------------------------------------------------------------
+
+
+class Concern(models.Model):
+    """A single natural-language worry the validator can dispatch probes for.
+
+    A Concern is the curated artifact an operator publishes to miners:
+    the prose description of "what we're worried about" that the LLM
+    judge reads, plus the cheap-tier `detection_cues` substring list
+    and `example_prompts` that bootstrap miner scenario generation.
+
+    Versioning: every edit through the curation UI bumps `version`
+    and writes a ConcernRevision snapshot. Miners polling
+    `GET /concerns` see `catalog_version = max(version)` across the
+    active set.
+
+    Retirement: operator clears `active` instead of deleting; retired
+    concerns still exist for audit history but drop out of
+    distribution + dispatch. Customer-pending concerns start with
+    `active=False` until an operator flips the flag.
+    """
+    id_slug = models.CharField(max_length=100, unique=True, db_index=True)
+    version = models.IntegerField(default=1)
+    curator_hotkey = models.CharField(max_length=128, blank=True)
+    curator_user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="curated_concerns",
+    )
+    active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    title = models.CharField(max_length=200)
+    concern_text = models.TextField()
+    detection_cues = models.JSONField(default=list)
+    example_prompts = models.JSONField(default=list)
+    category = models.CharField(max_length=64, db_index=True)
+    severity_prior = models.FloatField(default=0.5)
+    related_concerns = models.ManyToManyField(
+        "self", symmetrical=False, blank=True, related_name="related_from",
+    )
+
+    class Meta:
+        ordering = ["category", "id_slug"]
+
+    def __str__(self) -> str:
+        return f"{self.id_slug} v{self.version} ({self.category})"
+
+
+class ConcernRevision(models.Model):
+    """Append-only snapshot of a Concern at a particular version.
+
+    Every edit through `concern_edit` bumps Concern.version and
+    writes one of these rows. The snapshot is a full JSON dict of
+    the content fields so rollback / diff / audit all work off this
+    single table, without join-joining the current row against old
+    state.
+    """
+    concern = models.ForeignKey(
+        Concern, on_delete=models.CASCADE, related_name="revisions",
+    )
+    version = models.IntegerField()
+    snapshot = models.JSONField(default=dict)
+    editor = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="concern_revisions",
+    )
+    edited_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-edited_at"]
+        indexes = [models.Index(fields=["concern", "-version"])]
+
+    def __str__(self) -> str:
+        return f"{self.concern.id_slug} v{self.version}"
+
+
+# ---------------------------------------------------------------------------
 # Curation — validator operator review of findings
 # ---------------------------------------------------------------------------
 
@@ -369,6 +520,73 @@ class RelaySession(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     last_turn_at = models.DateTimeField(auto_now=True)
     turn_count = models.PositiveIntegerField(default=0)
+
+
+# ---------------------------------------------------------------------------
+# Sub-work A.2.3 — Deferred contribution adjustments from HITL labels
+#
+# Per DESIGN.md §"Effects of a label": when a human labels a HitlCase,
+# the corresponding probe miner's contribution is updated in the NEXT
+# tempo, NOT retroactively. This model is the audit trail for that
+# deferral.
+#
+# Write path:
+#     `_dispatch_hitl_cases` receives a label from a HITL miner, writes
+#     a `PendingContributionAdjustment` row with `applied=False`.
+#
+# Read path:
+#     `_build_cycle_contributions` (called from `_set_weights_if_due`
+#     on the tempo boundary) reads all `applied=False` rows for the
+#     current cycle window, applies the delta to the in-memory
+#     contribution map BEFORE the burn-floor logic runs, and flips
+#     `applied=True`.
+#
+# We intentionally keep rows after apply rather than deleting them —
+# the whole point is an audit trail that says "here's why UID 5's
+# contribution dropped by 0.3 at tempo block B" even after the rewrite
+# of the scoring formula (DESIGN.md §"Open research problems" #2) that
+# will eventually replace this mechanism.
+# ---------------------------------------------------------------------------
+
+
+class PendingContributionAdjustment(models.Model):
+    """A queued contribution update produced by an incoming HITL label.
+
+    Created when a HITL miner returns a label; consumed by the next
+    `compute_weights` call to adjust the per-miner contribution map
+    before it's submitted to chain. See module docstring above for
+    the full flow.
+    """
+    SOURCE_HITL_DISPATCH = "hitl_dispatch"
+    SOURCE_CHOICES = [
+        (SOURCE_HITL_DISPATCH, "HITL dispatch"),
+    ]
+
+    evaluation = models.ForeignKey(
+        Evaluation, on_delete=models.CASCADE,
+        related_name="pending_adjustments",
+    )
+    original_severity = models.FloatField()
+    ground_truth_severity = models.FloatField()
+    probe_miner_hotkey = models.CharField(max_length=128, db_index=True)
+    probe_miner_uid = models.IntegerField(db_index=True)
+    label_source = models.CharField(
+        max_length=32, choices=SOURCE_CHOICES, default=SOURCE_HITL_DISPATCH,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    applied = models.BooleanField(default=False, db_index=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return (
+            f"adj(eval={self.evaluation_id}, "
+            f"uid={self.probe_miner_uid}, "
+            f"{self.original_severity:.2f}→{self.ground_truth_severity:.2f}, "
+            f"applied={self.applied})"
+        )
 
 
 class RelayCommitment(models.Model):

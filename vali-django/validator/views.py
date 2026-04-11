@@ -740,11 +740,103 @@ def customer_finding_detail(request: HttpRequest, finding_id: int) -> HttpRespon
 
 @staff_required
 def curation_queue(request: HttpRequest) -> HttpResponse:
-    """Pending critical findings for operator review."""
-    from .models import Finding
+    """Pending critical findings for operator review PLUS the HITL queue.
+
+    Sub-work A.2 — the curation page is the single operator view of
+    "things humans need to touch". Two queues live here:
+
+      1. Findings the operator curates manually via
+         curation_action (confirm/downgrade/escalate).
+      2. HitlCases routed to HITL miners. The operator cannot assign
+         or reorder these (trust-minimization: uniform-random
+         dispatch), but they can REMOVE cases from the pending queue
+         with a reason via `hitl_case_remove`.
+    """
+    from .models import Finding, HitlCase
     pending = Finding.objects.filter(critical=True, curated=False).select_related("evaluation", "evaluation__target").order_by("-severity")
     curated = Finding.objects.filter(curated=True).select_related("evaluation", "evaluation__target").order_by("-curated_at")[:20]
-    return render(request, "validator/curation_queue.html", {"pending": pending, "curated": curated})
+
+    hitl_pending = (
+        HitlCase.objects
+        .filter(status=HitlCase.STATUS_PENDING)
+        .select_related("evaluation", "evaluation__target")
+        .order_by("routed_at")
+    )
+    hitl_dispatched = (
+        HitlCase.objects
+        .filter(status=HitlCase.STATUS_DISPATCHED)
+        .select_related("evaluation", "evaluation__target")
+        .order_by("-dispatched_at")
+    )
+    hitl_recent_labeled = (
+        HitlCase.objects
+        .filter(status=HitlCase.STATUS_LABELED)
+        .select_related("evaluation", "evaluation__target")
+        .order_by("-labeled_at")[:20]
+    )
+    hitl_recent_removed = (
+        HitlCase.objects
+        .filter(status=HitlCase.STATUS_REMOVED)
+        .select_related("evaluation", "evaluation__target", "removed_by")
+        .order_by("-removed_at")[:20]
+    )
+    hitl_counts = {
+        "pending": HitlCase.objects.filter(status=HitlCase.STATUS_PENDING).count(),
+        "dispatched": HitlCase.objects.filter(status=HitlCase.STATUS_DISPATCHED).count(),
+        "labeled": HitlCase.objects.filter(status=HitlCase.STATUS_LABELED).count(),
+        "removed": HitlCase.objects.filter(status=HitlCase.STATUS_REMOVED).count(),
+        "timed_out": HitlCase.objects.filter(status=HitlCase.STATUS_TIMED_OUT).count(),
+    }
+
+    return render(request, "validator/curation_queue.html", {
+        "pending": pending,
+        "curated": curated,
+        "hitl_pending": hitl_pending,
+        "hitl_dispatched": hitl_dispatched,
+        "hitl_recent_labeled": hitl_recent_labeled,
+        "hitl_recent_removed": hitl_recent_removed,
+        "hitl_counts": hitl_counts,
+    })
+
+
+@csrf_exempt
+@staff_required
+@require_http_methods(["POST"])
+def hitl_case_remove(request: HttpRequest, case_id: int) -> HttpResponse:
+    """Remove a pending HitlCase from the dispatch queue.
+
+    Sub-work A.2 — operator-controlled queue management. The operator
+    can remove cases (with a required reason) but CANNOT reorder or
+    assign them. Removal is non-destructive: status flips to `removed`
+    and the row stays for audit trail. Only pending cases can be
+    removed — dispatched / labeled / timed_out cases have already
+    completed their dispatch lifecycle and removing them would
+    silently undo work.
+    """
+    from django.db import transaction
+    from .models import HitlCase
+
+    reason = (request.POST.get("reason") or "").strip()
+    if not reason:
+        return HttpResponse("reason is required", status=400)
+
+    case = get_object_or_404(HitlCase, pk=case_id)
+
+    with transaction.atomic():
+        if case.status != HitlCase.STATUS_PENDING:
+            return HttpResponse(
+                f"case is {case.status}, only pending cases can be removed",
+                status=400,
+            )
+        case.status = HitlCase.STATUS_REMOVED
+        case.removed_at = djtz.now()
+        case.removed_by = request.user
+        case.removed_reason = reason
+        case.save(update_fields=[
+            "status", "removed_at", "removed_by", "removed_reason",
+        ])
+
+    return redirect("curation_queue")
 
 
 @staff_required
@@ -803,68 +895,370 @@ def curation_log(request: HttpRequest) -> HttpResponse:
     return render(request, "validator/curation_log.html", {"actions": actions})
 
 
-# --- Bait management (stub views, implemented in task 7) ----------------
+# --- Concern management (operator curation UI) -------------------------
+#
+# Successor to the `/bait/*` views. DESIGN.md §2 "Concerns, curated by
+# validators". Every edit bumps `version`, records the curator, and
+# writes a ConcernRevision snapshot. Retirement is a separate POST
+# action that flips `active` without requiring text edits, matching
+# the DESIGN.md requirement for a non-destructive retirement path.
+
+
+def _parse_lines(raw: str) -> list[str]:
+    """Split a textarea into a list, stripping blanks."""
+    return [line.strip() for line in (raw or "").split("\n") if line.strip()]
+
+
+def _concern_snapshot(concern) -> dict:
+    """Full content dict for ConcernRevision.snapshot. Everything the
+    operator can edit via the curation form goes in here; audit
+    metadata (created_at, version, etc.) is redundant on the
+    revision row and is omitted."""
+    return {
+        "id_slug": concern.id_slug,
+        "version": concern.version,
+        "title": concern.title,
+        "concern_text": concern.concern_text,
+        "category": concern.category,
+        "severity_prior": concern.severity_prior,
+        "detection_cues": list(concern.detection_cues or []),
+        "example_prompts": list(concern.example_prompts or []),
+        "active": concern.active,
+        "related_concerns": list(
+            concern.related_concerns.values_list("id_slug", flat=True)
+        ),
+    }
+
+
+def _curator_hotkey_for(request: HttpRequest) -> str:
+    """Resolve the logged-in operator's hotkey for curator_hotkey.
+    TODO: hotkey linkage — Django username is a stand-in until we
+    attach hotkeys to User accounts. DESIGN.md §2 expects a real
+    validator hotkey here so miners can prove catalog provenance.
+    """
+    return request.user.username if request.user.is_authenticated else ""
 
 
 @staff_required
-def bait_library(request: HttpRequest) -> HttpResponse:
-    """List all BaitPattern rows, grouped by category."""
-    from .models import BaitPattern
-    patterns = BaitPattern.objects.all()
-    categories = {}
-    for p in patterns:
-        categories.setdefault(p.category, []).append(p)
-    return render(request, "validator/bait_library.html", {"categories": categories})
+def concern_library(request: HttpRequest) -> HttpResponse:
+    """List all Concern rows grouped by category.
+
+    Supports an optional ?filter=pending-customer query arg that
+    restricts to customer-authored concerns still awaiting
+    operator activation (active=False, curator_user is a
+    customer-profile holder). DESIGN.md §2 "customer-authored
+    concerns pass through validator curation before active".
+    """
+    from .models import Concern, CustomerProfile
+    qs = Concern.objects.all().order_by("category", "id_slug")
+    filter_arg = request.GET.get("filter", "")
+    if filter_arg == "pending-customer":
+        customer_user_ids = CustomerProfile.objects.values_list(
+            "user_id", flat=True,
+        )
+        qs = qs.filter(active=False, curator_user_id__in=list(customer_user_ids))
+
+    categories: dict[str, list] = {}
+    for c in qs:
+        categories.setdefault(c.category, []).append(c)
+    return render(request, "validator/concern_library.html", {
+        "categories": categories,
+        "filter_arg": filter_arg,
+    })
 
 
 @staff_required
-def bait_detail(request: HttpRequest, slug: str) -> HttpResponse:
-    """View a single bait pattern."""
-    from .models import BaitPattern
-    pattern = get_object_or_404(BaitPattern, id_slug=slug)
-    return render(request, "validator/bait_detail.html", {"pattern": pattern})
+def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
+    """View a single concern plus its version history."""
+    from .models import Concern
+    concern = get_object_or_404(Concern, id_slug=slug)
+    revisions = concern.revisions.select_related("editor").all()
+    all_other = Concern.objects.filter(active=True).exclude(pk=concern.pk).order_by(
+        "category", "id_slug"
+    )
+    related_ids = set(
+        concern.related_concerns.values_list("pk", flat=True)
+    )
+    return render(request, "validator/concern_detail.html", {
+        "concern": concern,
+        "revisions": revisions,
+        "all_other": all_other,
+        "related_ids": related_ids,
+    })
 
 
 @staff_required
 @require_http_methods(["POST"])
-def bait_edit(request: HttpRequest, slug: str) -> HttpResponse:
-    """Edit a bait pattern."""
-    from .models import BaitPattern
-    pattern = get_object_or_404(BaitPattern, id_slug=slug)
-    pattern.title = request.POST.get("title", pattern.title)
-    pattern.category = request.POST.get("category", pattern.category)
-    pattern.severity = request.POST.get("severity", pattern.severity)
-    pattern.description = request.POST.get("description", pattern.description)
-    pattern.detection_cues = [
-        line.strip() for line in request.POST.get("detection_cues", "").split("\n") if line.strip()
-    ]
-    pattern.example_prompts = [
-        line.strip() for line in request.POST.get("example_prompts", "").split("\n") if line.strip()
-    ]
-    pattern.save()
-    return redirect("bait_detail", slug=slug)
+def concern_edit(request: HttpRequest, slug: str) -> HttpResponse:
+    """Edit a concern. Bumps version and writes a ConcernRevision snapshot
+    inside one transaction."""
+    from django.db import transaction
+    from .models import Concern, ConcernRevision
+
+    concern = get_object_or_404(Concern, id_slug=slug)
+
+    # --- Read form fields ---
+    new_title = request.POST.get("title", concern.title)
+    new_category = request.POST.get("category", concern.category)
+    new_concern_text = request.POST.get("concern_text", concern.concern_text).strip()
+    if not new_concern_text:
+        return HttpResponse("concern_text is required", status=400)
+
+    try:
+        new_severity_prior = float(
+            request.POST.get("severity_prior", concern.severity_prior)
+        )
+    except (ValueError, TypeError):
+        new_severity_prior = concern.severity_prior
+    new_severity_prior = max(0.0, min(1.0, new_severity_prior))
+
+    new_active = request.POST.get("active") == "on"
+    new_cues = _parse_lines(request.POST.get("detection_cues", ""))
+    new_examples = _parse_lines(request.POST.get("example_prompts", ""))
+
+    related_slugs = request.POST.getlist("related_concerns")
+    related_qs = Concern.objects.filter(
+        id_slug__in=related_slugs,
+    ).exclude(pk=concern.pk)
+
+    with transaction.atomic():
+        concern.title = new_title
+        concern.category = new_category
+        concern.concern_text = new_concern_text
+        concern.severity_prior = new_severity_prior
+        concern.active = new_active
+        concern.detection_cues = new_cues
+        concern.example_prompts = new_examples
+        concern.version = (concern.version or 0) + 1
+        concern.curator_user = request.user
+        concern.curator_hotkey = _curator_hotkey_for(request)
+        concern.save()
+        concern.related_concerns.set(related_qs)
+
+        ConcernRevision.objects.create(
+            concern=concern,
+            version=concern.version,
+            snapshot=_concern_snapshot(concern),
+            editor=request.user,
+        )
+
+    return redirect("concern_detail", slug=slug)
 
 
 @staff_required
-def bait_create(request: HttpRequest) -> HttpResponse:
-    """Create a new bait pattern."""
-    from .models import BaitPattern
+@require_http_methods(["POST"])
+def concern_retire(request: HttpRequest, slug: str) -> HttpResponse:
+    """Retire a concern — set active=False without touching content.
+    Bumps version and writes a revision so the retirement is
+    attributable in version history."""
+    from django.db import transaction
+    from .models import Concern, ConcernRevision
+
+    concern = get_object_or_404(Concern, id_slug=slug)
+    if not concern.active:
+        return redirect("concern_detail", slug=slug)
+
+    with transaction.atomic():
+        concern.active = False
+        concern.version = (concern.version or 0) + 1
+        concern.curator_user = request.user
+        concern.curator_hotkey = _curator_hotkey_for(request)
+        concern.save(update_fields=[
+            "active", "version", "curator_user", "curator_hotkey", "updated_at",
+        ])
+        ConcernRevision.objects.create(
+            concern=concern,
+            version=concern.version,
+            snapshot=_concern_snapshot(concern),
+            editor=request.user,
+        )
+    return redirect("concern_detail", slug=slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def concern_activate(request: HttpRequest, slug: str) -> HttpResponse:
+    """Activate a concern — set active=True. Counterpart to retire,
+    primarily used to green-light customer-authored pending concerns."""
+    from django.db import transaction
+    from .models import Concern, ConcernRevision
+
+    concern = get_object_or_404(Concern, id_slug=slug)
+    if concern.active:
+        return redirect("concern_detail", slug=slug)
+
+    with transaction.atomic():
+        concern.active = True
+        concern.version = (concern.version or 0) + 1
+        concern.curator_user = request.user
+        concern.curator_hotkey = _curator_hotkey_for(request)
+        concern.save(update_fields=[
+            "active", "version", "curator_user", "curator_hotkey", "updated_at",
+        ])
+        ConcernRevision.objects.create(
+            concern=concern,
+            version=concern.version,
+            snapshot=_concern_snapshot(concern),
+            editor=request.user,
+        )
+    return redirect("concern_detail", slug=slug)
+
+
+@staff_required
+def concern_create(request: HttpRequest) -> HttpResponse:
+    """Create a new concern row."""
+    from django.db import transaction
+    from .models import Concern, ConcernRevision
+
     if request.method == "POST":
-        slug = request.POST.get("id_slug", "").strip()
+        slug = (request.POST.get("id_slug") or "").strip()
         if not slug:
             return HttpResponse("id_slug is required", status=400)
-        BaitPattern.objects.create(
-            id_slug=slug,
-            category=request.POST.get("category", ""),
-            severity=request.POST.get("severity", ""),
-            title=request.POST.get("title", ""),
-            description=request.POST.get("description", ""),
-            detection_cues=[
-                line.strip() for line in request.POST.get("detection_cues", "").split("\n") if line.strip()
-            ],
-            example_prompts=[
-                line.strip() for line in request.POST.get("example_prompts", "").split("\n") if line.strip()
-            ],
-        )
-        return redirect("bait_detail", slug=slug)
-    return render(request, "validator/bait_create.html", {})
+        concern_text = (request.POST.get("concern_text") or "").strip()
+        if not concern_text:
+            return HttpResponse("concern_text is required", status=400)
+        try:
+            severity_prior = float(request.POST.get("severity_prior", 0.5))
+        except (ValueError, TypeError):
+            severity_prior = 0.5
+        severity_prior = max(0.0, min(1.0, severity_prior))
+        with transaction.atomic():
+            concern = Concern.objects.create(
+                id_slug=slug,
+                version=1,
+                curator_user=request.user,
+                curator_hotkey=_curator_hotkey_for(request),
+                active=request.POST.get("active") == "on",
+                title=request.POST.get("title", ""),
+                concern_text=concern_text,
+                category=request.POST.get("category", ""),
+                severity_prior=severity_prior,
+                detection_cues=_parse_lines(request.POST.get("detection_cues", "")),
+                example_prompts=_parse_lines(request.POST.get("example_prompts", "")),
+            )
+            ConcernRevision.objects.create(
+                concern=concern,
+                version=1,
+                snapshot=_concern_snapshot(concern),
+                editor=request.user,
+            )
+        return redirect("concern_detail", slug=slug)
+    return render(request, "validator/concern_create.html", {})
+
+
+# --- Concern catalog distribution (GET /concerns) -----------------------
+#
+# DESIGN.md §2 "Epistula-authed GET /concerns distribution". Miners
+# poll this to pull the current active catalog and its version. The
+# response carries an ETag; miners honor If-None-Match to avoid
+# re-downloading when the catalog hasn't changed.
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+@_epistula_required
+def concerns_catalog(request: HttpRequest) -> JsonResponse:
+    """Return the active concern catalog as JSON, Epistula-authed."""
+    import hashlib
+    from .models import Concern
+    from .serializers import serialize_concern
+
+    qs = Concern.objects.filter(active=True)
+    category = request.GET.get("category", "")
+    if category:
+        qs = qs.filter(category=category)
+    qs = qs.order_by("id_slug")
+
+    # ETag over the (slug, version) tuple — cheap, stable, no body hash.
+    etag_raw = ",".join(f"{c.id_slug}:{c.version}" for c in qs)
+    etag = hashlib.sha256(etag_raw.encode()).hexdigest()
+    quoted_etag = f'"{etag}"'
+
+    if_none_match = request.headers.get("If-None-Match", "")
+    if if_none_match and if_none_match.strip() in (etag, quoted_etag):
+        resp = HttpResponse(status=304)
+        resp["ETag"] = quoted_etag
+        return resp
+
+    concerns_payload = [serialize_concern(c) for c in qs]
+    catalog_version = max((c.version for c in qs), default=0)
+    body = {
+        "concerns": concerns_payload,
+        "catalog_version": catalog_version,
+        "served_at": djtz.now().isoformat(),
+    }
+    resp = JsonResponse(body)
+    resp["ETag"] = quoted_etag
+    return resp
+
+
+# --- Customer-authored concerns -----------------------------------------
+
+
+@customer_required
+@require_http_methods(["GET", "POST"])
+def customer_concern_new(request: HttpRequest, name: str) -> HttpResponse:
+    """Customer-facing form to author a new Concern against one of
+    their targets. Creates the concern with active=False; an
+    operator must flip it on via the /concerns/ UI before dispatch
+    picks it up. DESIGN.md §2 "Customer-authored concerns still
+    pass through validator curation before active".
+    """
+    from django.db import transaction
+    from .models import Concern, ConcernRevision
+
+    target = get_object_or_404(request.customer_profile.targets, name=name)
+
+    if request.method == "POST":
+        slug = (request.POST.get("id_slug") or "").strip()
+        if not slug:
+            return HttpResponse("id_slug is required", status=400)
+        concern_text = (request.POST.get("concern_text") or "").strip()
+        if not concern_text:
+            return HttpResponse("concern_text is required", status=400)
+        try:
+            severity_prior = float(request.POST.get("severity_prior", 0.5))
+        except (ValueError, TypeError):
+            severity_prior = 0.5
+        severity_prior = max(0.0, min(1.0, severity_prior))
+
+        with transaction.atomic():
+            concern = Concern.objects.create(
+                id_slug=slug,
+                version=1,
+                curator_user=request.user,
+                curator_hotkey="",
+                active=False,  # pending operator curation
+                title=request.POST.get("title", ""),
+                concern_text=concern_text,
+                category=request.POST.get("category", ""),
+                severity_prior=severity_prior,
+                detection_cues=_parse_lines(request.POST.get("detection_cues", "")),
+                example_prompts=_parse_lines(request.POST.get("example_prompts", "")),
+            )
+            # Wire to the customer's target so the dispatch loop can
+            # opt them in once the operator activates the concern.
+            target.concerns.add(concern)
+            ConcernRevision.objects.create(
+                concern=concern,
+                version=1,
+                snapshot=_concern_snapshot(concern),
+                editor=request.user,
+            )
+        return redirect("customer_target_detail", name=target.name)
+
+    return render(request, "validator/customer_concern_new.html", {
+        "target": target,
+    })
+
+
+# --- Legacy alias shims --------------------------------------------------
+#
+# Keep old `bait_*` symbols importable during the one-release back-compat
+# window. External code (tests, management commands) that still imports
+# these resolves to the corresponding Concern view transparently, and the
+# /bait/* URL prefix 301-redirects to /concerns/* in urls.py.
+bait_library = concern_library
+bait_detail = concern_detail
+bait_edit = concern_edit
+bait_create = concern_create
