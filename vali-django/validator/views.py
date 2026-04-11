@@ -19,6 +19,7 @@ from functools import wraps
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render, get_object_or_404
 from django.utils import timezone as djtz
+from django.utils.text import slugify
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
@@ -904,9 +905,19 @@ def curation_log(request: HttpRequest) -> HttpResponse:
 # the DESIGN.md requirement for a non-destructive retirement path.
 
 
-def _parse_lines(raw: str) -> list[str]:
-    """Split a textarea into a list, stripping blanks."""
-    return [line.strip() for line in (raw or "").split("\n") if line.strip()]
+def _generate_unique_concern_slug(title: str) -> str:
+    """Derive a URL-safe slug from the concern title, appending a
+    numeric suffix if a concern with the base slug already exists.
+    Operators enter the title and category; the slug is a system
+    detail they should never have to think about."""
+    from .models import Concern
+    base = slugify(title)[:100] or "concern"
+    slug = base
+    n = 2
+    while Concern.objects.filter(id_slug=slug).exists():
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
 
 
 def _concern_snapshot(concern) -> dict:
@@ -915,7 +926,7 @@ def _concern_snapshot(concern) -> dict:
     metadata (created_at, version, etc.) is redundant on the
     revision row and is omitted.
 
-    WS2: includes the full current state of DetectionCue and
+    Includes the full current state of DetectionCue and
     UserTrigger child rows so revision history reflects what the
     concern "looked like" at the time of the version bump. Cue/
     trigger CRUD on its own does NOT bump version or write a
@@ -929,8 +940,6 @@ def _concern_snapshot(concern) -> dict:
         "concern_text": concern.concern_text,
         "category": concern.category,
         "severity_prior": concern.severity_prior,
-        "detection_cues": list(concern.detection_cues or []),
-        "example_prompts": list(concern.example_prompts or []),
         "active": concern.active,
         "related_concerns": list(
             concern.related_concerns.values_list("id_slug", flat=True)
@@ -1039,8 +1048,6 @@ def concern_edit(request: HttpRequest, slug: str) -> HttpResponse:
     new_severity_prior = max(0.0, min(1.0, new_severity_prior))
 
     new_active = request.POST.get("active") == "on"
-    new_cues = _parse_lines(request.POST.get("detection_cues", ""))
-    new_examples = _parse_lines(request.POST.get("example_prompts", ""))
 
     related_slugs = request.POST.getlist("related_concerns")
     related_qs = Concern.objects.filter(
@@ -1053,8 +1060,6 @@ def concern_edit(request: HttpRequest, slug: str) -> HttpResponse:
         concern.concern_text = new_concern_text
         concern.severity_prior = new_severity_prior
         concern.active = new_active
-        concern.detection_cues = new_cues
-        concern.example_prompts = new_examples
         concern.version = (concern.version or 0) + 1
         concern.curator_user = request.user
         concern.curator_hotkey = _curator_hotkey_for(request)
@@ -1132,14 +1137,15 @@ def concern_activate(request: HttpRequest, slug: str) -> HttpResponse:
 
 @staff_required
 def concern_create(request: HttpRequest) -> HttpResponse:
-    """Create a new concern row."""
+    """Create a new concern row. Slug is auto-generated from the title —
+    operators should never have to think about URL-safe strings."""
     from django.db import transaction
     from .models import Concern, ConcernRevision
 
     if request.method == "POST":
-        slug = (request.POST.get("id_slug") or "").strip()
-        if not slug:
-            return HttpResponse("id_slug is required", status=400)
+        title = (request.POST.get("title") or "").strip()
+        if not title:
+            return HttpResponse("title is required", status=400)
         concern_text = (request.POST.get("concern_text") or "").strip()
         if not concern_text:
             return HttpResponse("concern_text is required", status=400)
@@ -1148,6 +1154,7 @@ def concern_create(request: HttpRequest) -> HttpResponse:
         except (ValueError, TypeError):
             severity_prior = 0.5
         severity_prior = max(0.0, min(1.0, severity_prior))
+        slug = _generate_unique_concern_slug(title)
         with transaction.atomic():
             concern = Concern.objects.create(
                 id_slug=slug,
@@ -1155,12 +1162,10 @@ def concern_create(request: HttpRequest) -> HttpResponse:
                 curator_user=request.user,
                 curator_hotkey=_curator_hotkey_for(request),
                 active=request.POST.get("active") == "on",
-                title=request.POST.get("title", ""),
+                title=title,
                 concern_text=concern_text,
                 category=request.POST.get("category", ""),
                 severity_prior=severity_prior,
-                detection_cues=_parse_lines(request.POST.get("detection_cues", "")),
-                example_prompts=_parse_lines(request.POST.get("example_prompts", "")),
             )
             ConcernRevision.objects.create(
                 concern=concern,
@@ -1401,9 +1406,9 @@ def customer_concern_new(request: HttpRequest, name: str) -> HttpResponse:
     target = get_object_or_404(request.customer_profile.targets, name=name)
 
     if request.method == "POST":
-        slug = (request.POST.get("id_slug") or "").strip()
-        if not slug:
-            return HttpResponse("id_slug is required", status=400)
+        title = (request.POST.get("title") or "").strip()
+        if not title:
+            return HttpResponse("title is required", status=400)
         concern_text = (request.POST.get("concern_text") or "").strip()
         if not concern_text:
             return HttpResponse("concern_text is required", status=400)
@@ -1412,6 +1417,7 @@ def customer_concern_new(request: HttpRequest, name: str) -> HttpResponse:
         except (ValueError, TypeError):
             severity_prior = 0.5
         severity_prior = max(0.0, min(1.0, severity_prior))
+        slug = _generate_unique_concern_slug(title)
 
         with transaction.atomic():
             concern = Concern.objects.create(
@@ -1420,12 +1426,10 @@ def customer_concern_new(request: HttpRequest, name: str) -> HttpResponse:
                 curator_user=request.user,
                 curator_hotkey="",
                 active=False,  # pending operator curation
-                title=request.POST.get("title", ""),
+                title=title,
                 concern_text=concern_text,
                 category=request.POST.get("category", ""),
                 severity_prior=severity_prior,
-                detection_cues=_parse_lines(request.POST.get("detection_cues", "")),
-                example_prompts=_parse_lines(request.POST.get("example_prompts", "")),
             )
             # Wire to the customer's target so the dispatch loop can
             # opt them in once the operator activates the concern.

@@ -170,17 +170,6 @@
   </form>
 </div>
 
-{# --- Legacy v1 JSONField displays (deprecated, back-compat only) -- #}
-<h3 style="color:#666;">Legacy cues / prompts (v1 JSONField, back-compat)</h3>
-<div class="card" style="opacity:0.6;">
-  <h4 style="color:#888;font-size:0.75rem;">Detection cues (JSONField — deprecated)</h4>
-  <ul>{% for cue in concern.detection_cues %}<li>{{ cue }}</li>{% endfor %}</ul>
-  <h4 style="color:#888;font-size:0.75rem;">Example prompts (JSONField — deprecated)</h4>
-  {% for prompt in concern.example_prompts %}
-  <div style="margin-bottom:0.5rem;padding:0.4rem;background:#111;border-radius:4px;font-family:monospace;font-size:0.85rem;">{{ prompt }}</div>
-  {% endfor %}
-</div>
-
 <h3>Retire / Activate</h3>
 <div class="card">
   {% if concern.active %}
@@ -244,16 +233,6 @@
       <label style="color:#888;font-size:0.8rem;">
         <input type="checkbox" name="active" {% if concern.active %}checked{% endif %}> Active (dispatched + exposed via GET /concerns)
       </label>
-    </div>
-    <div style="margin-bottom:0.8rem;">
-      <label style="color:#888;font-size:0.8rem;">Detection Cues (one per line)</label><br>
-      <textarea name="detection_cues" rows="4" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for c in concern.detection_cues %}{{ c }}
-{% endfor %}</textarea>
-    </div>
-    <div style="margin-bottom:0.8rem;">
-      <label style="color:#888;font-size:0.8rem;">Example Prompts (one per line)</label><br>
-      <textarea name="example_prompts" rows="6" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">{% for p in concern.example_prompts %}{{ p }}
-{% endfor %}</textarea>
     </div>
     <div style="margin-bottom:0.8rem;">
       <label style="color:#888;font-size:0.8rem;">Related concerns</label><br>

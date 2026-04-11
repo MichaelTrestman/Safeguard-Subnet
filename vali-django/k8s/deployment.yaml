@@ -58,7 +58,7 @@ spec:
                   name: safeguard-secrets
                   key: admin-pass
             - name: HEALTH_MAX_TICK_AGE_S
-              value: "120"
+              value: "600"
             - name: HEALTH_MAX_WEIGHT_AGE_S
               value: "1800"
           volumeMounts:
