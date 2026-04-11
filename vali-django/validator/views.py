@@ -913,7 +913,15 @@ def _concern_snapshot(concern) -> dict:
     """Full content dict for ConcernRevision.snapshot. Everything the
     operator can edit via the curation form goes in here; audit
     metadata (created_at, version, etc.) is redundant on the
-    revision row and is omitted."""
+    revision row and is omitted.
+
+    WS2: includes the full current state of DetectionCue and
+    UserTrigger child rows so revision history reflects what the
+    concern "looked like" at the time of the version bump. Cue/
+    trigger CRUD on its own does NOT bump version or write a
+    snapshot — only a save of the Concern itself does, and that
+    save captures the child rows as they then exist.
+    """
     return {
         "id_slug": concern.id_slug,
         "version": concern.version,
@@ -927,6 +935,24 @@ def _concern_snapshot(concern) -> dict:
         "related_concerns": list(
             concern.related_concerns.values_list("id_slug", flat=True)
         ),
+        "cues": [
+            {
+                "id": c.id,
+                "cue_text": c.cue_text,
+                "kind": c.kind,
+                "active": c.active,
+            }
+            for c in concern.cues.all()
+        ],
+        "triggers": [
+            {
+                "id": t.id,
+                "trigger_text": t.trigger_text,
+                "kind": t.kind,
+                "active": t.active,
+            }
+            for t in concern.triggers.all()
+        ],
     }
 
 
@@ -1144,6 +1170,171 @@ def concern_create(request: HttpRequest) -> HttpResponse:
             )
         return redirect("concern_detail", slug=slug)
     return render(request, "validator/concern_create.html", {})
+
+
+# --- DetectionCue CRUD (staff-gated, POST-only) -------------------------
+#
+# Cues are lightweight curation children of a Concern. They do NOT
+# participate in Concern versioning — edits here do not bump
+# concern.version or write a ConcernRevision (snapshotting every cue
+# tweak would bloat history beyond usefulness). The next save of
+# the parent concern through concern_edit captures the current cue
+# state in its snapshot.
+#
+# Trust-minimization: DetectionCue rows are NEVER exposed through
+# /api/concerns — the miner-facing serializer in serializers.py
+# excludes them. Miners that see cues overfit their probes to the
+# matcher. Curation lives entirely inside the operator UI.
+
+
+@staff_required
+@require_http_methods(["POST"])
+def cue_create(request: HttpRequest, concern_slug: str) -> HttpResponse:
+    """Create a DetectionCue tied to a concern. POST cue_text, kind."""
+    from .models import Concern, DetectionCue
+
+    concern = get_object_or_404(Concern, id_slug=concern_slug)
+    cue_text = (request.POST.get("cue_text") or "").strip()
+    if not cue_text:
+        return HttpResponse("cue_text is required", status=400)
+    kind = request.POST.get("kind") or DetectionCue.KIND_SUBSTRING
+    if kind not in dict(DetectionCue.KIND_CHOICES):
+        return HttpResponse(f"invalid cue kind: {kind}", status=400)
+    DetectionCue.objects.create(
+        concern=concern,
+        cue_text=cue_text,
+        kind=kind,
+        active=True,
+    )
+    return redirect("concern_detail", slug=concern_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def cue_edit(request: HttpRequest, cue_id: int) -> HttpResponse:
+    """Edit cue_text, kind, active on an existing DetectionCue.
+    Does NOT bump parent concern version or write a revision."""
+    from .models import DetectionCue
+
+    cue = get_object_or_404(DetectionCue, pk=cue_id)
+    cue_text = (request.POST.get("cue_text") or "").strip()
+    if not cue_text:
+        return HttpResponse("cue_text is required", status=400)
+    kind = request.POST.get("kind") or cue.kind
+    if kind not in dict(DetectionCue.KIND_CHOICES):
+        return HttpResponse(f"invalid cue kind: {kind}", status=400)
+    cue.cue_text = cue_text
+    cue.kind = kind
+    cue.active = request.POST.get("active") == "on"
+    cue.save(update_fields=["cue_text", "kind", "active", "updated_at"])
+    return redirect("concern_detail", slug=cue.concern.id_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def cue_retire(request: HttpRequest, cue_id: int) -> HttpResponse:
+    """Soft-retire a cue by flipping active=False. Preserved for
+    historical attribution on findings that already referenced it."""
+    from .models import DetectionCue
+
+    cue = get_object_or_404(DetectionCue, pk=cue_id)
+    if cue.active:
+        cue.active = False
+        cue.save(update_fields=["active", "updated_at"])
+    return redirect("concern_detail", slug=cue.concern.id_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def cue_activate(request: HttpRequest, cue_id: int) -> HttpResponse:
+    """Re-activate a previously retired cue."""
+    from .models import DetectionCue
+
+    cue = get_object_or_404(DetectionCue, pk=cue_id)
+    if not cue.active:
+        cue.active = True
+        cue.save(update_fields=["active", "updated_at"])
+    return redirect("concern_detail", slug=cue.concern.id_slug)
+
+
+# --- UserTrigger CRUD (staff-gated, POST-only) --------------------------
+#
+# Triggers mirror cues structurally but represent the input-side
+# risk factors (human prompting framings that might elicit the
+# concerning AI behavior). Unlike cues, triggers ARE exposed to
+# miners via /api/concerns and serve as seeds for adversarial probe
+# generation, so curator wording matters to miner behavior.
+
+
+@staff_required
+@require_http_methods(["POST"])
+def trigger_create(request: HttpRequest, concern_slug: str) -> HttpResponse:
+    """Create a UserTrigger tied to a concern. POST trigger_text, kind."""
+    from .models import Concern, UserTrigger
+
+    concern = get_object_or_404(Concern, id_slug=concern_slug)
+    trigger_text = (request.POST.get("trigger_text") or "").strip()
+    if not trigger_text:
+        return HttpResponse("trigger_text is required", status=400)
+    kind = request.POST.get("kind") or UserTrigger.KIND_PROMPT
+    if kind not in dict(UserTrigger.KIND_CHOICES):
+        return HttpResponse(f"invalid trigger kind: {kind}", status=400)
+    UserTrigger.objects.create(
+        concern=concern,
+        trigger_text=trigger_text,
+        kind=kind,
+        active=True,
+    )
+    return redirect("concern_detail", slug=concern_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def trigger_edit(request: HttpRequest, trigger_id: int) -> HttpResponse:
+    """Edit trigger_text, kind, active. Does NOT bump parent concern
+    version or write a revision (same rationale as cue_edit)."""
+    from .models import UserTrigger
+
+    trigger = get_object_or_404(UserTrigger, pk=trigger_id)
+    trigger_text = (request.POST.get("trigger_text") or "").strip()
+    if not trigger_text:
+        return HttpResponse("trigger_text is required", status=400)
+    kind = request.POST.get("kind") or trigger.kind
+    if kind not in dict(UserTrigger.KIND_CHOICES):
+        return HttpResponse(f"invalid trigger kind: {kind}", status=400)
+    trigger.trigger_text = trigger_text
+    trigger.kind = kind
+    trigger.active = request.POST.get("active") == "on"
+    trigger.save(update_fields=["trigger_text", "kind", "active", "updated_at"])
+    return redirect("concern_detail", slug=trigger.concern.id_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def trigger_retire(request: HttpRequest, trigger_id: int) -> HttpResponse:
+    """Soft-retire a trigger by flipping active=False. Retired
+    triggers stop being served to miners via /api/concerns but
+    retain their invocation/success counts for stats."""
+    from .models import UserTrigger
+
+    trigger = get_object_or_404(UserTrigger, pk=trigger_id)
+    if trigger.active:
+        trigger.active = False
+        trigger.save(update_fields=["active", "updated_at"])
+    return redirect("concern_detail", slug=trigger.concern.id_slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def trigger_activate(request: HttpRequest, trigger_id: int) -> HttpResponse:
+    """Re-activate a previously retired trigger."""
+    from .models import UserTrigger
+
+    trigger = get_object_or_404(UserTrigger, pk=trigger_id)
+    if not trigger.active:
+        trigger.active = True
+        trigger.save(update_fields=["active", "updated_at"])
+    return redirect("concern_detail", slug=trigger.concern.id_slug)
 
 
 # --- Concern catalog distribution (GET /concerns) -----------------------

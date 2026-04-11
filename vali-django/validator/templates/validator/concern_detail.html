@@ -36,16 +36,149 @@
   <p style="white-space:pre-wrap;">{{ concern.concern_text }}</p>
 </div>
 
+{# --- v2 DetectionCue section (WS2) ------------------------------ #}
 <h3>Detection Cues</h3>
-<div class="card">
-<ul>{% for cue in concern.detection_cues %}<li>{{ cue }}</li>{% endfor %}</ul>
+<div class="card" style="border-left:3px solid #447;">
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
+    These are <strong>after-the-fact textual evidence</strong> in the assistant's response
+    that the concerning behavior actually occurred. They are NOT predictors of danger
+    and NOT user-input markers &mdash; they are signatures of actualized harm in the
+    output. Miners never see these (trust-minimization); the audit pipeline matches
+    the assistant's responses against them to decide whether a finding fires.
+  </p>
+  {% if concern.cues.all %}
+  <div style="display:grid;grid-template-columns:6rem 1fr 3rem 4rem 10rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Kind</div><div>Cue text</div><div>Hits</div><div>Active</div><div>Actions</div>
+  </div>
+  {% for cue in concern.cues.all %}
+  <div{% if not cue.active %} style="opacity:0.45;"{% endif %}>
+    <form method="post" action="{% url 'cue_edit' cue.id %}" style="display:grid;grid-template-columns:6rem 1fr 3rem 4rem 10rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;">
+      {% csrf_token %}
+      <select name="kind" style="background:#222;color:#fff;border:1px solid #333;padding:0.2rem;border-radius:3px;font-size:0.75rem;">
+        <option value="substring" {% if cue.kind == "substring" %}selected{% endif %}>substring</option>
+        <option value="regex" {% if cue.kind == "regex" %}selected{% endif %}>regex</option>
+        <option value="semantic" {% if cue.kind == "semantic" %}selected{% endif %}>semantic</option>
+      </select>
+      <input type="text" name="cue_text" value="{{ cue.cue_text }}" title="{{ cue.cue_text }}" style="background:#222;color:#fff;border:1px solid #333;padding:0.25rem;border-radius:3px;width:100%;font-family:monospace;font-size:0.8rem;box-sizing:border-box;">
+      <div style="font-size:0.85rem;">{{ cue.hit_count }}</div>
+      <label style="font-size:0.75rem;color:#888;"><input type="checkbox" name="active" {% if cue.active %}checked{% endif %}> {% if cue.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</label>
+      <div style="white-space:nowrap;">
+        <button type="submit" style="background:#336;color:#fff;border:none;padding:0.25rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Save</button>
+      </div>
+    </form>
+    <div style="padding:0 0.4rem 0.3rem 0.4rem;">
+      {% if cue.active %}
+      <form method="post" action="{% url 'cue_retire' cue.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" style="background:#933;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Retire</button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'cue_activate' cue.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" style="background:#393;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Activate</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:#666;font-size:0.85rem;">No cues defined yet. Add one below.</p>
+  {% endif %}
+
+  <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Add Detection Cue</h4>
+  <form method="post" action="{% url 'cue_create' concern.id_slug %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.5rem;">
+      <textarea name="cue_text" rows="2" required placeholder="e.g. &quot;here is your API key&quot; (substring) or AKIA[0-9A-Z]{16} (regex)" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85rem;"></textarea>
+    </div>
+    <div style="margin-bottom:0.5rem;">
+      <label style="color:#888;font-size:0.75rem;">Kind</label>
+      <select name="kind" style="background:#222;color:#fff;border:1px solid #444;padding:0.3rem;border-radius:4px;">
+        <option value="substring">substring (literal contains)</option>
+        <option value="regex">regex (Python regex)</option>
+        <option value="semantic">semantic (LLM-judged)</option>
+      </select>
+      <button type="submit" style="background:#336;color:#fff;border:none;padding:0.35rem 1rem;border-radius:4px;cursor:pointer;margin-left:0.5rem;">Add cue</button>
+    </div>
+  </form>
 </div>
 
-<h3>Example Prompts</h3>
-<div class="card">
-{% for prompt in concern.example_prompts %}
-<div style="margin-bottom:0.5rem;padding:0.4rem;background:#111;border-radius:4px;font-family:monospace;font-size:0.85rem;">{{ prompt }}</div>
-{% endfor %}
+{# --- v2 UserTrigger section (WS2) ------------------------------- #}
+<h3>User Triggers</h3>
+<div class="card" style="border-left:3px solid #474;">
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
+    These are <strong>input-side framings</strong> &mdash; human-user prompting behaviors
+    we worry might elicit the concerning AI behavior. Miners receive these via
+    <code>/api/concerns</code> and use them as seeds for probe generation. Write in
+    second person as if instructing a red-team prober.
+  </p>
+  {% if concern.triggers.all %}
+  <div style="display:grid;grid-template-columns:6rem 1fr 4rem 4rem 4rem 10rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Kind</div><div>Trigger text</div><div>Inv</div><div>Succ</div><div>Active</div><div>Actions</div>
+  </div>
+  {% for trigger in concern.triggers.all %}
+  <div{% if not trigger.active %} style="opacity:0.45;"{% endif %}>
+    <form method="post" action="{% url 'trigger_edit' trigger.id %}" style="display:grid;grid-template-columns:6rem 1fr 4rem 4rem 4rem 10rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;">
+      {% csrf_token %}
+      <select name="kind" style="background:#222;color:#fff;border:1px solid #333;padding:0.2rem;border-radius:3px;font-size:0.75rem;">
+        <option value="prompt" {% if trigger.kind == "prompt" %}selected{% endif %}>prompt</option>
+        <option value="persona" {% if trigger.kind == "persona" %}selected{% endif %}>persona</option>
+        <option value="context" {% if trigger.kind == "context" %}selected{% endif %}>context</option>
+      </select>
+      <input type="text" name="trigger_text" value="{{ trigger.trigger_text }}" title="{{ trigger.trigger_text }}" style="background:#222;color:#fff;border:1px solid #333;padding:0.25rem;border-radius:3px;width:100%;font-size:0.8rem;box-sizing:border-box;">
+      <div style="font-size:0.85rem;">{{ trigger.invocation_count }}</div>
+      <div style="font-size:0.85rem;">{{ trigger.success_count }}</div>
+      <label style="font-size:0.75rem;color:#888;"><input type="checkbox" name="active" {% if trigger.active %}checked{% endif %}> {% if trigger.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</label>
+      <div style="white-space:nowrap;">
+        <button type="submit" style="background:#336;color:#fff;border:none;padding:0.25rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Save</button>
+      </div>
+    </form>
+    <div style="padding:0 0.4rem 0.3rem 0.4rem;">
+      {% if trigger.active %}
+      <form method="post" action="{% url 'trigger_retire' trigger.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" style="background:#933;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Retire</button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'trigger_activate' trigger.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" style="background:#393;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Activate</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:#666;font-size:0.85rem;">No triggers defined yet. Add one below.</p>
+  {% endif %}
+
+  <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Add User Trigger</h4>
+  <form method="post" action="{% url 'trigger_create' concern.id_slug %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.5rem;">
+      <textarea name="trigger_text" rows="2" required placeholder='e.g. "claim the deploy is in 5 minutes" (prompt), "act as a stressed senior admin" (persona)' style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;font-size:0.85rem;"></textarea>
+    </div>
+    <div style="margin-bottom:0.5rem;">
+      <label style="color:#888;font-size:0.75rem;">Kind</label>
+      <select name="kind" style="background:#222;color:#fff;border:1px solid #444;padding:0.3rem;border-radius:4px;">
+        <option value="prompt">prompt (direct user input)</option>
+        <option value="persona">persona (user role/framing)</option>
+        <option value="context">context (situational pressure)</option>
+      </select>
+      <button type="submit" style="background:#336;color:#fff;border:none;padding:0.35rem 1rem;border-radius:4px;cursor:pointer;margin-left:0.5rem;">Add trigger</button>
+    </div>
+  </form>
+</div>
+
+{# --- Legacy v1 JSONField displays (deprecated, back-compat only) -- #}
+<h3 style="color:#666;">Legacy cues / prompts (v1 JSONField, back-compat)</h3>
+<div class="card" style="opacity:0.6;">
+  <h4 style="color:#888;font-size:0.75rem;">Detection cues (JSONField — deprecated)</h4>
+  <ul>{% for cue in concern.detection_cues %}<li>{{ cue }}</li>{% endfor %}</ul>
+  <h4 style="color:#888;font-size:0.75rem;">Example prompts (JSONField — deprecated)</h4>
+  {% for prompt in concern.example_prompts %}
+  <div style="margin-bottom:0.5rem;padding:0.4rem;background:#111;border-radius:4px;font-family:monospace;font-size:0.85rem;">{{ prompt }}</div>
+  {% endfor %}
 </div>
 
 <h3>Retire / Activate</h3>
@@ -67,6 +200,28 @@
 
 <h3>Edit</h3>
 <div class="card">
+  {# --- WS2: concern-definition guidance block. Prominent so future curators don't fall into the v1 trap of writing user prompts or attack patterns here. #}
+  <div style="background:#0f1a2a;border:1px solid #345;border-left:4px solid #47a;border-radius:6px;padding:0.9rem 1.1rem;margin-bottom:1rem;color:#cde;">
+    <div style="font-weight:bold;color:#9cf;margin-bottom:0.4rem;">What is a concern?</div>
+    <p style="margin:0.3rem 0;font-size:0.9rem;">
+      A concern is a <strong>first-person worry about AI BEHAVIOR</strong>, written from
+      the operator's perspective. The subject should always be the AI, and the verb
+      should describe the bad thing happening:
+    </p>
+    <ul style="margin:0.3rem 0 0.3rem 1.2rem;font-size:0.88rem;">
+      <li><span style="color:#6c6;">YES</span> "I'm concerned the AI will leak credentials"</li>
+      <li><span style="color:#6c6;">YES</span> "I'm concerned the AI will walk a rushed user through staging their <code>.env</code> file into a commit"</li>
+    </ul>
+    <p style="margin:0.4rem 0 0.2rem;font-size:0.9rem;">NOT user prompts, NOT attack patterns, NOT detection rules:</p>
+    <ul style="margin:0.2rem 0 0.3rem 1.2rem;font-size:0.88rem;">
+      <li><span style="color:#c66;">NO</span> "Prompts asking the assistant to write malware"</li>
+      <li><span style="color:#c66;">NO</span> "Jailbreak attempts using DAN roleplay"</li>
+    </ul>
+    <p style="margin:0.4rem 0 0.1rem;font-size:0.85rem;color:#9ab;">
+      After saving, use the <strong>Detection Cues</strong> section above for what the AI's bad
+      response looks like, and <strong>User Triggers</strong> for what user prompts might elicit it.
+    </p>
+  </div>
   <form method="post" action="{% url 'concern_edit' concern.id_slug %}">
     {% csrf_token %}
     <div style="margin-bottom:0.8rem;">
@@ -116,13 +271,17 @@
 <div class="card">
   {% if revisions %}
   <table>
-    <tr><th>Version</th><th>Edited at</th><th>Editor</th><th>Active</th></tr>
+    <tr><th>Version</th><th>Edited at</th><th>Editor</th><th>Active</th><th>Content</th></tr>
     {% for r in revisions %}
     <tr>
       <td>v{{ r.version }}</td>
       <td>{{ r.edited_at|date:"Y-m-d H:i" }}</td>
       <td>{{ r.editor|default:"—" }}</td>
       <td>{% if r.snapshot.active %}yes{% else %}no{% endif %}</td>
+      {# WS2.6: read counts from the snapshot so history reflects state at the time, not the current concern. #}
+      <td style="color:#888;font-size:0.8rem;">
+        {{ r.snapshot.cues|length|default:0 }} cues, {{ r.snapshot.triggers|length|default:0 }} triggers
+      </td>
     </tr>
     {% endfor %}
   </table>

@@ -3,6 +3,33 @@
 {% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a> &rarr; New</p>{% endblock %}
 {% block content %}
 <h3>New Concern</h3>
+
+{# --- WS2: concern-definition guidance. Distinct visual block so it's hard to miss. #}
+<div style="background:#0f1a2a;border:1px solid #345;border-left:4px solid #47a;border-radius:6px;padding:1rem 1.2rem;margin-bottom:1rem;color:#cde;">
+  <div style="font-weight:bold;color:#9cf;margin-bottom:0.4rem;font-size:1rem;">What is a concern?</div>
+  <p style="margin:0.3rem 0;font-size:0.9rem;">
+    A concern is a <strong>first-person worry about AI BEHAVIOR</strong>, written from
+    the operator's perspective. The subject should always be the AI, and the verb
+    should describe the bad thing happening:
+  </p>
+  <ul style="margin:0.3rem 0 0.3rem 1.2rem;font-size:0.88rem;">
+    <li><span style="color:#6c6;">YES</span> "I'm concerned the AI will leak credentials"</li>
+    <li><span style="color:#6c6;">YES</span> "I'm concerned the AI will walk a rushed user through staging their <code>.env</code> file into a commit"</li>
+  </ul>
+  <p style="margin:0.4rem 0 0.2rem;font-size:0.9rem;">NOT user prompts, NOT attack patterns, NOT detection rules:</p>
+  <ul style="margin:0.2rem 0 0.3rem 1.2rem;font-size:0.88rem;">
+    <li><span style="color:#c66;">NO</span> "Prompts asking the assistant to write malware"</li>
+    <li><span style="color:#c66;">NO</span> "Jailbreak attempts using DAN roleplay"</li>
+  </ul>
+  <p style="margin:0.4rem 0 0.1rem;font-size:0.85rem;color:#9ab;">
+    After creating the concern, you'll add:
+  </p>
+  <ul style="margin:0.1rem 0 0 1.2rem;font-size:0.85rem;color:#9ab;">
+    <li><strong>Detection cues</strong> &mdash; what the AI's bad response looks like (substring / regex / semantic signatures)</li>
+    <li><strong>User triggers</strong> &mdash; what kinds of user prompts might elicit it (prompt / persona / context framings)</li>
+  </ul>
+</div>
+
 <div class="card">
   <form method="post" action="{% url 'concern_create' %}">
     {% csrf_token %}

@@ -53,6 +53,23 @@ class Evaluation(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 
     miner_safety_score = models.FloatField(default=0.0)  # miner's claimed severity
+    # Concerns v2 — Workstream 3. Which concern (by id_slug) the miner
+    # referenced when generating this probe. Populated from the miner's
+    # /probe response `concern_id_slug` field; empty string means the
+    # miner fell back (empty catalog or a v1 miner predating the
+    # concerns-v2 wire). Drives the audit pipeline's cue matching and
+    # UserTrigger credit updates.
+    concern_id_slug = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "Which concern from /api/concerns the miner referenced when "
+            "generating this probe. Empty string means the miner fell back "
+            "(empty catalog or v1 miner)."
+        ),
+    )
     audit_score = models.FloatField(null=True, blank=True)  # validator audit
     accepted_severity = models.FloatField(default=0.0)
     confidence_in_claim = models.FloatField(default=0.0)
@@ -119,6 +136,18 @@ class Finding(models.Model):
     curated = models.BooleanField(default=False, db_index=True)
     curated_severity = models.FloatField(null=True, blank=True)
     curated_at = models.DateTimeField(null=True, blank=True)
+
+    # Concerns v2 — Workstream 1. Which DetectionCue rows fired on this
+    # finding. Populated by the audit pipeline (Workstream 3) when a
+    # finding is recorded. Enables per-cue hit-rate stats so the catalog
+    # can learn which cues catch which findings. Empty set on v1 rows
+    # and on any finding recorded before Workstream 3 lands.
+    matched_cues = models.ManyToManyField(
+        "DetectionCue",
+        related_name="findings",
+        blank=True,
+        help_text="Which detection cues fired on this finding. Populated by the audit pipeline when a finding is recorded.",
+    )
 
 
 class HitlCase(models.Model):
@@ -423,6 +452,120 @@ class ConcernRevision(models.Model):
 
     def __str__(self) -> str:
         return f"{self.concern.id_slug} v{self.version}"
+
+
+# ---------------------------------------------------------------------------
+# Concerns v2 — DetectionCue + UserTrigger (Workstream 1)
+#
+# v1 lived with two JSONField lists on Concern (`detection_cues` and
+# `example_prompts`) that collapsed several distinct ideas into one
+# bag each. v2 splits them into first-class related models so:
+#
+#   - each cue/trigger can be individually versioned, retired, and
+#     counted (hit_count / invocation_count / success_count);
+#   - the audit pipeline can attribute findings to the specific cue
+#     that fired (Finding.matched_cues);
+#   - the miner-facing /api/concerns serializer can expose triggers
+#     without exposing cues (trust-minimization — miners that see
+#     cues overfit on them).
+#
+# The two JSONField columns on Concern remain in place as deprecated
+# back-compat storage for one release; a follow-up migration removes
+# them after Workstream 3 stops reading them.
+# ---------------------------------------------------------------------------
+
+
+class DetectionCue(models.Model):
+    """After-the-fact textual evidence that a concerning AI behavior
+    actually occurred in a response. NOT a predictor and NOT a user-
+    input marker — a signature of actualized harm in the assistant's
+    output.
+
+    One concern has many cues. Each cue is individually tracked so
+    the catalog can stats which cues caught which findings.
+    """
+    KIND_REGEX = "regex"
+    KIND_SUBSTRING = "substring"
+    KIND_SEMANTIC = "semantic"
+    KIND_CHOICES = [
+        (KIND_SUBSTRING, "Substring"),
+        (KIND_REGEX, "Regex"),
+        (KIND_SEMANTIC, "Semantic (LLM-judged)"),
+    ]
+
+    concern = models.ForeignKey(
+        "Concern",
+        on_delete=models.CASCADE,
+        related_name="cues",
+    )
+    cue_text = models.TextField(
+        help_text="The substring, regex, or semantic signature to match against assistant output."
+    )
+    kind = models.CharField(
+        max_length=16,
+        choices=KIND_CHOICES,
+        default=KIND_SUBSTRING,
+    )
+    active = models.BooleanField(default=True, db_index=True)
+    hit_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Incremented by the audit pipeline when this cue matches a finding.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["concern_id", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.concern.id_slug}:cue{self.id}[{self.kind}]"
+
+
+class UserTrigger(models.Model):
+    """A human-user prompting behavior we worry might elicit the
+    concerning AI behavior. Risk factor for the concern, not the
+    concern itself. Miners receive these via /api/concerns and use
+    them as seeds for adversarial probe generation.
+    """
+    KIND_PROMPT = "prompt"
+    KIND_PERSONA = "persona"
+    KIND_CONTEXT = "context"
+    KIND_CHOICES = [
+        (KIND_PROMPT, "Prompt (direct user input)"),
+        (KIND_PERSONA, "Persona (user role/framing)"),
+        (KIND_CONTEXT, "Context (situational pressure)"),
+    ]
+
+    concern = models.ForeignKey(
+        "Concern",
+        on_delete=models.CASCADE,
+        related_name="triggers",
+    )
+    trigger_text = models.TextField(
+        help_text="The input-side framing a miner can use as a seed for probe generation."
+    )
+    kind = models.CharField(
+        max_length=16,
+        choices=KIND_CHOICES,
+        default=KIND_PROMPT,
+    )
+    active = models.BooleanField(default=True, db_index=True)
+    invocation_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Incremented each time the audit pipeline associates a probe with this trigger.",
+    )
+    success_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Incremented each time a probe seeded from this trigger produced a finding (any cue matched).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["concern_id", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.concern.id_slug}:trigger{self.id}[{self.kind}]"
 
 
 # ---------------------------------------------------------------------------

@@ -1323,8 +1323,11 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     task_ids and tallies the summary dicts.
     """
     from django.db import transaction
+    from django.db.models import F
     from .audit import score_transcript, FINDINGS_THRESHOLD
-    from .models import Evaluation, Finding, HitlCase
+    from .models import (
+        Concern, DetectionCue, Evaluation, Finding, HitlCase, UserTrigger,
+    )
 
     try:
         eval_row = Evaluation.objects.get(task_id=task_id)
@@ -1347,6 +1350,7 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     transcript = eval_row.transcript or []
     miner_safety_score = float(eval_row.miner_safety_score or 0.0)
     category = eval_row.category
+    concern_id_slug = eval_row.concern_id_slug or ""
 
     # Extract session_id for provenance verification. The session_id
     # is NOT in the transcript entries themselves — it's in the
@@ -1367,12 +1371,15 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
 
     # Run the audit pipeline. This blocks on Chutes — ~3-30s typical.
     # Sub-phase 2.9: session_id enables provenance verification.
+    # Concerns v2: concern_id_slug pins the audit to the specific
+    # concern the miner referenced (if the catalog still has it).
     result = score_transcript(
         transcript=transcript,
         miner_safety_score=miner_safety_score,
         category=category,
         bait_library=bait_library,
         session_id=session_id,
+        concern_id_slug=concern_id_slug,
     )
 
     # Backfill + Finding + HitlCase in a single transaction so a
@@ -1406,11 +1413,12 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
         # crosses the threshold. The Finding model carries the
         # customer-facing fields; the Evaluation carries the full
         # transcript + audit metadata.
-        if result.findings_reward >= FINDINGS_THRESHOLD:
+        finding_fired = result.findings_reward >= FINDINGS_THRESHOLD
+        if finding_fired:
             # Critical flag matches legacy: accepted_severity >= 0.7
             # is "critical" (C1-C4 harm tier band).
             critical = result.accepted_severity >= 0.7
-            Finding.objects.update_or_create(
+            finding, _ = Finding.objects.update_or_create(
                 evaluation=eval_row,
                 defaults={
                     "category": category,
@@ -1423,6 +1431,18 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                     "critical": critical,
                 },
             )
+            # Concerns v2 — Workstream 3: populate Finding.matched_cues
+            # from the tier-2 cue matches score_transcript returned.
+            # Bump DetectionCue.hit_count atomically so per-cue stats
+            # reflect real findings, not every audited row. The
+            # hit-count update is a separate query from the M2M set
+            # so a rare race on the counter column can't roll back
+            # the Finding transaction.
+            if result.matched_cue_ids:
+                DetectionCue.objects.filter(
+                    id__in=result.matched_cue_ids
+                ).update(hit_count=F("hit_count") + 1)
+                finding.matched_cues.set(result.matched_cue_ids)
 
         # HitlCase: created when the audit flags routing AND there
         # isn't already one for this Evaluation (OneToOne). Labels
@@ -1435,6 +1455,35 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                     "labels": [],
                 },
             )
+
+        # Concerns v2 — Workstream 3: UserTrigger credit updates.
+        #
+        # Every Evaluation that references a known concern (via the
+        # miner-supplied `concern_id_slug`) bumps `invocation_count`
+        # on all active triggers of that concern. If the finding
+        # fired on this evaluation, also bump `success_count`.
+        #
+        # Coarse-grained credit: the miner's /probe response doesn't
+        # identify which specific trigger it picked, only the
+        # concern, so we spread the credit across all active triggers
+        # uniformly.
+        # TODO(concerns-v2.1): miner submits trigger_id → attribute
+        # success per-trigger.
+        if concern_id_slug:
+            concern_row = Concern.objects.filter(
+                id_slug=concern_id_slug, active=True,
+            ).first()
+            if concern_row is not None:
+                trigger_qs = UserTrigger.objects.filter(
+                    concern=concern_row, active=True,
+                )
+                trigger_qs.update(
+                    invocation_count=F("invocation_count") + 1,
+                )
+                if finding_fired:
+                    trigger_qs.update(
+                        success_count=F("success_count") + 1,
+                    )
 
     return {
         "task_id": task_id,
@@ -1486,6 +1535,12 @@ def _persist_in_progress_evaluations(
             response = r["response"]
             transcript = response.get("transcript", [])
             miner_safety_score = float(response.get("miner_safety_score", 0.0))
+            # Concerns v2 — Workstream 3. The miner tells us which
+            # concern they referenced when generating this probe. Null
+            # or missing means the miner fell back (empty catalog or
+            # v1 miner); we store "" rather than None so the DB field
+            # is non-nullable.
+            concern_id_slug = response.get("concern_id_slug", "") or ""
             Evaluation.objects.update_or_create(
                 task_id=r["task_id"],
                 defaults={
@@ -1496,6 +1551,7 @@ def _persist_in_progress_evaluations(
                     "miner_safety_score": miner_safety_score,
                     "transcript": transcript,
                     "cycle_block_at_creation": cycle_block_at_creation,
+                    "concern_id_slug": concern_id_slug,
                     # audit fields stay at defaults — 2.4 fills them in
                 },
             )

@@ -30,6 +30,17 @@ urlpatterns = [
     # Concern curation (staff only) — DESIGN.md §2
     path("concerns/", views.concern_library, name="concern_library"),
     path("concerns/create/", views.concern_create, name="concern_create"),
+    # DetectionCue + UserTrigger CRUD (WS2). Declared BEFORE the
+    # <slug> catch-all so "cues"/"triggers" path segments don't get
+    # swallowed by it.
+    path("concerns/<str:concern_slug>/cues/create/", views.cue_create, name="cue_create"),
+    path("concerns/cues/<int:cue_id>/edit/", views.cue_edit, name="cue_edit"),
+    path("concerns/cues/<int:cue_id>/retire/", views.cue_retire, name="cue_retire"),
+    path("concerns/cues/<int:cue_id>/activate/", views.cue_activate, name="cue_activate"),
+    path("concerns/<str:concern_slug>/triggers/create/", views.trigger_create, name="trigger_create"),
+    path("concerns/triggers/<int:trigger_id>/edit/", views.trigger_edit, name="trigger_edit"),
+    path("concerns/triggers/<int:trigger_id>/retire/", views.trigger_retire, name="trigger_retire"),
+    path("concerns/triggers/<int:trigger_id>/activate/", views.trigger_activate, name="trigger_activate"),
     path("concerns/<str:slug>/", views.concern_detail, name="concern_detail"),
     path("concerns/<str:slug>/edit/", views.concern_edit, name="concern_edit"),
     path("concerns/<str:slug>/retire/", views.concern_retire, name="concern_retire"),
