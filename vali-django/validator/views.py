@@ -666,6 +666,36 @@ def healthz(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "ok", "iteration": vstatus.loop_iteration})
 
 
+# --- Operator evaluation detail -----------------------------------------
+
+
+@staff_required
+def eval_detail(request: HttpRequest, task_id: str) -> HttpResponse:
+    """Universal evaluation inspector. Shows transcript + both scores +
+    findings + HITL status + provenance for ANY evaluation, whether it
+    has a finding, a HITL case, a fabrication flag, or nothing."""
+    from .models import Evaluation, Finding, HitlCase
+    eval_row = get_object_or_404(
+        Evaluation.objects.select_related("target"),
+        task_id=task_id,
+    )
+    findings = Finding.objects.filter(evaluation=eval_row)
+    try:
+        hitl = eval_row.hitl
+    except HitlCase.DoesNotExist:
+        hitl = None
+    # Compute delta in Python — Django templates can't do float subtraction.
+    delta = None
+    if eval_row.audit_score is not None:
+        delta = eval_row.miner_safety_score - eval_row.audit_score
+    return render(request, "validator/eval_detail.html", {
+        "eval": eval_row,
+        "findings": findings,
+        "hitl": hitl,
+        "delta": delta,
+    })
+
+
 # --- Customer dashboard (stub views, implemented in task 8) -------------
 
 

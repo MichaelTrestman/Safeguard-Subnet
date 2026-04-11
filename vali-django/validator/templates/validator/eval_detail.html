@@ -1,0 +1,111 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Evaluation {{ eval.task_id|slice:":12" }}…{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; Eval {{ eval.task_id|slice:":12" }}…</p>{% endblock %}
+{% block content %}
+
+<div class="grid">
+  <div class="card">
+    <h4>Task</h4>
+    <div class="value" style="font-size:0.85rem;"><code>{{ eval.task_id }}</code></div>
+    <div class="sub">{{ eval.timestamp|date:"Y-m-d H:i:s" }}</div>
+  </div>
+  <div class="card">
+    <h4>Target</h4>
+    <div class="value">{{ eval.target.name }}</div>
+    <div class="sub">{{ eval.category }}</div>
+  </div>
+  <div class="card">
+    <h4>Miner</h4>
+    <div class="value">UID {{ eval.miner_uid }}</div>
+    <div class="sub"><code>{{ eval.miner_hotkey|truncatechars:16 }}</code></div>
+  </div>
+  <div class="card">
+    <h4>Provenance</h4>
+    <div class="value">
+    {% if eval.provenance_verified %}
+      <span class="ok">VERIFIED</span>
+    {% elif eval.provenance_verified == False %}
+      <span class="err">FABRICATED</span>
+    {% else %}
+      <span style="color:#666;">LEGACY</span>
+    {% endif %}
+    </div>
+    <div class="sub">{{ eval.provenance_turns_verified }} turns verified</div>
+  </div>
+</div>
+
+<h3>Scores</h3>
+<div class="grid">
+  <div class="card">
+    <h4>Miner claim</h4>
+    <div class="value {% if eval.miner_safety_score >= 0.7 %}err{% elif eval.miner_safety_score >= 0.4 %}warn{% endif %}">{{ eval.miner_safety_score|floatformat:2 }}</div>
+  </div>
+  <div class="card">
+    <h4>Validator audit</h4>
+    <div class="value {% if eval.audit_score >= 0.7 %}err{% elif eval.audit_score >= 0.4 %}warn{% endif %}">{{ eval.audit_score|floatformat:2|default:"n/a" }}</div>
+  </div>
+  <div class="card">
+    <h4>Delta</h4>
+    {% if delta is not None %}
+    <div class="value {% if delta >= 0.3 or delta <= -0.3 %}warn{% endif %}">{{ delta|floatformat:2 }}</div>
+    <div class="sub">claim − audit</div>
+    {% else %}
+    <div class="value">—</div>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h4>Accepted severity</h4>
+    <div class="value">{{ eval.accepted_severity|floatformat:3 }}</div>
+    <div class="sub">conf {{ eval.confidence_in_claim|floatformat:2 }} × claim</div>
+  </div>
+  <div class="card">
+    <h4>Contribution</h4>
+    <div class="value">{{ eval.contribution|floatformat:3 }}</div>
+    <div class="sub">findings {{ eval.findings_reward|floatformat:3 }} + bait {{ eval.bait_modifier|floatformat:3 }}</div>
+  </div>
+  <div class="card">
+    <h4>Bait detected</h4>
+    <div class="value">{{ eval.n_bait_detected }}</div>
+    <div class="sub">recognized patterns</div>
+  </div>
+</div>
+
+{% if findings %}
+<h3>Findings ({{ findings|length }})</h3>
+{% for f in findings %}
+<div class="card" style="margin-bottom:0.5rem;">
+  <div>
+    {% if f.critical %}<span class="chip critical">CRITICAL</span>{% endif %}
+    <strong>{{ f.category }}</strong> · severity {{ f.severity|floatformat:2 }}
+    {% if f.curated %}· <span class="ok">curated to {{ f.curated_severity|floatformat:2 }}</span>{% endif %}
+    · <a href="{% url 'curation_detail' f.pk %}">Curate &rarr;</a>
+  </div>
+  {% if f.summary %}<div class="small" style="margin-top:0.3rem;">{{ f.summary }}</div>{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if hitl %}
+<h3>HITL status</h3>
+<div class="card">
+  <div>Status: <strong>{{ hitl.get_status_display }}</strong></div>
+  <div class="sub">Routed {{ hitl.routed_at|date:"Y-m-d H:i" }}</div>
+  {% if hitl.labels %}<div class="small">Labels: {{ hitl.labels }}</div>{% endif %}
+</div>
+{% endif %}
+
+<h3>Transcript ({{ eval.transcript|length }} turns)</h3>
+{% for turn in eval.transcript %}
+<div style="margin-bottom:0.8rem;padding:0.8rem;background:{% if turn.role == 'user' %}#1a1a2e{% else %}#1a2e1a{% endif %};border-radius:4px;border-left:3px solid {% if turn.role == 'user' %}#5577cc{% else %}#55cc77{% endif %};">
+  <div style="color:#888;font-size:0.75rem;margin-bottom:0.4rem;">
+    TURN {{ forloop.counter0 }} · {{ turn.role|upper }}
+    {% if turn.response_commitment %}
+      · <span class="ok" style="font-size:0.7rem;">COMMITTED</span>
+      <code style="font-size:0.7rem;color:#666;">{{ turn.response_commitment.digest|slice:":16" }}…</code>
+    {% endif %}
+  </div>
+  <div style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,monospace;font-size:0.85rem;line-height:1.4;">{{ turn.content }}</div>
+</div>
+{% endfor %}
+
+{% endblock %}

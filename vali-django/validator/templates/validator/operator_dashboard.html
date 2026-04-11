@@ -278,7 +278,7 @@
 <h3>Recent findings ({{ n_findings_total }} total, showing last {{ recent_findings|length }})</h3>
 {% if recent_findings %}
 {% for f in recent_findings %}
-<div class="finding-row{% if f.critical %} critical{% endif %}">
+<a href="{% url 'eval_detail' f.evaluation.task_id %}" class="finding-row{% if f.critical %} critical{% endif %}" style="display:block;text-decoration:none;color:inherit;">
   <div>
     {% if f.critical %}
       <span class="chip critical">CRITICAL</span>
@@ -303,7 +303,7 @@
   {% if f.summary %}
   <div class="small" style="margin-top: 0.3rem;">{{ f.summary }}</div>
   {% endif %}
-</div>
+</a>
 {% endfor %}
 {% else %}
 <p style="color:#666">No findings yet.</p>
@@ -312,7 +312,7 @@
 {% if fabrication_suspects %}
 <h3>Fabrication suspects ({{ fabrication_suspects|length }})</h3>
 {% for e in fabrication_suspects %}
-<div class="finding-row fabricated">
+<a href="{% url 'eval_detail' e.task_id %}" class="finding-row fabricated" style="display:block;text-decoration:none;color:inherit;">
   <div>
     <span class="chip fabricated">FABRICATED</span>
     <strong>{{ e.category }}</strong>
@@ -321,7 +321,7 @@
     · {{ e.timestamp|date:"Y-m-d H:i" }}
   </div>
   <div class="small" style="margin-top: 0.3rem;">{{ e.provenance_turns_verified }} turns verified before mismatch · task {{ e.task_id|slice:":8" }}…</div>
-</div>
+</a>
 {% endfor %}
 {% endif %}
 
@@ -339,7 +339,7 @@
     <th>Target</th>
   </tr>
   {% for h in pending_hitl %}
-  <tr>
+  <tr onclick="window.location='{% url 'eval_detail' h.evaluation.task_id %}'" style="cursor:pointer;">
     <td class="small">{{ h.routed_at|date:"Y-m-d H:i" }}</td>
     <td><code>{{ h.evaluation.task_id|slice:":8" }}…</code></td>
     <td class="num">{{ h.evaluation.miner_safety_score|floatformat:2 }}</td>
