@@ -11,7 +11,7 @@
         A <em>concern</em> is a named, versioned description of a way AI can fail its users &mdash; a situation plus a hypothesis about the failure mode. The catalog below is this validator's live set of active concerns. Every probe miner fetches this same catalog, picks an angle, and submits findings; every registered target gets tested against it.
     </p>
     <p style="color: #888; font-size: 0.85rem; margin-bottom: 2rem;">
-        This page is a public read-only view. Detection cues (the signatures the audit pipeline uses to recognize concerning behavior in AI responses) are not surfaced here &mdash; miners who can see cues overfit on them. Triggers (probe seeds) are shown because they are already distributed to miners through the authenticated <code>/api/concerns</code> endpoint.
+        Public read-only view. Detection signatures are not shown here &mdash; only concern descriptions and probe triggers.
     </p>
 
     {% if categories %}

@@ -74,7 +74,7 @@
         <div class="step-card">
             <div class="step-number">Step 02</div>
             <h3>Miners Probe Through The Relay</h3>
-            <p>Probe miners fetch the active concern catalog, pick an angle of attack, and conduct a multi-turn conversation via Safeguard's <code>/probe/relay</code>. Every target response is cryptographically committed by the validator before the miner sees it &mdash; fabricated findings earn zero contribution.</p>
+            <p>Probe miners fetch the active concern catalog, pick an angle of attack, and conduct a multi-turn adversarial conversation through Safeguard's relay. Every target response is cryptographically committed before the miner sees it &mdash; fabricated findings earn zero.</p>
         </div>
         <div class="step-card">
             <div class="step-number">Step 03</div>
@@ -169,50 +169,37 @@
 
 <!-- ==================== HITL AS VALUE LAYER ==================== -->
 <section class="fade-in">
-    <h2 class="section-header solution">HITL Is Where The Knowledge Is Made</h2>
+    <h2 class="section-header solution">Humans Refine The Edges</h2>
     <p class="safeguard-pitch">
-        Human review is not quality control for when the AI is confused. It's where the immune memory gets refined. The diverse-judge mechanism exists to route edge cases to humans <em>efficiently</em> &mdash; human attention is spent on the cases where two well-calibrated judges can't agree, which is exactly where rubric evolution happens and new concerns are born.
-    </p>
-    <p class="safeguard-pitch">
-        Local operator HITL is shipped: the operator logs into the validator dashboard, sees pending cases with the miner's rationale and the audit side-by-side, and records a confirm / downgrade / escalate action. That label flows back into the evaluation, the concern aggregates, and the miner's contribution in the next tempo. External HITL miners are the same workflow, Epistula-authed, over HTTP.
+        Human review is not quality control for when the AI is confused. It's where the knowledge gets made. The diverse-judge mechanism routes edge cases to humans efficiently &mdash; human attention is spent on the transcripts where two well-calibrated models can't agree, which is exactly where new concerns are born and rubrics evolve.
     </p>
 </section>
 
 <!-- ==================== WHAT'S RUNNING ==================== -->
 <section class="fade-in">
-    <h2 class="section-header solution">What's Running</h2>
-    <p style="color: #aaa; margin-bottom: 1rem;">Safeguard operates on Bittensor testnet 444 with real probes, real audits, real HITL curation and real chain weight submissions. Every card below is live in production today.</p>
+    <h2 class="section-header solution">Live Now</h2>
+    <p style="color: #aaa; margin-bottom: 1rem;">Safeguard is running on Bittensor testnet with real probes, real audits, and real chain economics.</p>
 
     <div class="reports-grid">
         <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Relay Protocol v2 &mdash; Provenance</h3>
-            <p>Every <code>/probe/relay</code> turn persists a canonical-JSON SHA-256 commitment over the target response <em>before</em> the miner ever sees it. Audit re-verifies each assistant turn at scoring time. Provenance is <em>enforced</em>, not just detected &mdash; only transcripts with <code>provenance_verified=True</code> earn contribution. Closes the miner-fabrication attack.</p>
+            <div class="report-status">Live</div>
+            <h3>Cryptographic Provenance</h3>
+            <p>Every target response is hashed and committed before the miner sees it. Fabricated transcripts are detected at audit time and earn nothing. You can't fake a finding.</p>
         </div>
         <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Local Operator HITL</h3>
-            <p>Pending cases and findings surface at <code>/curation/</code>. The operator reviews the full transcript, both sides of the audit, and the miner's rationale, then records a labelling action with a required reason. Labels flow back into evaluations, concern stats and miner contribution.</p>
+            <div class="report-status">Live</div>
+            <h3>Tiered Audit + Human Review</h3>
+            <p>Diverse AI judges score every transcript independently. When they disagree, a human reviews the case, and the human label overrides the formula. Edge cases refine the rubric; they don't get averaged away.</p>
         </div>
         <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Tiered Audit Pipeline</h3>
-            <p>Provenance gate &rarr; category-routed LLM audit &rarr; HITL routing on disagreement. Content-safety and operational-safety categories dispatch to different rubrics &mdash; the ops-safety rubric is inverted (the failure is the <em>absence</em> of a protective action, e.g. no <code>.dockerignore</code>, no secret warning).</p>
+            <div class="report-status">Live</div>
+            <h3>Structured Concern Catalog</h3>
+            <p>Named, versioned concerns with detection signatures and probe seeds. Operators curate. Miners fetch at runtime. Every edit is tracked. <a href="{% url 'public:catalog' %}" style="color: var(--solution-color);">Browse the catalog &rarr;</a></p>
         </div>
         <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Burn-Floor-Aware Weight Setting</h3>
-            <p>Empty cycles never skip <code>set_weights</code>; unallocated weight flows to the subnet owner UID as a chain-side burn. Per-tempo contribution maps are computed in-memory from evaluation rows; cycle totals are persisted to history.</p>
-        </div>
-        <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Concerns v2 &mdash; Cues + Triggers Split</h3>
-            <p>First-class <code>DetectionCue</code> and <code>UserTrigger</code> models replace the v1 JSONField bags. Cues are after-the-fact signatures of harm and stay operator-side; triggers are probe seeds and ship to miners through <code>/api/concerns</code>. Every edit is versioned in <code>ConcernRevision</code>. Operators curate at <code>/concerns/</code>.</p>
-        </div>
-        <div class="report-card">
-            <div class="report-status">Shipped</div>
-            <h3>Precise Credit Attribution</h3>
-            <p>Each <code>Evaluation</code> records the <code>UserTrigger</code> that seeded it. Audit credit is exact when the miner submits a <code>trigger_id</code>; coarse fallback is preserved for empty-catalog probes. Human labels override the formula wherever they exist &mdash; rubric evolution never gets averaged out by the audit. {# TODO michael: verify whether the legacy accepted_severity formula has been fully retired or is still in the loop for fallback cases #}</p>
+            <div class="report-status">Live</div>
+            <h3>Multi-Persona Comparative Testing</h3>
+            <p>The same concern catalog is tested against multiple target personas simultaneously &mdash; different system-prompt framings, same model. Differential finding rates reveal which framings break safety guardrails.</p>
         </div>
     </div>
 </section>
@@ -233,23 +220,23 @@
     <div class="participate-grid">
         <div class="participate-card">
             <h3>Register A Target</h3>
-            <p>Your subnet or AI product calls <code>/register</code>, supplies its client-side v1 <code>/relay</code> endpoint, and picks (or authors) the concerns you want tested. You receive a concern-outcome profile you can feed into your own miner evaluation.</p>
-            <a href="https://github.com/latent-to/safeguard#readme" target="_blank" class="card-cta">Integration Guide</a>
+            <p>Your AI product or Bittensor subnet registers with Safeguard, picks the concerns you want tested, and receives a concern-outcome profile &mdash; an auditable record of what was tested and what was found.</p>
+            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Integration Guide</a>
         </div>
         <div class="participate-card">
             <h3>Run A Probe Miner</h3>
-            <p>Fetch the active concern catalog. Pick an angle. Conduct a multi-turn probe through the relay. When you think you found something novel, argue it &mdash; human labels override the formula, and winning a novel case pays the discovery bonus.</p>
-            <a href="https://github.com/latent-to/safeguard#readme" target="_blank" class="card-cta">Miner Docs</a>
+            <p>Fetch the concern catalog. Pick an angle. Conduct multi-turn adversarial probes through the relay. When you find something novel, argue it &mdash; human labels override the audit, and winning pays a discovery bonus.</p>
+            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Miner Docs</a>
         </div>
         <div class="participate-card">
             <h3>Run A Validator</h3>
-            <p>Discovery, dispatch, audit, HITL curation, set_weights. Own your concern catalog. Validators align by reading each other's public concerns or diverge by design &mdash; Yuma handles the rest.</p>
-            <a href="https://github.com/latent-to/safeguard#readme" target="_blank" class="card-cta">Validator Setup</a>
+            <p>Curate your own concern catalog. Dispatch probes to miners. Run the audit pipeline. Route edge cases to human reviewers. Set chain weights. Your curation shapes what the entire network tests for.</p>
+            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Validator Setup</a>
         </div>
         <div class="participate-card">
             <h3>Delegate</h3>
-            <p>Stake TAO on Safeguard validators. Earn emissions while underwriting the evaluation infrastructure other subnets depend on to become credible to regulators, enterprises and users.</p>
-            <a href="https://github.com/latent-to/safeguard#readme" target="_blank" class="card-cta">Delegate TAO</a>
+            <p>Stake TAO on Safeguard validators and earn emissions while underwriting the evaluation infrastructure other subnets depend on to become trustworthy.</p>
+            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Delegate TAO</a>
         </div>
     </div>
 </section>
