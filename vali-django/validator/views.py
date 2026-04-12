@@ -681,6 +681,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
         },
         "nav_active": "operator",
         "probes_per_cycle": _get_probes_per_cycle(),
+        "system_health": _get_system_health(),
     })
 
 
@@ -690,6 +691,30 @@ def _get_probes_per_cycle() -> int:
         return loop.PROBES_PER_MINER_PER_CYCLE
     except (ImportError, AttributeError):
         return 1
+
+
+def _get_system_health() -> dict:
+    """Gather system health info for the operator dashboard debug card."""
+    health = {}
+    # Relay endpoint config
+    health["relay_endpoint"] = getattr(settings, "SAFEGUARD_RELAY_ENDPOINT", "not set")
+    # LLM judge status
+    from .audit import _llm_judge_loaded, classify_transcript
+    if _llm_judge_loaded and classify_transcript is not None:
+        health["llm_judge"] = f"loaded ({classify_transcript.__module__})"
+    else:
+        health["llm_judge"] = "NOT LOADED — using stubs (0.5, 0.0)"
+    # DB connectivity
+    try:
+        from django.db import connection
+        connection.ensure_connection()
+        health["database"] = "connected"
+    except Exception as e:
+        health["database"] = f"ERROR: {e}"
+    # Concern catalog
+    from .models import Concern
+    health["concerns_active"] = Concern.objects.filter(active=True).count()
+    return health
 
 
 @staff_required

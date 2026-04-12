@@ -175,6 +175,29 @@
 </div>
 {% endif %}
 
+<h3>System Health</h3>
+<div class="table-wrap" style="margin-bottom: 2rem;">
+<table>
+  <tr><th>Component</th><th>Status</th></tr>
+  <tr>
+    <td>LLM Judge</td>
+    <td>{% if 'loaded' in system_health.llm_judge %}<span class="ok">{{ system_health.llm_judge }}</span>{% else %}<span class="err">{{ system_health.llm_judge }}</span>{% endif %}</td>
+  </tr>
+  <tr>
+    <td>Database</td>
+    <td>{% if system_health.database == 'connected' %}<span class="ok">connected</span>{% else %}<span class="err">{{ system_health.database }}</span>{% endif %}</td>
+  </tr>
+  <tr>
+    <td>Relay Endpoint</td>
+    <td><code style="font-size:0.75rem;">{{ system_health.relay_endpoint }}</code></td>
+  </tr>
+  <tr>
+    <td>Active Concerns</td>
+    <td>{{ system_health.concerns_active }}</td>
+  </tr>
+</table>
+</div>
+
 <h3>Registered Targets ({{ targets.count }})</h3>
 {% if targets %}
 <div class="table-wrap">
