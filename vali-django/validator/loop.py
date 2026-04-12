@@ -281,7 +281,29 @@ async def _dispatch_target_to_miners(
             )
             return []
 
+    @sync_to_async
+    def _resolve_global_concern_categories() -> set[str]:
+        """Set of categories where at least one global active Concern
+        exists. Used to bias category selection toward concern-covered
+        categories so the miner has a real concern to anchor each probe
+        on. Until the catalog covers every category in the dispatch
+        pool, the strict-match path on the miner side falls back to
+        pre-concerns probing — biasing the validator's category picker
+        is the cheapest way to grow the concern-attributed share."""
+        try:
+            from .models import Concern
+            return set(
+                Concern.objects.filter(active=True)
+                .values_list("category", flat=True)
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[dispatch] failed to read global concern categories: {e}"
+            )
+            return set()
+
     scoped_categories = await _resolve_scoped_categories()
+    concern_covered = await _resolve_global_concern_categories()
 
     if scoped_categories:
         categories = scoped_categories
@@ -290,12 +312,31 @@ async def _dispatch_target_to_miners(
         if not categories:
             categories = DEFAULT_SCENARIO_CATEGORIES
 
+    # Split the dispatch pool into concern-covered and uncovered subsets.
+    # Bias the per-probe RNG toward covered categories so the miner side
+    # actually exercises the concern-matched path. Uncovered categories
+    # still get a 1-in-5 share so coverage gaps for safety still get
+    # tested while the catalog is being grown.
+    covered_pool = [c for c in categories if c in concern_covered]
+    uncovered_pool = [c for c in categories if c not in concern_covered]
+
     hotkeys = list(metagraph.hotkeys)
 
     async def _one(uid: int, endpoint: str) -> dict | None:
         async with semaphore:
             task_id = str(uuid.uuid4())
-            category = random.choice(categories)
+            # 80/20 bias toward concern-covered categories. If covered is
+            # empty (catalog has no overlap with this target's categories),
+            # fall back to the full uncovered pool. If both empty (degenerate
+            # case shouldn't happen because of the DEFAULT_SCENARIO_CATEGORIES
+            # fallback above), keep the legacy uniform pick over `categories`
+            # so we always have something to dispatch.
+            if covered_pool and (not uncovered_pool or random.random() < 0.8):
+                category = random.choice(covered_pool)
+            elif uncovered_pool:
+                category = random.choice(uncovered_pool)
+            else:
+                category = random.choice(categories)
             response = await _send_probe_to_miner(
                 client, wallet, endpoint, task_id,
                 target.relay_endpoint, category,
