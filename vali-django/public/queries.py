@@ -46,6 +46,19 @@ class ActivityRow:
     detail: str         # optional longer description, ~200 chars
     ref_slug: str       # stable anchor (e.g. concern slug) for any future linking
 
+    @property
+    def event_type(self) -> str:
+        """CSS class suffix for activity-row color coding."""
+        if "concern" in self.kind or "trigger" in self.kind:
+            return "concern"
+        if "cycle" in self.kind:
+            return "cycle"
+        if "finding" in self.kind:
+            return "finding"
+        if "hitl" in self.kind:
+            return "hitl"
+        return "info"
+
     def to_json(self) -> dict:
         """Serialize for /activity/feed.json. Emits only whitelisted fields."""
         return {
@@ -54,6 +67,7 @@ class ActivityRow:
             "label": self.label,
             "detail": self.detail,
             "ref": self.ref_slug,
+            "event_type": self.event_type,
         }
 
 

@@ -6,7 +6,7 @@
 {% block content %}
 
 <section class="fade-in">
-    <h2 class="section-header solution">Concern Catalog</h2>
+    <h2 class="section-header solution">Concern Catalog <span style="font-size:0.6em; color:var(--solution-color); font-weight:normal; opacity:0.8;">({{ concerns|length }} active concern{{ concerns|length|pluralize }})</span></h2>
     <p class="safeguard-pitch">
         A <em>concern</em> is a named, versioned description of a way AI can fail its users &mdash; a situation plus a hypothesis about the failure mode. The catalog below is this validator's live set of active concerns. Every probe miner fetches this same catalog, picks an angle, and submits findings; every registered target gets tested against it.
     </p>

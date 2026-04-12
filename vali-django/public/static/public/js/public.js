@@ -1,11 +1,16 @@
 // EU AI Act countdown timer — enforcement date: August 2, 2026
+// Only runs on pages that have the countdown elements (landing page).
 function updateCountdown() {
+    const el = document.getElementById('countdown-days');
+    if (!el) return;  // not on this page
+
     const target = new Date('2026-08-02T00:00:00Z');
     const now = new Date();
     const diff = target - now;
 
     if (diff <= 0) {
-        document.getElementById('countdown').textContent = 'ENFORCEMENT ACTIVE';
+        const c = document.getElementById('countdown');
+        if (c) c.textContent = 'ENFORCEMENT ACTIVE';
         return;
     }
 
@@ -14,7 +19,7 @@ function updateCountdown() {
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
     const seconds = Math.floor((diff % (1000 * 60)) / 1000);
 
-    document.getElementById('countdown-days').textContent = days;
+    el.textContent = days;
     document.getElementById('countdown-hours').textContent = String(hours).padStart(2, '0');
     document.getElementById('countdown-minutes').textContent = String(minutes).padStart(2, '0');
     document.getElementById('countdown-seconds').textContent = String(seconds).padStart(2, '0');
