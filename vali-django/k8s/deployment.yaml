@@ -34,7 +34,7 @@ spec:
             - name: NETUID
               value: "444"
             - name: SAFEGUARD_RELAY_ENDPOINT
-              value: "http://35.188.58.40:9090/probe/relay"
+              value: "http://136.116.237.112:9090/probe/relay"
             - name: DJANGO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
