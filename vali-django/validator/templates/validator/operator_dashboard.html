@@ -179,13 +179,15 @@
 {% if targets %}
 <div class="table-wrap">
 <table>
-  <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th class="num">Evals</th><th>Registered</th></tr>
+  <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th class="num">Evals</th><th class="num">Findings</th><th class="num">Rate</th><th>Registered</th></tr>
   {% for t in targets %}
   <tr>
     <td><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></td>
     <td><code>{{ t.client_hotkey|slice:":12" }}…</code></td>
     <td><code>{{ t.relay_endpoint }}</code></td>
     <td class="num">{{ t.n_evals }}</td>
+    <td class="num">{{ t.n_findings }}</td>
+    <td class="num {% if t.finding_rate >= 50 %}err{% elif t.finding_rate >= 20 %}warn{% else %}ok{% endif %}">{{ t.finding_rate|floatformat:1 }}%</td>
     <td>{{ t.registered_at|date:"Y-m-d H:i" }}</td>
   </tr>
   {% endfor %}

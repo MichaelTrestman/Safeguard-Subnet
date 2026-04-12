@@ -546,7 +546,13 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     vstatus = ValidatorStatus.get()
     targets = RegisteredTarget.objects.annotate(
         n_evals=Count("evaluations"),
+        n_verified=Count("evaluations", filter=Q(evaluations__provenance_verified=True)),
     ).order_by("-registered_at")
+    # Per-target finding counts (need Finding traversal)
+    from .models import Finding as _Finding
+    for t in targets:
+        t.n_findings = _Finding.objects.filter(evaluation__target=t).count()
+        t.finding_rate = (t.n_findings / t.n_verified * 100) if t.n_verified else 0
 
     now = djtz.now()
     weight_age = None
@@ -663,11 +669,70 @@ def _get_probes_per_cycle() -> int:
 
 @staff_required
 def target_detail(request: HttpRequest, name: str) -> HttpResponse:
+    """Per-target safety dashboard. Summary stats, concern breakdown
+    (which concerns does this target fail on?), and recent evaluations
+    with enriched columns."""
+    from .models import Evaluation, Finding, RegisteredTarget
+
     target = get_object_or_404(RegisteredTarget, name=name)
-    evals = target.evaluations.order_by("-timestamp")[:50]
+
+    stats = Evaluation.objects.filter(target=target).aggregate(
+        n_evals=Count("id"),
+        n_verified=Count("id", filter=Q(provenance_verified=True)),
+        n_legacy=Count("id", filter=Q(provenance_verified__isnull=True)),
+        avg_severity=Avg("accepted_severity", filter=Q(provenance_verified=True)),
+        max_severity=Max("accepted_severity", filter=Q(provenance_verified=True)),
+        avg_audit=Avg("audit_score", filter=Q(provenance_verified=True)),
+    )
+
+    findings_qs = Finding.objects.filter(evaluation__target=target)
+    stats["n_findings"] = findings_qs.count()
+    stats["n_critical"] = findings_qs.filter(critical=True).count()
+    stats["finding_rate"] = (
+        stats["n_findings"] / stats["n_verified"] * 100
+        if stats["n_verified"] else 0
+    )
+
+    # Per-concern breakdown — "where does this target fail?"
+    concern_breakdown = list(
+        Evaluation.objects.filter(target=target, provenance_verified=True)
+        .exclude(concern_id_slug="")
+        .values("concern_id_slug")
+        .annotate(
+            n_probes=Count("id"),
+            avg_sev=Avg("accepted_severity"),
+            max_sev=Max("accepted_severity"),
+        )
+        .order_by("-avg_sev")
+    )
+    concern_slugs = [c["concern_id_slug"] for c in concern_breakdown]
+    finding_counts = dict(
+        findings_qs
+        .filter(evaluation__concern_id_slug__in=concern_slugs)
+        .values("evaluation__concern_id_slug")
+        .annotate(n=Count("id"))
+        .values_list("evaluation__concern_id_slug", "n")
+    )
+    for c in concern_breakdown:
+        slug = c["concern_id_slug"]
+        c["n_findings"] = finding_counts.get(slug, 0)
+        c["finding_rate"] = (
+            c["n_findings"] / c["n_probes"] * 100 if c["n_probes"] else 0
+        )
+
+    evals = (
+        target.evaluations
+        .select_related("trigger")
+        .prefetch_related("findings")
+        .order_by("-timestamp")[:50]
+    )
+
     return render(request, "validator/target_detail.html", {
         "target": target,
+        "stats": stats,
+        "concern_breakdown": concern_breakdown,
         "evaluations": evals,
+        "nav_active": "targets",
     })
 
 
@@ -727,8 +792,30 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
             .order_by("-n")[:5]
         )
 
+    # Concern×target heatmap: finding rate per (concern, target) pair.
+    all_concern_slugs = sorted(set(
+        Finding.objects.filter(evaluation__target__in=targets)
+        .exclude(evaluation__concern_id_slug="")
+        .values_list("evaluation__concern_id_slug", flat=True)
+        .distinct()
+    ))
+    heatmap = []
+    for slug in all_concern_slugs:
+        row = {"concern": slug, "cells": []}
+        for t in targets:
+            n_probes = Evaluation.objects.filter(
+                target=t, concern_id_slug=slug, provenance_verified=True,
+            ).count()
+            n_findings = Finding.objects.filter(
+                evaluation__target=t, evaluation__concern_id_slug=slug,
+            ).count()
+            rate = (n_findings / n_probes * 100) if n_probes else None
+            row["cells"].append({"rate": rate, "n": n_probes, "findings": n_findings})
+        heatmap.append(row)
+
     return render(request, "validator/targets_compare.html", {
         "targets": targets,
+        "heatmap": heatmap,
         "nav_active": "targets",
     })
 

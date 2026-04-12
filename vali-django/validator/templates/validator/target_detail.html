@@ -1,31 +1,166 @@
 {% extends "validator/base.html" %}
+{% block subtitle %}{{ target.name }}{% endblock %}
+{% block head_extra %}<meta http-equiv="refresh" content="30">{% endblock %}
 {% block content %}
 
-<p><a href="{% url 'operator_dashboard' %}">← back</a></p>
-<h3>{{ target.name }}</h3>
-<p style="color:#888">
-  <code>{{ target.client_hotkey }}</code><br>
-  Relay: <code>{{ target.relay_endpoint }}</code><br>
-  Categories: {{ target.categories|join:", " }}
-</p>
+<style>
+  .target-meta { color: #666; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .target-meta code { font-size: 0.8rem; }
+  .sev-low { color: #44cc44; }
+  .sev-mid { color: #ffcc44; }
+  .sev-high { color: #ff6666; }
+  .rate-low { color: #44cc44; }
+  .rate-mid { color: #ffcc44; }
+  .rate-high { color: #ff6666; }
+  .concern-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }
+  .concern-table th { color: #888; font-weight: normal; text-align: left; padding: 0.5rem; border-bottom: 1px solid #333; }
+  .concern-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  .concern-table tr:hover td { background: #141414; }
+  .eval-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 0.5rem; }
+  .eval-table th { color: #888; font-weight: normal; text-align: left; padding: 0.5rem; border-bottom: 1px solid #333; }
+  .eval-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  .eval-table tr:hover td { background: #141414; }
+  .section-label { color: #888; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em;
+                   margin-top: 2rem; margin-bottom: 0.5rem; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+  .link-row { margin-top: 0.5rem; font-size: 0.85rem; }
+</style>
 
-<h3>Recent Evaluations ({{ evaluations|length }})</h3>
-{% if evaluations %}
-<table>
-  <tr><th>When</th><th>Category</th><th>Miner UID</th><th>Accepted severity</th><th>Contribution</th><th>HITL</th></tr>
-  {% for e in evaluations %}
-  <tr>
-    <td>{{ e.timestamp|date:"Y-m-d H:i:s" }}</td>
-    <td>{{ e.category }}</td>
-    <td>{{ e.miner_uid }}</td>
-    <td>{{ e.accepted_severity|floatformat:3 }}</td>
-    <td>{{ e.contribution|floatformat:3 }}</td>
-    <td>{% if e.hitl_routed %}yes{% else %}—{% endif %}</td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="target-meta">
+  <code>{{ target.client_hotkey }}</code> &middot;
+  <code>{{ target.relay_endpoint }}</code>
+</div>
+
+{# ===== Summary cards ===== #}
+<div class="grid">
+  <div class="card">
+    <h4>Evaluations</h4>
+    <div class="value">{{ stats.n_verified }}</div>
+    <div class="sub">verified &middot; {{ stats.n_legacy }} legacy &middot; {{ stats.n_evals }} total</div>
+  </div>
+
+  <div class="card">
+    <h4>Findings</h4>
+    <div class="value {% if stats.finding_rate >= 50 %}sev-high{% elif stats.finding_rate >= 20 %}sev-mid{% else %}sev-low{% endif %}">
+      {{ stats.n_findings }}
+    </div>
+    <div class="sub">
+      {{ stats.finding_rate|floatformat:1 }}% finding rate &middot;
+      {{ stats.n_critical }} critical
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Avg severity</h4>
+    <div class="value {% if stats.avg_severity >= 0.5 %}sev-high{% elif stats.avg_severity >= 0.2 %}sev-mid{% else %}sev-low{% endif %}">
+      {% if stats.avg_severity is not None %}{{ stats.avg_severity|floatformat:3 }}{% else %}&mdash;{% endif %}
+    </div>
+    <div class="sub">
+      max {{ stats.max_severity|floatformat:3|default:"—" }} &middot;
+      avg audit {{ stats.avg_audit|floatformat:3|default:"—" }}
+    </div>
+  </div>
+</div>
+
+<div class="link-row">
+  <a href="{% url 'runs_browser' %}?target={{ target.name }}">View all runs for this target &rarr;</a>
+  &middot;
+  <a href="{% url 'targets_compare' %}">Compare all targets &rarr;</a>
+</div>
+
+{# ===== Concern breakdown ===== #}
+<div class="section-label">Concern breakdown (verified probes only)</div>
+
+{% if concern_breakdown %}
+<div class="table-wrap">
+  <table class="concern-table">
+    <thead>
+      <tr>
+        <th>Concern</th>
+        <th class="num">Probes</th>
+        <th class="num">Findings</th>
+        <th class="num">Finding rate</th>
+        <th class="num">Avg severity</th>
+        <th class="num">Max severity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in concern_breakdown %}
+        <tr>
+          <td><a href="{% url 'concern_detail' c.concern_id_slug %}">{{ c.concern_id_slug }}</a></td>
+          <td class="num">{{ c.n_probes }}</td>
+          <td class="num">{{ c.n_findings }}</td>
+          <td class="num {% if c.finding_rate >= 50 %}rate-high{% elif c.finding_rate >= 20 %}rate-mid{% else %}rate-low{% endif %}">
+            {{ c.finding_rate|floatformat:1 }}%
+          </td>
+          <td class="num">{{ c.avg_sev|floatformat:3 }}</td>
+          <td class="num">{{ c.max_sev|floatformat:3 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
-<p style="color:#666">No evaluations yet for this target.</p>
+  <p class="muted small">No verified probes yet.</p>
 {% endif %}
+
+{# ===== Recent evaluations ===== #}
+<div class="section-label">Recent evaluations (last 50)</div>
+
+<div class="table-wrap">
+  <table class="eval-table">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Task</th>
+        <th>Miner</th>
+        <th>Concern</th>
+        <th class="num">Miner claim</th>
+        <th class="num">Audit</th>
+        <th class="num">Accepted</th>
+        <th>Finding</th>
+        <th>Prov</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in evaluations %}
+        <tr>
+          <td class="small">{{ e.timestamp|date:"M d H:i" }}</td>
+          <td><a href="{% url 'eval_detail' e.task_id %}" style="font-family:monospace;font-size:0.75rem;">{{ e.task_id|slice:":12" }}…</a></td>
+          <td class="num">{{ e.miner_uid }}</td>
+          <td class="small">
+            {% if e.concern_id_slug %}
+              <a href="{% url 'concern_detail' e.concern_id_slug %}">{{ e.concern_id_slug }}</a>
+            {% else %}
+              <span class="muted">&mdash;</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ e.miner_safety_score|floatformat:2 }}</td>
+          <td class="num">
+            {% if e.audit_score is not None %}{{ e.audit_score|floatformat:2 }}{% else %}<span class="muted">&mdash;</span>{% endif %}
+          </td>
+          <td class="num">{{ e.accepted_severity|floatformat:2 }}</td>
+          <td>
+            {% if e.findings.all %}
+              <span class="chip finding">finding</span>
+            {% else %}
+              <span class="chip benign">&mdash;</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if e.provenance_verified is None %}
+              <span class="chip legacy">legacy</span>
+            {% elif e.provenance_verified %}
+              <span class="chip verified">ok {{ e.provenance_turns_verified }}</span>
+            {% else %}
+              <span class="chip fabricated">fab</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="9" class="muted small" style="text-align:center;padding:1rem;">No evaluations yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 {% endblock %}

@@ -141,6 +141,47 @@
   </table>
 </div>
 
+{# --- Concern × Target heatmap --- #}
+{% if heatmap %}
+<div style="margin-top: 2rem;">
+  <h3>Concern × Target Finding Rate</h3>
+  <p class="small muted" style="margin-bottom: 0.75rem;">
+    Each cell shows the finding rate (%) for that concern against that target.
+    Hover for probe count. Color: <span class="rate-low">green &lt;20%</span> ·
+    <span class="rate-mid">yellow 20–50%</span> · <span class="rate-high">red &ge;50%</span>.
+  </p>
+  <div class="compare-wrap">
+    <table class="compare">
+      <thead>
+        <tr>
+          <th style="text-align:left; min-width:220px;">Concern</th>
+          {% for t in targets %}
+            <th><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in heatmap %}
+          <tr>
+            <td class="metric-label"><a href="{% url 'concern_detail' row.concern %}">{{ row.concern }}</a></td>
+            {% for cell in row.cells %}
+              {% if cell.rate is not None %}
+                <td class="num {% if cell.rate >= 50 %}rate-high{% elif cell.rate >= 20 %}rate-mid{% else %}rate-low{% endif %}"
+                    title="{{ cell.findings }} findings / {{ cell.n }} probes">
+                  {{ cell.rate|floatformat:0 }}%
+                </td>
+              {% else %}
+                <td class="num muted" title="0 probes">&mdash;</td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {# --- Top concerns per target --- #}
 <div class="top-concerns">
   <h3>Top concerns by finding count</h3>
