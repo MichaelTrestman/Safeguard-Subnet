@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -72,9 +73,28 @@ def _pick_focal_concern(concerns: list[dict]) -> dict | None:
 MINER_QUERY_TIMEOUT = 600.0
 
 # Cap on concurrent in-flight probe HTTP requests within a single cycle.
-# 8 is the PLAN.md default. With ~5 probe miners on testnet 444 today the
-# semaphore is currently a no-op, but it bounds the worst case at scale.
-MAX_PROBE_CONCURRENCY = 8
+# 8 is the PLAN.md default. With ~5 probe miners on testnet 444 the
+# semaphore is currently a no-op at PROBES_PER_MINER_PER_CYCLE=1, but it
+# bounds the worst case as throughput scales up. Configurable via env
+# var so the validator operator can raise both dials together without
+# a rebuild (raising PROBES_PER_MINER_PER_CYCLE without raising this
+# cap just makes cycles longer, since queued probes wait behind the 8).
+MAX_PROBE_CONCURRENCY = int(os.getenv("MAX_PROBE_CONCURRENCY", "8"))
+
+# Probes per miner per target per dispatch cycle. Each probe is
+# independent: its own task_id, its own focal concern pick, its own
+# relay session. Scoring is additive across probes (contribution sums
+# per UID per tempo — see `_build_cycle_contributions`), so raising
+# this constant linearly increases the data throughput per miner per
+# tempo WITHOUT requiring operators to scale UID count. This is the
+# antidote to the UID-sharding antipattern.
+#
+# Default 1 preserves legacy behavior for any existing deployment that
+# doesn't set the env var. Production is expected to set this to a
+# value sized to the fleet's combined Chutes capacity and the validator's
+# audit throughput (tier-3 judge calls run serialized, so cycle time
+# scales ~linearly with total returned probes).
+PROBES_PER_MINER_PER_CYCLE = int(os.getenv("PROBES_PER_MINER_PER_CYCLE", "1"))
 
 # Sub-phase 2.8 — per-miner retry cooldown. After a failed dispatch
 # attempt, this many seconds must pass before we try the same miner
@@ -256,18 +276,24 @@ async def _dispatch_target_to_miners(
     metagraph,
     semaphore: asyncio.Semaphore,
 ) -> tuple[int, list[dict]]:
-    """Dispatch one probe task per probe miner against `target`. The
-    miner picks the attack scenario; we just supply target endpoint +
-    category. Categories come from the target's configured list (or the
-    default category set if the target hasn't customized it).
+    """Dispatch N probe tasks per probe miner against `target`, where
+    N = PROBES_PER_MINER_PER_CYCLE (env-configurable, default 1).
+    Each probe is fully independent — its own task_id, its own focal
+    concern pick, its own relay session on the miner side. Scoring is
+    additive per UID across returned probes, so raising N linearly
+    scales the throughput each miner can earn from.
 
     Concurrency is bounded by `semaphore` (default 8 — see
-    MAX_PROBE_CONCURRENCY). All discovered probe miners get a task per
-    cycle, regardless of past performance, per the protocol invariant.
+    MAX_PROBE_CONCURRENCY). All discovered probe miners get N tasks
+    per cycle, regardless of past performance, per the protocol
+    invariant.
 
-    Returns (n_dispatched, successful_results) where successful_results
-    is a list of dicts ready for `_persist_in_progress_evaluations`.
-    Each result carries: uid, hotkey, task_id, category, response.
+    Returns (n_dispatched, successful_results) where `n_dispatched` is
+    the total probe count sent on this cycle (len(probe_miners) * N)
+    and `successful_results` is a list of per-probe dicts ready for
+    `_persist_in_progress_evaluations`. Each result carries: uid,
+    hotkey, task_id, category, response. The same uid can appear up
+    to N times in the list — one per returned probe.
 
     A single per-cycle httpx.AsyncClient is created here so connections
     are pooled within the cycle but not across cycles — keeps the
@@ -333,9 +359,16 @@ async def _dispatch_target_to_miners(
                 "response": response,
             }
 
-    n_dispatched = len(probe_miners)
+    n_dispatched = len(probe_miners) * PROBES_PER_MINER_PER_CYCLE
     async with httpx.AsyncClient() as client:
-        coros = [_one(uid, ep) for uid, ep in probe_miners.items()]
+        # Spawn PROBES_PER_MINER_PER_CYCLE independent probes per miner.
+        # Each call to _one() picks its own focal concern and mints its
+        # own task_id, so the N probes per miner are fully decoupled.
+        coros = [
+            _one(uid, ep)
+            for uid, ep in probe_miners.items()
+            for _ in range(PROBES_PER_MINER_PER_CYCLE)
+        ]
         raw = await asyncio.gather(*coros, return_exceptions=False)
 
     successes = [r for r in raw if r is not None]
@@ -2092,6 +2125,7 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                 logger.info(
                     f"Block {current_block}: dispatching to "
                     f"{len(eligible_miners)} eligible miners "
+                    f"× {PROBES_PER_MINER_PER_CYCLE} probes/miner "
                     f"(skipped={n_skipped} on cooldown/tempo) "
                     f"target={target.name}"
                 )
@@ -2102,7 +2136,7 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                 n_responded = len(results)
                 logger.info(
                     f"Block {current_block}: {n_responded}/{n_dispatched} "
-                    f"miners responded"
+                    f"probes returned"
                 )
 
                 # ----- Sub-phase 2.8: write per-miner dispatch outcomes -----

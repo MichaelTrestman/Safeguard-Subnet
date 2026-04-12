@@ -67,6 +67,21 @@ spec:
             # the pod out of the LB endpoint pool on each flap.
             - name: HEALTH_MAX_WEIGHT_AGE_S
               value: "5400"
+            # How many probes each eligible miner gets per dispatch cycle
+            # per target. Raising this scales data throughput linearly
+            # WITHOUT forcing operators to scale UID count — scoring is
+            # additive per UID across probes, so one capable miner at
+            # N=10 earns 10x the contribution of one miner at N=1. The
+            # antidote to the UID-sharding antipattern. Watch cycle time
+            # as you raise this — audit runs serialized per-row, so total
+            # cycle time scales with (eligible_miners × targets × N).
+            - name: PROBES_PER_MINER_PER_CYCLE
+              value: "10"
+            # Concurrent in-flight probe HTTP requests across one cycle.
+            # Default 8; raise if PROBES_PER_MINER_PER_CYCLE × eligible
+            # miners exceeds 8 so the semaphore isn't the bottleneck.
+            - name: MAX_PROBE_CONCURRENCY
+              value: "16"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
