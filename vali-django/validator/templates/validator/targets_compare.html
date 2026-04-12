@@ -1,0 +1,167 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Target comparison{% endblock %}
+{% block content %}
+
+<style>
+  .small { font-size: 0.75rem; color: #666; }
+  .muted { color: #555; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .compare-wrap { overflow-x: auto; margin-bottom: 2rem; }
+  table.compare { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
+  table.compare th, table.compare td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #222; }
+  table.compare th { color: #888; font-weight: normal; text-align: left; }
+  table.compare td { text-align: right; }
+  table.compare .metric-label { text-align: left; color: #aaa; font-size: 0.8rem;
+                                  position: sticky; left: 0; background: #0a0a0a;
+                                  min-width: 180px; z-index: 1; }
+  table.compare thead th { text-align: center; color: #ddd; font-weight: bold;
+                            font-size: 0.8rem; border-bottom: 2px solid #333; }
+  table.compare thead th:first-child { text-align: left; }
+  .sev-low { color: #44cc44; }
+  .sev-mid { color: #ffcc44; }
+  .sev-high { color: #ff6666; }
+  .rate-low { color: #44cc44; }
+  .rate-mid { color: #ffcc44; }
+  .rate-high { color: #ff6666; }
+  .section-header { background: #111; }
+  .section-header td { color: #888; font-size: 0.75rem; text-transform: uppercase;
+                       letter-spacing: 0.05em; text-align: left !important;
+                       padding: 0.6rem 0.75rem; border-bottom: 1px solid #333; }
+  .top-concerns { margin-top: 2rem; }
+  .top-concerns h3 { color: #ddd; font-size: 1rem; margin-bottom: 0.5rem; }
+  .concern-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                  gap: 1rem; margin-bottom: 1.5rem; }
+  .concern-card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+                  padding: 1rem; }
+  .concern-card h4 { color: #aaa; font-size: 0.8rem; margin-bottom: 0.5rem;
+                     text-transform: uppercase; }
+  .concern-card .concern-row { display: flex; justify-content: space-between;
+                                padding: 0.2rem 0; font-size: 0.8rem; }
+  .concern-card .concern-name { color: #ccc; max-width: 200px; overflow: hidden;
+                                 text-overflow: ellipsis; white-space: nowrap; }
+  .concern-card .concern-count { color: #88f; font-variant-numeric: tabular-nums; }
+</style>
+
+<p class="small muted">
+  Side-by-side safety metrics across all registered targets. Rates and
+  averages are computed from verified evaluations only (legacy and
+  unverified rows excluded). Use this to compare persona-vs-persona
+  safety posture across the same concern catalog.
+</p>
+
+{% if targets %}
+<div class="compare-wrap">
+  <table class="compare">
+    <thead>
+      <tr>
+        <th></th>
+        {% for t in targets %}
+          <th><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {# --- Volume --- #}
+      <tr class="section-header"><td colspan="{{ targets|length|add:1 }}">Volume</td></tr>
+      <tr>
+        <td class="metric-label">Total evaluations</td>
+        {% for t in targets %}<td class="num">{{ t.n_evals }}</td>{% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Verified (provenance ok)</td>
+        {% for t in targets %}<td class="num">{{ t.n_verified }}</td>{% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Legacy (no commitments)</td>
+        {% for t in targets %}<td class="num muted">{{ t.n_legacy }}</td>{% endfor %}
+      </tr>
+
+      {# --- Findings --- #}
+      <tr class="section-header"><td colspan="{{ targets|length|add:1 }}">Findings</td></tr>
+      <tr>
+        <td class="metric-label">Total findings</td>
+        {% for t in targets %}<td class="num">{{ t.n_findings }}</td>{% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Critical findings</td>
+        {% for t in targets %}
+          <td class="num{% if t.n_critical > 0 %} sev-high{% endif %}">{{ t.n_critical }}</td>
+        {% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Finding rate (verified)</td>
+        {% for t in targets %}
+          <td class="num {% if t.finding_rate >= 50 %}rate-high{% elif t.finding_rate >= 20 %}rate-mid{% else %}rate-low{% endif %}">
+            {{ t.finding_rate|floatformat:1 }}%
+          </td>
+        {% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Cue match rate</td>
+        {% for t in targets %}
+          <td class="num">{{ t.cue_match_rate|floatformat:1 }}%</td>
+        {% endfor %}
+      </tr>
+
+      {# --- Severity --- #}
+      <tr class="section-header"><td colspan="{{ targets|length|add:1 }}">Severity (verified only)</td></tr>
+      <tr>
+        <td class="metric-label">Avg accepted severity</td>
+        {% for t in targets %}
+          {% if t.avg_severity is not None %}
+            <td class="num {% if t.avg_severity >= 0.5 %}sev-high{% elif t.avg_severity >= 0.2 %}sev-mid{% else %}sev-low{% endif %}">
+              {{ t.avg_severity|floatformat:3 }}
+            </td>
+          {% else %}
+            <td class="num muted">&mdash;</td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Max accepted severity</td>
+        {% for t in targets %}
+          {% if t.max_severity is not None %}
+            <td class="num">{{ t.max_severity|floatformat:3 }}</td>
+          {% else %}
+            <td class="num muted">&mdash;</td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Avg audit score</td>
+        {% for t in targets %}
+          {% if t.avg_audit is not None %}
+            <td class="num">{{ t.avg_audit|floatformat:3 }}</td>
+          {% else %}
+            <td class="num muted">&mdash;</td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{# --- Top concerns per target --- #}
+<div class="top-concerns">
+  <h3>Top concerns by finding count</h3>
+  <div class="concern-grid">
+    {% for t in targets %}
+      <div class="concern-card">
+        <h4>{{ t.name }}</h4>
+        {% for c in t.top_concerns %}
+          <div class="concern-row">
+            <span class="concern-name" title="{{ c.evaluation__concern_id_slug }}">{{ c.evaluation__concern_id_slug }}</span>
+            <span class="concern-count">{{ c.n }}</span>
+          </div>
+        {% empty %}
+          <div class="concern-row"><span class="muted small">no findings yet</span></div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+  <p class="muted">No registered targets.</p>
+{% endif %}
+
+{% endblock %}

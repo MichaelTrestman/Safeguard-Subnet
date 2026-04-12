@@ -13,7 +13,7 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Avg, Count, Sum
+from django.db.models import Avg, Count, Max, Q, Sum
 from functools import wraps
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -661,6 +661,67 @@ def target_detail(request: HttpRequest, name: str) -> HttpResponse:
     })
 
 
+@staff_required
+def targets_compare(request: HttpRequest) -> HttpResponse:
+    """Side-by-side comparison of all registered targets. Each target
+    becomes a column; rows are aggregated metrics (finding rate, avg
+    severity, top concerns, provenance stats). Designed for the
+    multi-persona experiment: same concern catalog, different target
+    personas, compare the safety-metric deltas."""
+    from .models import Evaluation, Finding, RegisteredTarget
+
+    targets = list(
+        RegisteredTarget.objects.annotate(
+            n_evals=Count("evaluations"),
+            n_verified=Count(
+                "evaluations",
+                filter=Q(evaluations__provenance_verified=True),
+            ),
+            n_legacy=Count(
+                "evaluations",
+                filter=Q(evaluations__provenance_verified__isnull=True),
+            ),
+            avg_severity=Avg(
+                "evaluations__accepted_severity",
+                filter=Q(evaluations__provenance_verified=True),
+            ),
+            max_severity=Max(
+                "evaluations__accepted_severity",
+                filter=Q(evaluations__provenance_verified=True),
+            ),
+            avg_audit=Avg(
+                "evaluations__audit_score",
+                filter=Q(evaluations__provenance_verified=True),
+            ),
+        ).order_by("name")
+    )
+
+    for t in targets:
+        findings_qs = Finding.objects.filter(evaluation__target=t)
+        t.n_findings = findings_qs.count()
+        t.n_critical = findings_qs.filter(critical=True).count()
+        t.finding_rate = (
+            t.n_findings / t.n_verified * 100 if t.n_verified else 0
+        )
+        with_cues = (
+            findings_qs.filter(matched_cues__isnull=False).distinct().count()
+        )
+        t.cue_match_rate = (
+            with_cues / t.n_findings * 100 if t.n_findings else 0
+        )
+        t.top_concerns = list(
+            findings_qs
+            .exclude(evaluation__concern_id_slug="")
+            .values("evaluation__concern_id_slug")
+            .annotate(n=Count("id"))
+            .order_by("-n")[:5]
+        )
+
+    return render(request, "validator/targets_compare.html", {
+        "targets": targets,
+    })
+
+
 # --- Health -------------------------------------------------------------
 
 def healthz(request: HttpRequest) -> JsonResponse:
@@ -785,6 +846,7 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
         .order_by("-timestamp")
     )
 
+    q_target = (request.GET.get("target") or "").strip()
     q_category = (request.GET.get("category") or "").strip()
     q_concern = (request.GET.get("concern") or "").strip()
     q_uid = (request.GET.get("uid") or "").strip()
@@ -792,6 +854,8 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
     q_max_sev = (request.GET.get("max_severity") or "").strip()
     q_only_findings = request.GET.get("only_findings") == "1"
 
+    if q_target:
+        qs = qs.filter(target__name=q_target)
     if q_category:
         qs = qs.filter(category=q_category)
     if q_concern:
@@ -833,6 +897,11 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
         .values_list("concern_id_slug", flat=True)
         .distinct()
     )
+    target_names = (
+        Evaluation.objects
+        .values_list("target__name", flat=True)
+        .distinct()
+    )
 
     # Build querystring-preserving links for pagination. Strip page
     # so prev/next can set their own without stacking.
@@ -853,8 +922,10 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
         "prev_page": page - 1,
         "categories": sorted([c for c in categories if c]),
         "concerns": sorted([c for c in concerns if c]),
+        "target_names": sorted([n for n in target_names if n]),
         "base_qs": base_qs,
         "q": {
+            "target": q_target,
             "category": q_category,
             "concern": q_concern,
             "uid": q_uid,

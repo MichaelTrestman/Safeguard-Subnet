@@ -51,6 +51,7 @@
     {% if user.is_staff %}
       <span class="topnav-sep">|</span>
       <a href="{% url 'operator_dashboard' %}">Operator</a>
+      <a href="{% url 'targets_compare' %}">Targets</a>
       <a href="{% url 'runs_browser' %}">Runs</a>
       <a href="{% url 'concern_library' %}">Concerns</a>
       <a href="{% url 'curation_queue' %}">Curation</a>
