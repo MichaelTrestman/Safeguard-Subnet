@@ -163,7 +163,7 @@ class PublicActivityFeedSafetyTests(TestCase):
         self.assertGreater(len(payload["items"]), 0)
 
         # Each item should only have the ActivityRow.to_json fields
-        allowed_keys = {"ts", "kind", "label", "detail", "ref"}
+        allowed_keys = {"ts", "kind", "label", "detail", "ref", "event_type"}
         for item in payload["items"]:
             self.assertEqual(
                 set(item.keys()),

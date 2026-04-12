@@ -486,6 +486,31 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(["GET", "POST"])
+def login_view(request: HttpRequest) -> HttpResponse:
+    """Custom login that works without CsrfViewMiddleware.
+
+    Same issue as logout_view: Django's LoginView hard-applies
+    @csrf_protect, which 403s without CSRF middleware. This view
+    handles GET (render form) and POST (authenticate) directly.
+    """
+    from django.contrib.auth import authenticate, login as auth_login
+    if request.method == "GET":
+        return render(request, "registration/login.html", {"next": request.GET.get("next", "/app/")})
+    username = request.POST.get("username", "")
+    password = request.POST.get("password", "")
+    user = authenticate(request, username=username, password=password)
+    if user is not None:
+        auth_login(request, user)
+        next_url = request.POST.get("next", "/app/")
+        return redirect(next_url)
+    return render(request, "registration/login.html", {
+        "error": "Invalid username or password.",
+        "next": request.POST.get("next", "/app/"),
+    }, status=401)
+
+
+@csrf_exempt
 @require_POST
 def logout_view(request: HttpRequest) -> HttpResponse:
     """Custom logout that works without CsrfViewMiddleware.
