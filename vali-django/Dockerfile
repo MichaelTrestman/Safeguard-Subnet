@@ -21,4 +21,4 @@ ENV DJANGO_SETTINGS_MODULE=valiproject.settings
 
 EXPOSE 9090
 
-CMD ["sh", "-c", "python manage.py migrate --noinput && python -c \"import django; django.setup(); from django.contrib.auth.models import User; import os; u=os.environ.get('ADMIN_USER',''); p=os.environ.get('ADMIN_PASS',''); u and p and (User.objects.filter(username=u).exists() or User.objects.create_superuser(u,password=p)) and print(f'Admin {u} ready')\" && exec uvicorn valiproject.asgi:application --host 0.0.0.0 --port 9090 --lifespan on"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && python -c \"import django; django.setup(); from django.contrib.auth.models import User; import os; u=os.environ.get('ADMIN_USER',''); p=os.environ.get('ADMIN_PASS',''); u and p and (User.objects.filter(username=u).exists() or User.objects.create_superuser(u,password=p)) and print(f'Admin {u} ready')\" && exec uvicorn valiproject.asgi:application --host 0.0.0.0 --port 9090 --lifespan on"]

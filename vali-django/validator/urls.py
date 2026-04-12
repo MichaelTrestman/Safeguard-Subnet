@@ -4,8 +4,9 @@ from django.views.generic import RedirectView
 from . import views
 
 urlpatterns = [
-    # Root dispatch (routes by user role: staff -> operator, customer -> /dashboard/)
-    path("", views.root_dispatch, name="root"),
+    # App dispatch (routes by user role: staff -> operator, customer -> /dashboard/).
+    # Moved off of "" to "/app/" so the public landing can own the root path.
+    path("app/", views.app_root, name="app_root"),
 
     # Operator UI (staff only)
     path("operator/", views.operator_dashboard, name="operator_dashboard"),

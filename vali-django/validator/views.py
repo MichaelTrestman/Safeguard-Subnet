@@ -481,12 +481,16 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
     })
 
 
-# --- Root dispatch (routes by user role) ---------------------------------
+# --- App dispatch (routes /app/ by user role) ----------------------------
 
 
 @login_required
-def root_dispatch(request: HttpRequest) -> HttpResponse:
-    """Route / by user type: staff -> operator dashboard, customer -> /dashboard/."""
+def app_root(request: HttpRequest) -> HttpResponse:
+    """Route /app/ by user type: staff -> operator dashboard, customer -> /dashboard/.
+
+    The root path / is now served by the public.views.landing_view (unauthenticated
+    marketing page); /app/ is the explicit entry point for authenticated users.
+    """
     if request.user.is_staff:
         return operator_dashboard(request)
     if hasattr(request.user, "customer_profile"):

@@ -11,6 +11,7 @@ dependencies = [
     "bittensor-wallet>=3.0",
     "python-dotenv>=1.0",
     "psycopg2-binary>=2.9",
+    "whitenoise>=6.6",
 ]
 
 [build-system]
@@ -18,4 +19,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["valiproject", "validator"]
+packages = ["valiproject", "validator", "public"]

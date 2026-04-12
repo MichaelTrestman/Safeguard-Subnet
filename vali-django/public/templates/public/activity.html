@@ -1,0 +1,43 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Safeguard &mdash; Recent Activity</title>
+    <link rel="stylesheet" href="{% static 'public/css/public.css' %}">
+</head>
+<body>
+
+<section class="fade-in">
+    <h2 class="section-header solution">Recent Activity</h2>
+    <p style="color: #aaa; margin-bottom: 1rem;">
+        Live feed from this validator's concern catalog and cycle history. Every entry is derived from the same database the operator dashboard reads from &mdash; filtered through an explicit public-field allowlist that excludes transcripts, miner attribution, detection cues, and earnings. <a href="/" style="color: var(--solution-color);">&larr; Back to landing</a>
+    </p>
+
+    <div class="activity-feed">
+        {% for row in feed %}
+            <div class="activity-row">
+                <span class="activity-ts">{{ row.timestamp|date:"Y-m-d H:i" }} UTC</span>
+                <span class="activity-label">{{ row.label }}</span>
+                {% if row.detail %}
+                    <div style="margin-top: 0.5rem; font-size: 0.85rem; color: #888;">{{ row.detail }}</div>
+                {% endif %}
+            </div>
+        {% empty %}
+            <p class="activity-empty">No recent activity yet. The validator is warming up.</p>
+        {% endfor %}
+    </div>
+</section>
+
+<footer>
+    <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="/activity/feed.json">JSON feed</a>
+        <a href="https://github.com/latent-to/safeguard" target="_blank">GitHub</a>
+    </div>
+    <p>Safeguard &mdash; Concern-outcome profiles on Bittensor.</p>
+</footer>
+
+<script src="{% static 'public/js/public.js' %}"></script>
+</body>
+</html>

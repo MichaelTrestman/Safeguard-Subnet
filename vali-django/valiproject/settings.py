@@ -25,10 +25,14 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.staticfiles",
     "validator.apps.ValidatorConfig",
+    "public.apps.PublicConfig",
 ]
 
 MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
+    # WhiteNoise serves /static/ for the public landing. Must sit above
+    # SessionMiddleware so anon asset fetches don't touch the session.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 ]
@@ -52,7 +56,9 @@ TEMPLATES = [
 ASGI_APPLICATION = "valiproject.asgi.application"
 
 LOGIN_URL = "/accounts/login/"
-LOGIN_REDIRECT_URL = "/"
+# After login, route to /app/ (the role-dispatching view) instead of /
+# (which is now the public landing page, not the authed dashboard).
+LOGIN_REDIRECT_URL = "/app/"
 WSGI_APPLICATION = "valiproject.wsgi.application"
 
 
@@ -86,6 +92,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 USE_TZ = True
 TIME_ZONE = "UTC"
