@@ -87,7 +87,7 @@ section {
     color: var(--warning-color);
     text-shadow: 0 0 12px var(--warning-glow);
     margin-bottom: 3rem;
-    max-width: 700px;
+    max-width: 840px;
     line-height: 1.5;
     letter-spacing: 0.04em;
 }
