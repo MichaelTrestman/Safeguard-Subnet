@@ -76,7 +76,7 @@ spec:
             # as you raise this — audit runs serialized per-row, so total
             # cycle time scales with (eligible_miners × targets × N).
             - name: PROBES_PER_MINER_PER_CYCLE
-              value: "10"
+              value: "3"
             # Concurrent in-flight probe HTTP requests across one cycle.
             # Default 8; raise if PROBES_PER_MINER_PER_CYCLE × eligible
             # miners exceeds 8 so the semaphore isn't the bottleneck.

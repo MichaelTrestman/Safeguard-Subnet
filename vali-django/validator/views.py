@@ -649,7 +649,16 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
             "netuid": settings.NETUID,
         },
         "nav_active": "operator",
+        "probes_per_cycle": _get_probes_per_cycle(),
     })
+
+
+def _get_probes_per_cycle() -> int:
+    try:
+        from . import loop
+        return loop.PROBES_PER_MINER_PER_CYCLE
+    except (ImportError, AttributeError):
+        return 1
 
 
 @staff_required
@@ -722,6 +731,25 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
         "targets": targets,
         "nav_active": "targets",
     })
+
+
+# --- Operator controls --------------------------------------------------
+
+
+@staff_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def control_probes_per_cycle(request: HttpRequest) -> JsonResponse:
+    """Update PROBES_PER_MINER_PER_CYCLE at runtime without restarting.
+    Immediately affects the next dispatch tick."""
+    from . import loop as _loop
+    import json as _json
+    body = _json.loads(request.body or b"{}")
+    new_val = int(body.get("value", 1))
+    if new_val < 1:
+        return JsonResponse({"error": "value must be >= 1"}, status=400)
+    _loop.PROBES_PER_MINER_PER_CYCLE = new_val
+    return JsonResponse({"status": "ok", "probes_per_miner_per_cycle": new_val})
 
 
 # --- Health -------------------------------------------------------------
