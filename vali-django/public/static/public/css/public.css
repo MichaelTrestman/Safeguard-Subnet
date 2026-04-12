@@ -477,6 +477,11 @@ section {
     font-size: 0.9rem;
     color: #bbb;
 }
+/* Color-coded activity by event type */
+.activity-row.event-finding { border-left-color: var(--threat-color, #ff3d3d); background: rgba(255,61,61,0.05); }
+.activity-row.event-hitl { border-left-color: #ffcc44; background: rgba(255,204,68,0.05); }
+.activity-row.event-cycle { border-left-color: #44cc44; background: rgba(68,204,68,0.05); }
+.activity-row.event-concern { border-left-color: #88f; background: rgba(136,136,255,0.05); }
 
 .activity-row .activity-ts {
     font-family: 'Orbitron', sans-serif;

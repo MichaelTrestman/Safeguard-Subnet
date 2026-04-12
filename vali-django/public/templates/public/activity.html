@@ -13,7 +13,7 @@
 
     <div class="activity-feed">
         {% for row in feed %}
-            <div class="activity-row">
+            <div class="activity-row event-{{ row.event_type|default:'info' }}">
                 <span class="activity-ts">{{ row.timestamp|date:"Y-m-d H:i" }} UTC</span>
                 <span class="activity-label">{{ row.label }}</span>
                 {% if row.detail %}

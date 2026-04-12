@@ -648,6 +648,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
             "network": settings.SUBTENSOR_NETWORK,
             "netuid": settings.NETUID,
         },
+        "nav_active": "operator",
     })
 
 
@@ -719,6 +720,7 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
 
     return render(request, "validator/targets_compare.html", {
         "targets": targets,
+        "nav_active": "targets",
     })
 
 
@@ -933,6 +935,7 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
             "max_severity": q_max_sev,
             "only_findings": q_only_findings,
         },
+        "nav_active": "runs",
     })
 
 
@@ -1166,6 +1169,7 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
         "concern_leaderboard": concern_leaderboard,
         "miner_leaderboard": miner_leaderboard,
         "curator_contributions": curator_contributions,
+        "nav_active": "curation",
     })
 
 
@@ -1408,6 +1412,7 @@ def concern_library(request: HttpRequest) -> HttpResponse:
     return render(request, "validator/concern_library.html", {
         "categories": categories,
         "filter_arg": filter_arg,
+        "nav_active": "concerns",
     })
 
 

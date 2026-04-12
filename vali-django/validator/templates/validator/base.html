@@ -2,6 +2,8 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% block head_extra %}{% endblock %}
   <title>{% block title %}Safeguard Validator{% endblock %}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -37,6 +39,27 @@
     .topnav-logout-btn { background: none; border: none; color: #88f; cursor: pointer;
                          font-family: inherit; font-size: 0.9rem; padding: 0; }
     .topnav-logout-btn:hover { text-decoration: underline; color: #fff; }
+    /* Shared utility classes — one definition, all templates inherit */
+    .chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
+            font-size: 0.7rem; text-transform: uppercase; font-weight: bold;
+            vertical-align: middle; }
+    .chip.burn { background: #4a1111; color: #ff8888; }
+    .chip.critical { background: #4a1111; color: #ff6666; }
+    .chip.high { background: #4a3311; color: #ffaa44; }
+    .chip.medium { background: #3a3a11; color: #ffcc44; }
+    .chip.disputed { background: #3a1a4a; color: #cc88ff; }
+    .chip.verified { background: #0a3a0a; color: #44cc44; }
+    .chip.fabricated { background: #3a1133; color: #ff66aa; }
+    .chip.legacy { background: #2a2a2a; color: #888; }
+    .chip.success { background: #0a3a0a; color: #44cc44; }
+    .chip.failed { background: #4a1111; color: #ff6666; }
+    .chip.cooldown { background: #3a3311; color: #ffcc44; }
+    .chip.finding { background: #4a1111; color: #ff8888; }
+    .chip.benign { background: #1a2a1a; color: #6a8a6a; }
+    .muted { color: #555; }
+    .num { font-variant-numeric: tabular-nums; text-align: right; }
+    .small { font-size: 0.75rem; color: #666; }
+    .table-wrap { overflow-x: auto; }
   </style>
 </head>
 <body>
@@ -50,11 +73,11 @@
 
     {% if user.is_staff %}
       <span class="topnav-sep">|</span>
-      <a href="{% url 'operator_dashboard' %}">Operator</a>
-      <a href="{% url 'targets_compare' %}">Targets</a>
-      <a href="{% url 'runs_browser' %}">Runs</a>
-      <a href="{% url 'concern_library' %}">Concerns</a>
-      <a href="{% url 'curation_queue' %}">Curation</a>
+      <a href="{% url 'operator_dashboard' %}"{% if nav_active == 'operator' %} class="active"{% endif %}>Operator</a>
+      <a href="{% url 'targets_compare' %}"{% if nav_active == 'targets' %} class="active"{% endif %}>Targets</a>
+      <a href="{% url 'runs_browser' %}"{% if nav_active == 'runs' %} class="active"{% endif %}>Runs</a>
+      <a href="{% url 'concern_library' %}"{% if nav_active == 'concerns' %} class="active"{% endif %}>Concerns</a>
+      <a href="{% url 'curation_queue' %}"{% if nav_active == 'curation' %} class="active"{% endif %}>Curation</a>
     {% elif user.is_authenticated %}
       <span class="topnav-sep">|</span>
       <a href="{% url 'customer_dashboard' %}">Dashboard</a>

@@ -1,7 +1,9 @@
 {% extends "validator/base.html" %}
+{% block head_extra %}<meta http-equiv="refresh" content="30">{% endblock %}
 {% block content %}
 
 <style>
+  /* chip classes now inherited from base.html — only page-specific overrides below */
   .chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
           font-size: 0.7rem; text-transform: uppercase; font-weight: bold;
           vertical-align: middle; }

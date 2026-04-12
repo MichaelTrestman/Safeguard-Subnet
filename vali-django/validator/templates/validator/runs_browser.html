@@ -1,5 +1,6 @@
 {% extends "validator/base.html" %}
 {% block subtitle %}Runs browser{% endblock %}
+{% block head_extra %}<meta http-equiv="refresh" content="30">{% endblock %}
 {% block content %}
 
 <style>
@@ -144,7 +145,7 @@
           <td class="small">{{ e.category|default:"—" }}</td>
           <td class="small">
             {% if e.concern_id_slug %}
-              {{ e.concern_id_slug }}
+              <a href="{% url 'concern_detail' e.concern_id_slug %}">{{ e.concern_id_slug }}</a>
             {% else %}
               <span class="muted">—</span>
             {% endif %}
