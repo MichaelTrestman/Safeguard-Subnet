@@ -13,6 +13,8 @@ app_name = "public"
 
 urlpatterns = [
     path("", views.landing_view, name="landing"),
+    path("catalog/", views.catalog_view, name="catalog"),
+    path("catalog/<slug:slug>/", views.catalog_detail_view, name="catalog_detail"),
     path("activity/", views.activity_view, name="activity"),
     path("activity/feed.json", views.activity_feed_json, name="activity_feed"),
 ]

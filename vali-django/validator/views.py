@@ -20,8 +20,9 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render, get_object_or_404
 from django.utils import timezone as djtz
 from django.utils.text import slugify
+from django.contrib.auth import logout as auth_logout
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
+from django.views.decorators.http import require_http_methods, require_POST
 
 from .epistula import verify_epistula
 from .models import Evaluation, RegisteredTarget, ValidatorStatus
@@ -481,6 +482,32 @@ async def probe_relay(request: HttpRequest) -> JsonResponse:
     })
 
 
+# --- Auth primitives ----------------------------------------------------
+
+
+@csrf_exempt
+@require_POST
+def logout_view(request: HttpRequest) -> HttpResponse:
+    """Custom logout that works without CsrfViewMiddleware.
+
+    Django 5's auth_views.LogoutView hard-applies @csrf_protect on
+    dispatch, which requires a valid CSRF cookie. vali-django has no
+    CsrfViewMiddleware in the middleware stack (see settings.py lean-
+    by-design comment), so LogoutView's CSRF check never succeeds and
+    every sign-out attempt 403s. This view replaces it:
+
+      - @require_POST keeps the CSRF-logout attack surface closed
+        (a malicious page can't GET /accounts/logout/ to log the user
+        out against their will).
+      - @csrf_exempt skips the CSRF cookie check that would otherwise
+        403 because the middleware doesn't run.
+      - Redirect target is "/" — the public landing page, visible to
+        the now-anonymous user.
+    """
+    auth_logout(request)
+    return redirect("/")
+
+
 # --- App dispatch (routes /app/ by user role) ----------------------------
 
 
@@ -731,6 +758,113 @@ def eval_detail(request: HttpRequest, task_id: str) -> HttpResponse:
     })
 
 
+# --- Operator runs browser (staff only) ---------------------------------
+
+
+@staff_required
+def runs_browser(request: HttpRequest) -> HttpResponse:
+    """Paginated filterable browser of ALL Evaluation rows.
+
+    Unlike operator_dashboard's findings panel, this view does NOT
+    filter by Finding presence — benign probes, probes that scored
+    zero, and probes with no cue matches all show up. The goal is
+    operator pattern-finding: spot concerns the catalog is missing
+    by reading through real runs, not just the ones that crossed
+    the findings threshold.
+
+    Filters are query-string driven (?category=X&concern=Y&uid=N&...)
+    and preserved across pagination. Invalid numeric inputs are
+    silently dropped so a malformed URL doesn't 500 the page.
+    """
+    from .models import Evaluation
+
+    qs = (
+        Evaluation.objects
+        .select_related("target", "trigger")
+        .prefetch_related("findings")
+        .order_by("-timestamp")
+    )
+
+    q_category = (request.GET.get("category") or "").strip()
+    q_concern = (request.GET.get("concern") or "").strip()
+    q_uid = (request.GET.get("uid") or "").strip()
+    q_min_sev = (request.GET.get("min_severity") or "").strip()
+    q_max_sev = (request.GET.get("max_severity") or "").strip()
+    q_only_findings = request.GET.get("only_findings") == "1"
+
+    if q_category:
+        qs = qs.filter(category=q_category)
+    if q_concern:
+        qs = qs.filter(concern_id_slug=q_concern)
+    if q_uid:
+        try:
+            qs = qs.filter(miner_uid=int(q_uid))
+        except ValueError:
+            pass
+    if q_min_sev:
+        try:
+            qs = qs.filter(accepted_severity__gte=float(q_min_sev))
+        except ValueError:
+            pass
+    if q_max_sev:
+        try:
+            qs = qs.filter(accepted_severity__lte=float(q_max_sev))
+        except ValueError:
+            pass
+    if q_only_findings:
+        qs = qs.filter(findings__isnull=False).distinct()
+
+    PAGE_SIZE = 100
+    try:
+        page = max(1, int(request.GET.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * PAGE_SIZE
+    total = qs.count()
+    rows = list(qs[offset : offset + PAGE_SIZE])
+
+    # Distinct facets for filter dropdowns — small cardinality so a
+    # plain DISTINCT is cheap. If the catalog ever grows past ~200
+    # concerns this should move to a cached denormalized list.
+    categories = Evaluation.objects.values_list("category", flat=True).distinct()
+    concerns = (
+        Evaluation.objects
+        .exclude(concern_id_slug="")
+        .values_list("concern_id_slug", flat=True)
+        .distinct()
+    )
+
+    # Build querystring-preserving links for pagination. Strip page
+    # so prev/next can set their own without stacking.
+    from urllib.parse import urlencode
+    preserved = {
+        k: v for k, v in request.GET.items() if k != "page" and v
+    }
+    base_qs = urlencode(preserved)
+
+    return render(request, "validator/runs_browser.html", {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": PAGE_SIZE,
+        "has_next": offset + PAGE_SIZE < total,
+        "has_prev": page > 1,
+        "next_page": page + 1,
+        "prev_page": page - 1,
+        "categories": sorted([c for c in categories if c]),
+        "concerns": sorted([c for c in concerns if c]),
+        "base_qs": base_qs,
+        "q": {
+            "category": q_category,
+            "concern": q_concern,
+            "uid": q_uid,
+            "min_severity": q_min_sev,
+            "max_severity": q_max_sev,
+            "only_findings": q_only_findings,
+        },
+    })
+
+
 # --- Customer dashboard (stub views, implemented in task 8) -------------
 
 
@@ -786,43 +920,165 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
          or reorder these (trust-minimization: uniform-random
          dispatch), but they can REMOVE cases from the pending queue
          with a reason via `hitl_case_remove`.
-    """
-    from .models import Finding, HitlCase
-    pending = Finding.objects.filter(critical=True, curated=False).select_related("evaluation", "evaluation__target").order_by("-severity")
-    curated = Finding.objects.filter(curated=True).select_related("evaluation", "evaluation__target").order_by("-curated_at")[:20]
 
-    hitl_pending = (
-        HitlCase.objects
-        .filter(status=HitlCase.STATUS_PENDING)
+    Phase 7 additions:
+      - Summary cards (queue depth, actions today/week, agreement delta,
+        top concern in dispute, HITL miner availability)
+      - Category filter (GET ?category=<name>) scopes the pending queues
+      - Concern leaderboard: top 10 concerns by HITL case count
+      - Miner leaderboard: top 10 miners by HITL case count
+      - Curator contributions: last 7 days of actions by user
+    """
+    from django.db.models import Avg, Count, F, Q
+    from django.db.models.functions import Abs
+    from .models import CurationAction, Finding, HitlCase, MinerScore
+
+    # --- Filter (GET ?category=...) --------------------------------------
+    selected_category = (request.GET.get("category") or "").strip() or None
+
+    def _apply_category(qs, field="category"):
+        if selected_category:
+            return qs.filter(**{field: selected_category})
+        return qs
+
+    # --- Pending / curated finding queues -------------------------------
+    pending = (
+        _apply_category(Finding.objects.filter(critical=True, curated=False))
         .select_related("evaluation", "evaluation__target")
-        .order_by("routed_at")
+        .prefetch_related("matched_cues")
+        .order_by("-severity")
     )
-    # Concerns v2 — expose concern_id_slug on each pending hitl case
-    # (already prefetched via select_related("evaluation")).
-    hitl_dispatched = (
-        HitlCase.objects
-        .filter(status=HitlCase.STATUS_DISPATCHED)
+    curated = (
+        _apply_category(Finding.objects.filter(curated=True))
         .select_related("evaluation", "evaluation__target")
-        .order_by("-dispatched_at")
+        .order_by("-curated_at")[:20]
     )
-    hitl_recent_labeled = (
-        HitlCase.objects
-        .filter(status=HitlCase.STATUS_LABELED)
-        .select_related("evaluation", "evaluation__target")
-        .order_by("-labeled_at")[:20]
+
+    # --- HITL queue (scoped by evaluation__category filter) -------------
+    hitl_base = HitlCase.objects.select_related(
+        "evaluation", "evaluation__target",
     )
-    hitl_recent_removed = (
-        HitlCase.objects
-        .filter(status=HitlCase.STATUS_REMOVED)
-        .select_related("evaluation", "evaluation__target", "removed_by")
-        .order_by("-removed_at")[:20]
-    )
+    if selected_category:
+        hitl_base = hitl_base.filter(evaluation__category=selected_category)
+
+    hitl_pending = hitl_base.filter(status=HitlCase.STATUS_PENDING).order_by("routed_at")
+    hitl_dispatched = hitl_base.filter(status=HitlCase.STATUS_DISPATCHED).order_by("-dispatched_at")
+    hitl_recent_labeled = hitl_base.filter(status=HitlCase.STATUS_LABELED).order_by("-labeled_at")[:20]
+    hitl_recent_removed = hitl_base.filter(status=HitlCase.STATUS_REMOVED).select_related("removed_by").order_by("-removed_at")[:20]
+
+    # Global HITL status counts (NOT category-scoped — the counts summarize
+    # the whole queue even when the user is filtering, so they know how
+    # much the filter is hiding).
     hitl_counts = {
         "pending": HitlCase.objects.filter(status=HitlCase.STATUS_PENDING).count(),
         "dispatched": HitlCase.objects.filter(status=HitlCase.STATUS_DISPATCHED).count(),
         "labeled": HitlCase.objects.filter(status=HitlCase.STATUS_LABELED).count(),
         "removed": HitlCase.objects.filter(status=HitlCase.STATUS_REMOVED).count(),
         "timed_out": HitlCase.objects.filter(status=HitlCase.STATUS_TIMED_OUT).count(),
+    }
+
+    # --- Summary stats for the cards ------------------------------------
+    now = djtz.now()
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(days=7)
+
+    actions_today = CurationAction.objects.filter(created_at__gte=day_ago).count()
+    actions_week = CurationAction.objects.filter(created_at__gte=week_ago).count()
+
+    # Average |miner_safety_score - audit_score| across HITL-routed evals.
+    # HITL selection criterion is divergence, so this tells you how
+    # divergent the current queue is on average.
+    avg_delta_row = (
+        HitlCase.objects
+        .filter(evaluation__audit_score__isnull=False)
+        .aggregate(avg_delta=Avg(Abs(F("evaluation__miner_safety_score") - F("evaluation__audit_score"))))
+    )
+    avg_claim_audit_delta = avg_delta_row["avg_delta"]
+
+    # HITL miner availability — helps explain "why isn't my pending queue
+    # moving?". Total comes from ValidatorStatus.n_hitl_miners (populated
+    # by the loop's chain scan, since HITL-ness lives in the advertised
+    # axon types, not in MinerScore). Cooldown count is any MinerScore
+    # row whose hitl_cooldown_until is in the future — that field is
+    # ONLY set by HITL dispatch, so every row with it set is definitionally
+    # a HITL miner.
+    vstatus = ValidatorStatus.get()
+    hitl_miners_total = vstatus.n_hitl_miners if vstatus else 0
+    hitl_miners_in_cooldown = MinerScore.objects.filter(
+        hitl_cooldown_until__gt=now,
+    ).count()
+    hitl_miners_ready = max(0, hitl_miners_total - hitl_miners_in_cooldown)
+
+    # --- Concern leaderboard: top 10 concerns by HITL case count --------
+    concern_leaderboard = list(
+        HitlCase.objects
+        .exclude(evaluation__concern_id_slug="")
+        .values("evaluation__concern_id_slug")
+        .annotate(
+            total=Count("id"),
+            pending=Count("id", filter=Q(status=HitlCase.STATUS_PENDING)),
+            dispatched=Count("id", filter=Q(status=HitlCase.STATUS_DISPATCHED)),
+            labeled=Count("id", filter=Q(status=HitlCase.STATUS_LABELED)),
+        )
+        .order_by("-total")[:10]
+    )
+
+    top_concern_slug = concern_leaderboard[0]["evaluation__concern_id_slug"] if concern_leaderboard else None
+
+    # --- Miner leaderboard: top 10 miners by HITL case count ------------
+    miner_leaderboard = list(
+        HitlCase.objects
+        .values("evaluation__miner_uid")
+        .annotate(
+            total=Count("id"),
+            pending=Count("id", filter=Q(status=HitlCase.STATUS_PENDING)),
+            labeled=Count("id", filter=Q(status=HitlCase.STATUS_LABELED)),
+            avg_delta=Avg(
+                Abs(F("evaluation__miner_safety_score") - F("evaluation__audit_score")),
+                filter=Q(evaluation__audit_score__isnull=False),
+            ),
+        )
+        .order_by("-total")[:10]
+    )
+
+    # --- Curator contributions last 7 days ------------------------------
+    curator_contributions = list(
+        CurationAction.objects
+        .filter(created_at__gte=week_ago)
+        .values("curator__username")
+        .annotate(
+            total=Count("id"),
+            confirms=Count("id", filter=Q(action="confirm")),
+            downgrades=Count("id", filter=Q(action="downgrade")),
+            escalates=Count("id", filter=Q(action="escalate")),
+        )
+        .order_by("-total")[:10]
+    )
+
+    # --- Available categories for the filter chips ----------------------
+    available_categories = sorted(
+        set(
+            Finding.objects.filter(critical=True, curated=False)
+            .values_list("category", flat=True).distinct()
+        )
+        | set(
+            HitlCase.objects.filter(status__in=[
+                HitlCase.STATUS_PENDING, HitlCase.STATUS_DISPATCHED,
+            ]).values_list("evaluation__category", flat=True).distinct()
+        )
+    )
+
+    summary = {
+        "hitl_pending_count": hitl_counts["pending"],
+        "findings_pending_count": Finding.objects.filter(
+            critical=True, curated=False,
+        ).count(),
+        "actions_today": actions_today,
+        "actions_week": actions_week,
+        "avg_claim_audit_delta": avg_claim_audit_delta,
+        "hitl_miners_ready": hitl_miners_ready,
+        "hitl_miners_total": hitl_miners_total,
+        "top_concern_slug": top_concern_slug,
     }
 
     return render(request, "validator/curation_queue.html", {
@@ -833,6 +1089,12 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
         "hitl_recent_labeled": hitl_recent_labeled,
         "hitl_recent_removed": hitl_recent_removed,
         "hitl_counts": hitl_counts,
+        "summary": summary,
+        "selected_category": selected_category,
+        "available_categories": available_categories,
+        "concern_leaderboard": concern_leaderboard,
+        "miner_leaderboard": miner_leaderboard,
+        "curator_contributions": curator_contributions,
     })
 
 

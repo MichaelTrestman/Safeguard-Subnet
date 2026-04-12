@@ -1,142 +1,450 @@
 {% extends "validator/base.html" %}
 {% block subtitle %}Curation Queue{% endblock %}
-{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'curation_queue' %}">Curation</a> | <a href="{% url 'curation_log' %}">Audit Log</a></p>{% endblock %}
+{% block nav %}
+  <p>
+    <a href="{% url 'operator_dashboard' %}">Operator</a> &rarr;
+    <a href="{% url 'curation_queue' %}">Curation</a> |
+    <a href="{% url 'curation_log' %}">Audit log</a>
+  </p>
+{% endblock %}
 {% block content %}
 
-<h3>HITL Queue</h3>
-<p>
-  pending: <strong>{{ hitl_counts.pending }}</strong> |
-  dispatched: <strong>{{ hitl_counts.dispatched }}</strong> |
-  labeled: <strong>{{ hitl_counts.labeled }}</strong> |
-  timed_out: <strong>{{ hitl_counts.timed_out }}</strong> |
-  removed: <strong>{{ hitl_counts.removed }}</strong>
-</p>
-<p><em>Dispatch is uniform-random over eligible HITL miners; the operator
-  can remove cases but cannot assign or reorder them.</em></p>
+<style>
+  .chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
+          font-size: 0.7rem; text-transform: uppercase; font-weight: bold;
+          vertical-align: middle; }
+  .chip.disputed { background: #3a1a4a; color: #cc88ff; }
+  .chip.critical { background: #4a1111; color: #ff6666; }
+  .chip.verified { background: #0a3a0a; color: #44cc44; }
+  .chip.pending { background: #3a3311; color: #ffcc44; }
+  .chip.active { background: #0a3a0a; color: #44cc44; }
+  .chip.cat { background: #1a2a3a; color: #88aaff; font-weight: normal;
+              letter-spacing: 0.05em; }
+  .muted { color: #555; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .small { font-size: 0.75rem; color: #666; }
+  .chip-row { margin: 0 0 1.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem;
+              align-items: center; }
+  .chip-row .chip-label { color: #666; font-size: 0.75rem; text-transform: uppercase;
+                          letter-spacing: 0.08em; margin-right: 0.5rem; }
+  .filter-chip { display: inline-block; padding: 0.25rem 0.75rem; border: 1px solid #333;
+                 background: #111; color: #88f; font-size: 0.8rem; border-radius: 3px;
+                 text-decoration: none; }
+  .filter-chip:hover { border-color: #88f; background: #1a1a2a; text-decoration: none; }
+  .filter-chip.active { background: #1a3a5a; color: #fff; border-color: #88f; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .lb-bar { display: inline-block; height: 6px; background: #88f; border-radius: 3px;
+            vertical-align: middle; }
+  .lb-bar-bg { display: inline-block; width: 120px; height: 6px; background: #222;
+               border-radius: 3px; vertical-align: middle; margin-right: 0.4rem; }
+</style>
 
-<h4>Pending ({{ hitl_counts.pending }})</h4>
+<!-- ======================== SUMMARY CARDS ======================== -->
+<div class="grid">
+  <div class="card">
+    <h4>HITL Pending</h4>
+    <div class="value">
+      {% if summary.hitl_pending_count > 0 %}
+        <span class="warn">{{ summary.hitl_pending_count }}</span>
+      {% else %}
+        <span class="ok">0</span>
+      {% endif %}
+    </div>
+    <div class="sub">
+      {{ hitl_counts.dispatched }} in flight &middot;
+      {{ hitl_counts.labeled }} labeled &middot;
+      {{ hitl_counts.timed_out }} timed out
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Findings Awaiting Review</h4>
+    <div class="value">
+      {% if summary.findings_pending_count > 0 %}
+        <span class="warn">{{ summary.findings_pending_count }}</span>
+      {% else %}
+        <span class="ok">0</span>
+      {% endif %}
+    </div>
+    <div class="sub">critical-tier findings not yet curated</div>
+  </div>
+
+  <div class="card">
+    <h4>Curator Actions</h4>
+    <div class="value">{{ summary.actions_today }}</div>
+    <div class="sub">
+      today &middot; {{ summary.actions_week }} past 7 days
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Avg Claim&ndash;Audit &Delta;</h4>
+    <div class="value">
+      {% if summary.avg_claim_audit_delta is not None %}
+        {{ summary.avg_claim_audit_delta|floatformat:2 }}
+      {% else %}
+        <span class="muted">&mdash;</span>
+      {% endif %}
+    </div>
+    <div class="sub">divergence between miner severity and audit severity across HITL cases</div>
+  </div>
+
+  <div class="card">
+    <h4>HITL Miners</h4>
+    <div class="value">
+      {% if summary.hitl_miners_ready > 0 %}
+        <span class="ok">{{ summary.hitl_miners_ready }}</span> / {{ summary.hitl_miners_total }}
+      {% elif summary.hitl_miners_total > 0 %}
+        <span class="err">0</span> / {{ summary.hitl_miners_total }}
+      {% else %}
+        <span class="muted">&mdash;</span>
+      {% endif %}
+    </div>
+    <div class="sub">
+      {% if summary.hitl_miners_ready == 0 and summary.hitl_miners_total > 0 %}
+        all on cooldown &mdash; pending cases cannot dispatch
+      {% else %}
+        ready / discovered on chain
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Top Concern In Dispute</h4>
+    <div class="value" style="font-size: 0.95rem; word-break: break-all;">
+      {% if summary.top_concern_slug %}
+        <a href="{% url 'concern_detail' summary.top_concern_slug %}">{{ summary.top_concern_slug }}</a>
+      {% else %}
+        <span class="muted">&mdash;</span>
+      {% endif %}
+    </div>
+    <div class="sub">most HITL cases across all statuses</div>
+  </div>
+</div>
+
+<!-- ======================== CATEGORY FILTER ======================== -->
+{% if available_categories %}
+<div class="chip-row">
+  <span class="chip-label">Filter by category</span>
+  <a class="filter-chip {% if not selected_category %}active{% endif %}" href="{% url 'curation_queue' %}">All</a>
+  {% for cat in available_categories %}
+    <a class="filter-chip {% if selected_category == cat %}active{% endif %}" href="?category={{ cat }}">{{ cat }}</a>
+  {% endfor %}
+  {% if selected_category %}
+    <span class="small" style="margin-left: 0.5rem;">
+      Showing only <code>{{ selected_category }}</code> &middot;
+      <a href="{% url 'curation_queue' %}" style="color:#88f;">clear filter</a>
+    </span>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ======================== HITL PENDING ======================== -->
+<h3>HITL Queue</h3>
+<p class="small" style="margin-bottom: 0.8rem;">
+  Dispatch is uniform-random over eligible HITL miners; the operator can remove cases but
+  cannot assign or reorder them. The Remove action requires a reason and moves the case to
+  <code>removed</code> status without destroying audit history.
+</p>
+
+<h4>Pending ({{ hitl_pending|length }}{% if selected_category %} in <code>{{ selected_category }}</code>{% endif %})</h4>
 {% if hitl_pending %}
+<div class="table-wrap">
 <table>
-  <tr><th>#</th><th>Category</th><th>Concern</th><th>Target</th><th>Miner UID</th><th>Claim</th><th>Audit</th><th>Routed</th><th>Remove</th></tr>
+  <tr>
+    <th>#</th>
+    <th>Category</th>
+    <th>Concern</th>
+    <th>Target</th>
+    <th class="num">Miner UID</th>
+    <th class="num">Claim</th>
+    <th class="num">Audit</th>
+    <th class="num">&Delta;</th>
+    <th>Routed</th>
+    <th>Action</th>
+  </tr>
   {% for c in hitl_pending %}
   <tr>
     <td>{{ c.pk }}</td>
-    <td>{{ c.evaluation.category }}</td>
+    <td><span class="chip cat">{{ c.evaluation.category }}</span></td>
     <td>
       {% if c.evaluation.concern_id_slug %}
         <a href="{% url 'concern_detail' c.evaluation.concern_id_slug %}">{{ c.evaluation.concern_id_slug }}</a>
       {% else %}
-        &mdash;
+        <span class="muted">&mdash;</span>
       {% endif %}
     </td>
     <td>{{ c.evaluation.target.name }}</td>
-    <td>{{ c.evaluation.miner_uid }}</td>
-    <td>{{ c.evaluation.miner_safety_score|floatformat:2 }}</td>
-    <td>{{ c.evaluation.audit_score|floatformat:2 }}</td>
-    <td>{{ c.routed_at|date:"M d H:i" }}</td>
+    <td class="num">{{ c.evaluation.miner_uid }}</td>
+    <td class="num">{{ c.evaluation.miner_safety_score|floatformat:2 }}</td>
+    <td class="num">{{ c.evaluation.audit_score|floatformat:2 }}</td>
+    <td class="num">
+      {% if c.evaluation.audit_score is not None %}
+        <span class="chip disputed">{{ c.evaluation.miner_safety_score|add:0|floatformat:2 }}</span>
+      {% endif %}
+    </td>
+    <td class="small">{{ c.routed_at|date:"M d H:i" }}</td>
     <td>
+      <a href="{% url 'eval_detail' c.evaluation.task_id %}" style="margin-right:0.75rem;">Inspect &rarr;</a>
       <form method="post" action="{% url 'hitl_case_remove' c.pk %}" style="display:inline">
         {% csrf_token %}
-        <textarea name="reason" rows="1" cols="20" required placeholder="reason"></textarea>
+        <textarea name="reason" rows="1" cols="15" required placeholder="remove reason"></textarea>
         <button type="submit">Remove</button>
       </form>
     </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% else %}
-<p class="ok">No pending HITL cases.</p>
+<p class="ok">No pending HITL cases{% if selected_category %} in <code>{{ selected_category }}</code>{% endif %}.</p>
 {% endif %}
 
-<h4>In Flight ({{ hitl_counts.dispatched }})</h4>
+<h4>In Flight ({{ hitl_dispatched|length }})</h4>
 {% if hitl_dispatched %}
 <table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>To UID</th><th>Dispatched</th></tr>
+  <tr><th>#</th><th>Target</th><th>Category</th><th class="num">To UID</th><th>Dispatched</th></tr>
   {% for c in hitl_dispatched %}
   <tr>
     <td>{{ c.pk }}</td>
     <td>{{ c.evaluation.target.name }}</td>
-    <td>{{ c.evaluation.category }}</td>
-    <td>{{ c.dispatched_to_uid }}</td>
-    <td>{{ c.dispatched_at|date:"M d H:i" }}</td>
+    <td><span class="chip cat">{{ c.evaluation.category }}</span></td>
+    <td class="num">{{ c.dispatched_to_uid }}</td>
+    <td class="small">{{ c.dispatched_at|date:"M d H:i" }}</td>
   </tr>
   {% endfor %}
 </table>
 {% else %}
-<p>No in-flight HITL cases.</p>
+<p class="small">No in-flight HITL cases.</p>
 {% endif %}
 
-{% if hitl_recent_labeled %}
-<h4>Recently Labeled</h4>
+<!-- ======================== LEADERBOARDS (side-by-side) ======================== -->
+<div class="two-col" style="margin-top: 2rem;">
+
+  <div>
+    <h3>Top Concerns In HITL</h3>
+    {% if concern_leaderboard %}
+    <table>
+      <tr>
+        <th>Concern</th>
+        <th class="num">Total</th>
+        <th class="num">Pending</th>
+        <th class="num">In flight</th>
+        <th class="num">Labeled</th>
+      </tr>
+      {% for row in concern_leaderboard %}
+      <tr>
+        <td>
+          <a href="{% url 'concern_detail' row.evaluation__concern_id_slug %}">
+            {{ row.evaluation__concern_id_slug }}
+          </a>
+        </td>
+        <td class="num"><strong>{{ row.total }}</strong></td>
+        <td class="num">
+          {% if row.pending > 0 %}<span class="warn">{{ row.pending }}</span>{% else %}<span class="muted">0</span>{% endif %}
+        </td>
+        <td class="num">{{ row.dispatched|default:0 }}</td>
+        <td class="num">{{ row.labeled|default:0 }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="small" style="margin-top: 0.5rem;">
+      Concerns with the most HITL-routed findings, all statuses combined. A concern with
+      many labeled cases and few pending means the queue is catching up; lots of pending
+      means human review is falling behind on that concern.
+    </p>
+    {% else %}
+    <p class="small">No concern-attributed HITL cases yet.</p>
+    {% endif %}
+  </div>
+
+  <div>
+    <h3>Top Miners In HITL</h3>
+    {% if miner_leaderboard %}
+    <table>
+      <tr>
+        <th class="num">UID</th>
+        <th class="num">Total</th>
+        <th class="num">Pending</th>
+        <th class="num">Labeled</th>
+        <th class="num">Avg &Delta;</th>
+      </tr>
+      {% for row in miner_leaderboard %}
+      <tr>
+        <td class="num"><strong>{{ row.evaluation__miner_uid }}</strong></td>
+        <td class="num"><strong>{{ row.total }}</strong></td>
+        <td class="num">
+          {% if row.pending > 0 %}<span class="warn">{{ row.pending }}</span>{% else %}<span class="muted">0</span>{% endif %}
+        </td>
+        <td class="num">{{ row.labeled|default:0 }}</td>
+        <td class="num">
+          {% if row.avg_delta is not None %}
+            {{ row.avg_delta|floatformat:2 }}
+          {% else %}
+            <span class="muted">&mdash;</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="small" style="margin-top: 0.5rem;">
+      Miners generating the most HITL-routed findings. High avg &Delta; means the miner
+      consistently claims severity far from what the audit assigns &mdash; worth checking
+      whether they're finding real edges or miscalibrated.
+    </p>
+    {% else %}
+    <p class="small">No HITL cases yet.</p>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- ======================== CURATOR CONTRIBUTIONS ======================== -->
+{% if curator_contributions %}
+<h3>Curator Contributions (last 7 days)</h3>
 <table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>Miner UID</th><th>Labeled At</th></tr>
+  <tr>
+    <th>Curator</th>
+    <th class="num">Actions</th>
+    <th class="num">Confirms</th>
+    <th class="num">Downgrades</th>
+    <th class="num">Escalates</th>
+  </tr>
+  {% for row in curator_contributions %}
+  <tr>
+    <td>{{ row.curator__username|default:"—" }}</td>
+    <td class="num"><strong>{{ row.total }}</strong></td>
+    <td class="num">{{ row.confirms }}</td>
+    <td class="num">{{ row.downgrades }}</td>
+    <td class="num">{{ row.escalates }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<hr style="margin: 2rem 0;">
+
+<!-- ======================== PENDING FINDINGS REVIEW ======================== -->
+<h3>Pending Finding Review ({{ pending|length }}{% if selected_category %} in <code>{{ selected_category }}</code>{% endif %})</h3>
+{% if pending %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th>#</th>
+    <th>Target</th>
+    <th>Category</th>
+    <th>Concern</th>
+    <th class="num">Severity</th>
+    <th class="num">Cues</th>
+    <th>Summary</th>
+    <th>Time</th>
+    <th></th>
+  </tr>
+  {% for f in pending %}
+  <tr>
+    <td>{{ f.pk }}</td>
+    <td>{{ f.evaluation.target.name }}</td>
+    <td><span class="chip cat">{{ f.category }}</span></td>
+    <td>
+      {% if f.evaluation.concern_id_slug %}
+        <a href="{% url 'concern_detail' f.evaluation.concern_id_slug %}">{{ f.evaluation.concern_id_slug }}</a>
+      {% else %}
+        <span class="muted">&mdash;</span>
+      {% endif %}
+    </td>
+    <td class="num err"><strong>{{ f.severity|floatformat:2 }}</strong></td>
+    <td class="num">
+      {% with cue_count=f.matched_cues.count %}
+        {% if cue_count > 0 %}
+          <span class="chip verified">{{ cue_count }}</span>
+        {% else %}
+          <span class="muted">0</span>
+        {% endif %}
+      {% endwith %}
+    </td>
+    <td class="small">{{ f.summary|truncatechars:60 }}</td>
+    <td class="small">{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
+    <td><a href="{% url 'curation_detail' f.pk %}">Review &rarr;</a></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="ok">No pending findings{% if selected_category %} in <code>{{ selected_category }}</code>{% endif %}.</p>
+{% endif %}
+
+<!-- ======================== RECENTLY CURATED ======================== -->
+<h3>Recently Curated</h3>
+{% if curated %}
+<table>
+  <tr>
+    <th>#</th>
+    <th>Target</th>
+    <th>Category</th>
+    <th class="num">Original</th>
+    <th class="num">Curated</th>
+    <th class="num">&Delta;</th>
+    <th>Time</th>
+  </tr>
+  {% for f in curated %}
+  <tr>
+    <td><a href="{% url 'curation_detail' f.pk %}">{{ f.pk }}</a></td>
+    <td>{{ f.evaluation.target.name }}</td>
+    <td><span class="chip cat">{{ f.category }}</span></td>
+    <td class="num">{{ f.severity|floatformat:2 }}</td>
+    <td class="num"><strong>{{ f.curated_severity|floatformat:2 }}</strong></td>
+    <td class="num small">
+      {% if f.curated_severity is not None %}
+        {% if f.curated_severity > f.severity %}
+          <span class="err">&uarr;</span>
+        {% elif f.curated_severity < f.severity %}
+          <span class="ok">&darr;</span>
+        {% else %}
+          <span class="muted">=</span>
+        {% endif %}
+      {% endif %}
+    </td>
+    <td class="small">{{ f.curated_at|date:"M d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="small">No curated findings yet.</p>
+{% endif %}
+
+<!-- ======================== RECENTLY LABELED/REMOVED HITL ======================== -->
+{% if hitl_recent_labeled %}
+<h4>Recently Labeled HITL</h4>
+<table>
+  <tr><th>#</th><th>Target</th><th>Category</th><th class="num">Miner UID</th><th>Labeled</th></tr>
   {% for c in hitl_recent_labeled %}
   <tr>
     <td>{{ c.pk }}</td>
     <td>{{ c.evaluation.target.name }}</td>
-    <td>{{ c.evaluation.category }}</td>
-    <td>{{ c.evaluation.miner_uid }}</td>
-    <td>{{ c.labeled_at|date:"M d H:i" }}</td>
+    <td><span class="chip cat">{{ c.evaluation.category }}</span></td>
+    <td class="num">{{ c.evaluation.miner_uid }}</td>
+    <td class="small">{{ c.labeled_at|date:"M d H:i" }}</td>
   </tr>
   {% endfor %}
 </table>
 {% endif %}
 
 {% if hitl_recent_removed %}
-<h4>Recently Removed</h4>
+<h4>Recently Removed HITL</h4>
 <table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>Removed By</th><th>Reason</th><th>Removed At</th></tr>
+  <tr><th>#</th><th>Target</th><th>Category</th><th>Removed by</th><th>Reason</th><th>Removed at</th></tr>
   {% for c in hitl_recent_removed %}
   <tr>
     <td>{{ c.pk }}</td>
     <td>{{ c.evaluation.target.name }}</td>
-    <td>{{ c.evaluation.category }}</td>
+    <td><span class="chip cat">{{ c.evaluation.category }}</span></td>
     <td>{{ c.removed_by.username|default:"—" }}</td>
-    <td>{{ c.removed_reason|truncatechars:60 }}</td>
-    <td>{{ c.removed_at|date:"M d H:i" }}</td>
+    <td class="small">{{ c.removed_reason|truncatechars:60 }}</td>
+    <td class="small">{{ c.removed_at|date:"M d H:i" }}</td>
   </tr>
   {% endfor %}
 </table>
 {% endif %}
 
-<hr>
-
-<h3>Pending Finding Review ({{ pending|length }})</h3>
-{% if pending %}
-<table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>Severity</th><th>Summary</th><th>Time</th><th></th></tr>
-  {% for f in pending %}
-  <tr>
-    <td>{{ f.pk }}</td>
-    <td>{{ f.evaluation.target.name }}</td>
-    <td>{{ f.category }}</td>
-    <td class="err">{{ f.severity|floatformat:2 }}</td>
-    <td>{{ f.summary|truncatechars:60 }}</td>
-    <td>{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
-    <td><a href="{% url 'curation_detail' f.pk %}">Review &rarr;</a></td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p class="ok">No pending findings.</p>
-{% endif %}
-
-<h3>Recently Curated</h3>
-{% if curated %}
-<table>
-  <tr><th>#</th><th>Target</th><th>Category</th><th>Original</th><th>Curated</th><th>Time</th></tr>
-  {% for f in curated %}
-  <tr>
-    <td><a href="{% url 'curation_detail' f.pk %}">{{ f.pk }}</a></td>
-    <td>{{ f.evaluation.target.name }}</td>
-    <td>{{ f.category }}</td>
-    <td>{{ f.severity|floatformat:2 }}</td>
-    <td>{{ f.curated_severity|floatformat:2 }}</td>
-    <td>{{ f.curated_at|date:"M d H:i" }}</td>
-  </tr>
-  {% endfor %}
-</table>
-{% else %}
-<p>No curated findings yet.</p>
-{% endif %}
 {% endblock %}

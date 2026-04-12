@@ -1,17 +1,14 @@
-{% load static %}<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Safeguard &mdash; Recent Activity</title>
-    <link rel="stylesheet" href="{% static 'public/css/public.css' %}">
-</head>
-<body>
+{% extends "public/base_public.html" %}
+
+{% block title %}Recent Activity &mdash; Safeguard{% endblock %}
+{% block nav_activity %}active{% endblock %}
+
+{% block content %}
 
 <section class="fade-in">
     <h2 class="section-header solution">Recent Activity</h2>
     <p style="color: #aaa; margin-bottom: 1rem;">
-        Live feed from this validator's concern catalog and cycle history. Every entry is derived from the same database the operator dashboard reads from &mdash; filtered through an explicit public-field allowlist that excludes transcripts, miner attribution, detection cues, and earnings. <a href="/" style="color: var(--solution-color);">&larr; Back to landing</a>
+        Live feed from this validator's concern catalog and cycle history. Every entry is derived from the same database the operator dashboard reads from &mdash; filtered through an explicit public-field allowlist that excludes transcripts, miner attribution, detection cues, and earnings.
     </p>
 
     <div class="activity-feed">
@@ -27,17 +24,10 @@
             <p class="activity-empty">No recent activity yet. The validator is warming up.</p>
         {% endfor %}
     </div>
+
+    <p style="color: #666; font-size: 0.8rem; margin-top: 2rem;">
+        Machine-readable: <a href="{% url 'public:activity_feed' %}" style="color: var(--solution-color);">/activity/feed.json</a>
+    </p>
 </section>
 
-<footer>
-    <div class="footer-links">
-        <a href="/">Home</a>
-        <a href="/activity/feed.json">JSON feed</a>
-        <a href="https://github.com/latent-to/safeguard" target="_blank">GitHub</a>
-    </div>
-    <p>Safeguard &mdash; Concern-outcome profiles on Bittensor.</p>
-</footer>
-
-<script src="{% static 'public/js/public.js' %}"></script>
-</body>
-</html>
+{% endblock %}

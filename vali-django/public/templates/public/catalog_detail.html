@@ -1,0 +1,50 @@
+{% extends "public/base_public.html" %}
+
+{% block title %}{{ concern.title }} &mdash; Concern Catalog &mdash; Safeguard{% endblock %}
+{% block nav_catalog %}active{% endblock %}
+
+{% block content %}
+
+<section class="fade-in">
+    <p style="margin-bottom: 0.5rem;">
+        <a href="{% url 'public:catalog' %}" style="color: var(--solution-color); font-size: 0.85rem;">&larr; Concern catalog</a>
+    </p>
+    <div class="catalog-detail-header">
+        <span class="catalog-entry-category">{{ concern.category }}</span>
+        <span class="catalog-entry-version">v{{ concern.version }}</span>
+    </div>
+    <h2 class="section-header solution">{{ concern.title }}</h2>
+
+    <p class="safeguard-pitch">{{ concern.concern_text }}</p>
+
+    <div style="color: #666; font-size: 0.8rem; margin: 2rem 0;">
+        Added {{ concern.created_at|date:"Y-m-d H:i" }} UTC
+        {% if concern.updated_at != concern.created_at %}
+            &middot; last updated {{ concern.updated_at|date:"Y-m-d H:i" }} UTC
+        {% endif %}
+    </div>
+
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 2rem; margin-bottom: 1rem;">User Triggers ({{ concern.triggers|length }})</h3>
+    <p style="color: #888; font-size: 0.85rem; margin-bottom: 1rem;">
+        Input-side framings probe miners use as seeds for adversarial probe generation. These are already public via <code>/api/concerns</code>; listed here for browsing convenience.
+    </p>
+
+    {% if concern.triggers %}
+        <div class="trigger-list">
+            {% for trigger in concern.triggers %}
+                <div class="trigger-row">
+                    <span class="trigger-kind">[{{ trigger.kind }}]</span>
+                    <span class="trigger-text">{{ trigger.trigger_text }}</span>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="activity-empty">No active triggers on this concern yet.</p>
+    {% endif %}
+
+    <p style="color: #666; font-size: 0.8rem; margin-top: 2.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+        Detection cues are not displayed publicly. Cues are the signatures the audit pipeline uses to recognize this concern in an AI response &mdash; exposing them to probe miners would let miners overfit to the audit. See <a href="https://github.com/latent-to/safeguard" target="_blank" style="color: var(--solution-color);">the repo</a> for the architectural rationale.
+    </p>
+</section>
+
+{% endblock %}

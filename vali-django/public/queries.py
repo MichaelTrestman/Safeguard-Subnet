@@ -1,11 +1,11 @@
-"""Typed, allowlist-only queries for the public activity feed.
+"""Typed, allowlist-only queries for the public site.
 
-INVARIANT: every function in this module returns ActivityRow instances,
-not Django model instances. The ActivityRow dataclass defines the only
-fields that may appear in a public response. A new field on any of the
-underlying models CANNOT leak through this layer unless someone edits
-both the model query AND the ActivityRow — that is the safety property
-this module exists to enforce.
+INVARIANT: every function in this module returns dataclass instances
+(ActivityRow, CatalogEntry, CatalogDetail), not Django model instances.
+The dataclasses define the ONLY fields that may appear in a public
+response. A new field on any underlying model CANNOT leak through this
+layer unless someone edits both the model query AND the dataclass —
+that is the safety property this module exists to enforce.
 
 NEVER emit from this module:
     miner_hotkey, curator_hotkey, curator_user, editor (FK to User),
@@ -13,9 +13,16 @@ NEVER emit from this module:
     evaluation.* (trigger FK leaks miner-attribution precision),
     earned_total, burn_share, submitted_weights, n_earned, owner_uid,
     transcript, snapshot, detection_cues (v1 JSONField),
-    example_prompts (v1 JSONField), DetectionCue.cue_text,
-    DetectionCue.kind, DetectionCue.hit_count,
+    example_prompts (v1 JSONField), DetectionCue.* (cue_text, kind,
+    hit_count — cues stay operator-side per the contract at
+    validator/models.py:476-478 "miners that see cues overfit on them"),
     ConcernRevision.snapshot, any row where provenance_verified=False.
+
+UserTrigger IS safe to emit publicly. The established contract from
+validator/models.py:476-478 says the `/api/concerns` serializer exposes
+triggers to miners but NOT cues. Public visitors include prospective
+miners, so the same reasoning applies — triggers are public, cues are
+never public.
 
 If you add a new source, add it to tests/test_public_activity_feed.py
 too. The test asserts the serialized JSON response contains none of the
@@ -23,9 +30,9 @@ forbidden field names above.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -154,6 +161,148 @@ def recent_cycle_heartbeats(limit: int = 10) -> List[ActivityRow]:
         )
         for r in rows
     ]
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """One row in the public concern catalog browse list. Emits only
+    whitelisted Concern fields. Never exposes curator identity, cues,
+    or v1 deprecated JSONField bags."""
+    id_slug: str
+    title: str
+    category: str
+    concern_text: str
+    version: int
+    created_at: datetime
+    trigger_count: int
+
+    def to_json(self) -> dict:
+        return {
+            "slug": self.id_slug,
+            "title": self.title,
+            "category": self.category,
+            "text": self.concern_text,
+            "version": self.version,
+            "created_at": self.created_at.isoformat(),
+            "trigger_count": self.trigger_count,
+        }
+
+
+@dataclass(frozen=True)
+class PublicTrigger:
+    """One UserTrigger as it appears in the public catalog detail view.
+
+    UserTrigger is explicitly miner-safe per validator/models.py:476-478
+    — the /api/concerns serializer exposes triggers to every probe
+    miner in the network, so triggers are safe to render publicly.
+    This dataclass exists so a future field addition to UserTrigger
+    does not automatically leak."""
+    trigger_text: str
+    kind: str       # "prompt" | "persona" | "context"
+
+    def to_json(self) -> dict:
+        return {"text": self.trigger_text, "kind": self.kind}
+
+
+@dataclass(frozen=True)
+class CatalogDetail:
+    """Full concern detail for the /catalog/<slug>/ page. Includes the
+    list of active triggers. NEVER includes cues, curator identity,
+    revision snapshots, or related_concerns (which could leak operator
+    curation decisions)."""
+    id_slug: str
+    title: str
+    category: str
+    concern_text: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    triggers: List[PublicTrigger] = field(default_factory=list)
+
+
+def list_public_concerns(category: Optional[str] = None, limit: int = 200) -> List[CatalogEntry]:
+    """All active concerns, optionally filtered by category.
+
+    Emits only `id_slug`, `title`, `category`, `concern_text`, `version`,
+    `created_at`, plus a count of active triggers per concern. Never
+    emits cues, curator attribution, deprecated v1 JSONField bags, or
+    severity priors.
+    """
+    from django.db.models import Count, Q
+    from validator.models import Concern
+
+    qs = Concern.objects.filter(active=True).annotate(
+        trigger_count=Count("triggers", filter=Q(triggers__active=True)),
+    ).order_by("category", "id_slug")
+
+    if category:
+        qs = qs.filter(category=category)
+
+    rows = qs.values(
+        "id_slug", "title", "category", "concern_text", "version",
+        "created_at", "trigger_count",
+    )[:limit]
+
+    return [
+        CatalogEntry(
+            id_slug=r["id_slug"],
+            title=r["title"],
+            category=r["category"],
+            concern_text=r["concern_text"] or "",
+            version=r["version"],
+            created_at=r["created_at"],
+            trigger_count=r["trigger_count"],
+        )
+        for r in rows
+    ]
+
+
+def list_public_categories() -> List[str]:
+    """Distinct categories across all active concerns. Used for the
+    catalog browse filter. Safe because category is a short static
+    string, not user-authored free text."""
+    from validator.models import Concern
+
+    return sorted(
+        Concern.objects.filter(active=True)
+        .values_list("category", flat=True)
+        .distinct()
+    )
+
+
+def get_public_concern(slug: str) -> Optional[CatalogDetail]:
+    """Full public-safe detail for a single active concern.
+
+    Returns None if the concern is inactive or does not exist. An
+    operator retiring a concern immediately removes it from public
+    view — there is no public access to the revision history.
+    """
+    from validator.models import Concern, UserTrigger
+
+    concern = Concern.objects.filter(id_slug=slug, active=True).values(
+        "id_slug", "title", "category", "concern_text",
+        "version", "created_at", "updated_at",
+    ).first()
+    if not concern:
+        return None
+
+    trigger_rows = UserTrigger.objects.filter(
+        concern__id_slug=slug, active=True,
+    ).order_by("id").values("trigger_text", "kind")
+
+    return CatalogDetail(
+        id_slug=concern["id_slug"],
+        title=concern["title"],
+        category=concern["category"],
+        concern_text=concern["concern_text"] or "",
+        version=concern["version"],
+        created_at=concern["created_at"],
+        updated_at=concern["updated_at"],
+        triggers=[
+            PublicTrigger(trigger_text=t["trigger_text"] or "", kind=t["kind"])
+            for t in trigger_rows
+        ],
+    )
 
 
 def get_activity_feed(limit: int = 20) -> List[ActivityRow]:

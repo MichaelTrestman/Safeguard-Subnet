@@ -27,18 +27,48 @@
     tr:hover { background: #111; }
     code { background: #1a1a1a; padding: 0.1rem 0.4rem; border-radius: 3px; }
     .topnav { margin: 0 0 1.5rem; padding: 0.5rem 0; border-bottom: 1px solid #222;
-              font-size: 0.9rem; }
-    .topnav a { margin-right: 1.5rem; color: #88f; }
+              font-size: 0.9rem; display: flex; align-items: center; flex-wrap: wrap;
+              gap: 1.5rem; }
+    .topnav a { color: #88f; }
     .topnav a.active { color: #fff; font-weight: bold; }
+    .topnav .topnav-sep { color: #333; user-select: none; }
+    .topnav .topnav-spacer { flex: 1 1 auto; }
+    .topnav-logout-form { margin: 0; padding: 0; display: inline; }
+    .topnav-logout-btn { background: none; border: none; color: #88f; cursor: pointer;
+                         font-family: inherit; font-size: 0.9rem; padding: 0; }
+    .topnav-logout-btn:hover { text-decoration: underline; color: #fff; }
   </style>
 </head>
 <body>
   <h1>Safeguard Validator</h1>
   <h2>{% block subtitle %}Operator console{% endblock %}</h2>
   <nav class="topnav">
-    <a href="{% url 'operator_dashboard' %}">Operator</a>
-    <a href="{% url 'concern_library' %}">Concerns</a>
-    <a href="{% url 'curation_queue' %}">Curation</a>
+    {# Public site links — reachable from every authed page #}
+    <a href="/">About</a>
+    <a href="{% url 'public:catalog' %}">Catalog</a>
+    <a href="{% url 'public:activity' %}">Activity</a>
+
+    {% if user.is_staff %}
+      <span class="topnav-sep">|</span>
+      <a href="{% url 'operator_dashboard' %}">Operator</a>
+      <a href="{% url 'concern_library' %}">Concerns</a>
+      <a href="{% url 'curation_queue' %}">Curation</a>
+    {% elif user.is_authenticated %}
+      <span class="topnav-sep">|</span>
+      <a href="{% url 'customer_dashboard' %}">Dashboard</a>
+    {% endif %}
+
+    {% if user.is_authenticated %}
+      <span class="topnav-spacer"></span>
+      <span style="color: #666; font-size: 0.85rem;">{{ user.username }}</span>
+      <form method="post" action="{% url 'logout' %}" class="topnav-logout-form">
+        {% csrf_token %}
+        <button type="submit" class="topnav-logout-btn">Sign Out</button>
+      </form>
+    {% else %}
+      <span class="topnav-spacer"></span>
+      <a href="{% url 'login' %}">Sign In</a>
+    {% endif %}
   </nav>
   {% block nav %}{% endblock %}
   {% block content %}{% endblock %}

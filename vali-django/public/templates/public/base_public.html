@@ -1,0 +1,54 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Safeguard &mdash; A Decentralized Immune System for the AI Ecosystem{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'public/css/public.css' %}">
+</head>
+<body>
+
+<!-- ==================== SITE HEADER ==================== -->
+<header class="site-header">
+    <nav class="site-nav" aria-label="Primary">
+        <a href="{% url 'public:landing' %}" class="site-logo" aria-label="Safeguard home">Safeguard</a>
+        <ul class="site-nav-tabs">
+            <li><a href="{% url 'public:landing' %}" class="nav-tab {% block nav_about %}{% endblock %}">About</a></li>
+            <li><a href="{% url 'public:catalog' %}" class="nav-tab {% block nav_catalog %}{% endblock %}">Catalog</a></li>
+            <li><a href="{% url 'public:activity' %}" class="nav-tab {% block nav_activity %}{% endblock %}">Activity</a></li>
+        </ul>
+        <ul class="site-nav-right">
+            <li><a href="https://github.com/latent-to/safeguard" target="_blank" rel="noopener" class="nav-tab">GitHub</a></li>
+            {% if user.is_authenticated %}
+                <li><a href="/app/" class="nav-tab nav-signin">Enter Dashboard</a></li>
+                <li>
+                    <form method="post" action="{% url 'logout' %}" style="display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="nav-tab nav-signout-btn">Sign Out</button>
+                    </form>
+                </li>
+            {% else %}
+                <li><a href="{% url 'login' %}" class="nav-tab nav-signin">Sign In</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+</header>
+
+{% block content %}{% endblock %}
+
+<!-- ==================== FOOTER ==================== -->
+<footer>
+    <div class="footer-links">
+        <a href="{% url 'public:landing' %}">About</a>
+        <a href="{% url 'public:catalog' %}">Catalog</a>
+        <a href="{% url 'public:activity' %}">Activity</a>
+        <a href="https://github.com/latent-to/safeguard" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://discord.gg/bittensor" target="_blank" rel="noopener">Discord</a>
+    </div>
+    <p>Safeguard &mdash; Concern-outcome profiles on Bittensor.</p>
+</footer>
+
+<script src="{% static 'public/js/public.js' %}"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

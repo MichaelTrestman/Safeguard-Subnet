@@ -1,48 +1,33 @@
-{% load static %}<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Safeguard &mdash; A Decentralized Immune System for the AI Ecosystem</title>
-    <link rel="stylesheet" href="{% static 'public/css/public.css' %}">
-</head>
-<body>
+{% extends "public/base_public.html" %}
+
+{% block title %}Safeguard &mdash; A Decentralized Immune System for the AI Ecosystem{% endblock %}
+{% block nav_about %}active{% endblock %}
+
+{% block content %}
 
 <!-- ==================== HERO ==================== -->
 <div class="hero">
     <h1>Safeguard: A Decentralized<br>Immune System for the AI Ecosystem</h1>
-    <p class="subtitle">When one AI fails, every AI in the network gets probed for the same failure.</p>
 
-    <a href="#what-it-is" class="hero-cta">What Safeguard Does</a>
+
 </div>
 
 <!-- ==================== WHAT IT IS ==================== -->
 <section class="fade-in" id="what-it-is">
     <h2 class="section-header solution">What Safeguard Does</h2>
     <p class="safeguard-pitch">
-        Safeguard is a decentralized safety-evaluation network for production AI. It continuously probes live AI services &mdash; chatbots, coding agents, enterprise assistants, customer-service models &mdash; for the ways they fail their users. Every validated failure becomes a <em>named concern</em>: a versioned, human-readable description of the situation that broke the AI, a rubric for spotting it again, and the transcripts that demonstrate it.
+        Safeguard is a decentralized safety research engine for artificial intelligence services.
+
+        It continuously probes live AI &mdash; chatbots, coding agents, enterprise assistants, customer-service models &mdash; for the ways they can harm or fail their users.
     </p>
     <p class="safeguard-pitch">
         Distributed red-teamers compete to find new ways AIs fail. Network operators curate the catalog. Humans adjudicate the edge cases where automated judges disagree. Customers &mdash; AI vendors, enterprise buyers, any organization shipping AI to users &mdash; register a target and receive a <em>concern-outcome profile</em>: an auditable record of which concerns were tested, which were found, how results are trending, and how their system compares to every other target in the network against the same rubric.
     </p>
     <p class="safeguard-pitch">
-        The catalog is public. It grows every cycle. The longer the network has been running, the more ways-AIs-fail it has already seen and turned into reusable tests &mdash; which is the part the immune system metaphor is actually for.
+        The catalog is public. <a href="{% url 'public:catalog' %}" style="color: var(--solution-color);">Browse it here &rarr;</a> It grows every cycle. The longer the network has been running, the more ways-AIs-fail it has already seen and turned into reusable tests &mdash; which is the part the immune system metaphor is actually for.
     </p>
 </section>
 
-<!-- ==================== WHY CONCERN PROFILES ==================== -->
-<section class="fade-in" id="the-product">
-    <h2 class="section-header solution">Why Concern Profiles Beat Safety Classifiers</h2>
-    <p class="safeguard-pitch">
-        A safety classifier is inflammation &mdash; <em>one number</em> that tells you something is wrong, but not what, not where, and not whether you've seen it before. A <em>concern-outcome profile</em> is adaptive immunity: a memory of named failure modes, per target service version, with finding rates, trends, human-labelled edges, and the transcripts that demonstrate each one.
-    </p>
-    <p class="safeguard-pitch">
-        <strong>The concern catalog is the product.</strong> Every concern a validator curates, every finding a human confirms, every edge the audit argues over &mdash; it all flows into a shared memory. A jailbreak that works on one enterprise assistant becomes a probe every other assistant gets tested against. An ops-safety lapse in a coding agent becomes a named concern every coding agent gets tested on. The more clients in the network, the more failure modes the catalog has already seen before they can reach your users.
-    </p>
-    <p class="safeguard-pitch">
-        Customers feed their own profile back in as patching training data for the next service version. Aggregates &mdash; at the concern level, tiered for ethics &mdash; become public research output. Named concerns make sandbagging harder to hide: a faked "safe" rate on a specific named concern is trend-detectable in a way that a single safety score is not.
-    </p>
-</section>
 
 <!-- ==================== BUILT ON BITTENSOR ==================== -->
 <section class="fade-in" id="built-on-bittensor">
@@ -74,6 +59,7 @@
     </p>
 </section>
 
+
 <!-- ==================== HOW IT WORKS ==================== -->
 <section class="fade-in" id="how-it-works">
     <h2 class="section-header solution">How It Works</h2>
@@ -100,6 +86,19 @@
             <p>Disagreement doesn't get averaged &mdash; it gets routed. A human reviews the transcript, the miner's rationale, and both sides of the audit. The label overrides the formula, updates the concern's stats, and &mdash; when the miner won the argument &mdash; pays a discovery bonus.</p>
         </div>
     </div>
+</section>
+<!-- ==================== WHY CONCERN PROFILES ==================== -->
+<section class="fade-in" id="the-product">
+    <h2 class="section-header solution">Why Concern Profiles Beat Safety Classifiers</h2>
+    <p class="safeguard-pitch">
+        A safety classifier is inflammation &mdash; <em>one number</em> that tells you something is wrong, but not what, not where, and not whether you've seen it before. A <em>concern-outcome profile</em> is adaptive immunity: a memory of named failure modes, per target service version, with finding rates, trends, human-labelled edges, and the transcripts that demonstrate each one.
+    </p>
+    <p class="safeguard-pitch">
+        <strong>The concern catalog is the product.</strong> Every concern a validator curates, every finding a human confirms, every edge the audit argues over &mdash; it all flows into a shared memory. A jailbreak that works on one enterprise assistant becomes a probe every other assistant gets tested against. An ops-safety lapse in a coding agent becomes a named concern every coding agent gets tested on. The more clients in the network, the more failure modes the catalog has already seen before they can reach your users.
+    </p>
+    <p class="safeguard-pitch">
+        Customers feed their own profile back in as patching training data for the next service version. Aggregates &mdash; at the concern level, tiered for ethics &mdash; become public research output. Named concerns make sandbagging harder to hide: a faked "safe" rate on a specific named concern is trend-detectable in a way that a single safety score is not.
+    </p>
 </section>
 
 <!-- ==================== THE CLOSED LOOP ==================== -->
@@ -217,7 +216,7 @@
     </div>
 </section>
 
-<!-- ==================== RECENT ACTIVITY (Phase 2 embed, populated by public.js) ==================== -->
+<!-- ==================== RECENT ACTIVITY (populated by public.js) ==================== -->
 <section class="fade-in" id="recent-activity">
     <h2 class="section-header solution">Recent Activity</h2>
     <p style="color: #aaa; margin-bottom: 1rem;">Live feed from this validator's concern catalog and audit history. <a href="{% url 'public:activity' %}" style="color: var(--solution-color);">Full activity &rarr;</a></p>
@@ -288,16 +287,4 @@
     </p>
 </section>
 
-<!-- ==================== FOOTER ==================== -->
-<footer>
-    <div class="footer-links">
-        <a href="{% url 'public:activity' %}">Activity</a>
-        <a href="https://github.com/latent-to/safeguard" target="_blank">GitHub</a>
-        <a href="https://discord.gg/bittensor" target="_blank">Discord</a>
-    </div>
-    <p>Safeguard &mdash; Concern-outcome profiles on Bittensor.</p>
-</footer>
-
-<script src="{% static 'public/js/public.js' %}"></script>
-</body>
-</html>
+{% endblock %}
