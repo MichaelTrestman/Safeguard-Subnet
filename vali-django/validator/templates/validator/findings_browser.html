@@ -1,0 +1,183 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Findings browser{% endblock %}
+{% block head_extra %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block content %}
+
+<style>
+  .filter-form { background: #0e0e0e; border: 1px solid #222; padding: 0.75rem 1rem;
+                 border-radius: 4px; margin-bottom: 1rem; display: flex;
+                 flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+  .filter-form label { display: flex; flex-direction: column; font-size: 0.8rem;
+                       color: #aaa; gap: 0.2rem; }
+  .filter-form select, .filter-form input[type="number"] {
+    background: #1a1a1a; color: #ddd; border: 1px solid #333; padding: 0.3rem 0.5rem;
+    border-radius: 3px; font-family: inherit; font-size: 0.85rem; min-width: 8rem; }
+  .filter-form .checkbox-wrap { flex-direction: row; align-items: center; gap: 0.4rem;
+                                padding-bottom: 0.4rem; }
+  .filter-form button { background: #224; color: #cce; border: 1px solid #446;
+                        padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer;
+                        font-family: inherit; font-size: 0.85rem; }
+  .filter-form button:hover { background: #335; color: #fff; }
+  .filter-form a.clear { color: #666; font-size: 0.8rem; text-decoration: underline;
+                         padding-bottom: 0.5rem; }
+  table.findings { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.findings th { text-align: left; padding: 0.5rem; border-bottom: 1px solid #333;
+                      color: #888; font-weight: normal; }
+  table.findings td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  table.findings tr:hover td { background: #141414; }
+  .sev-low { color: #44cc44; }
+  .sev-mid { color: #ffcc44; }
+  .sev-high { color: #ff6666; }
+  .count-banner { color: #aaa; margin-bottom: 0.75rem; font-size: 0.9rem; }
+  .count-banner strong { color: #ddd; }
+  .pager { margin-top: 1rem; padding: 0.5rem 0; color: #888; font-size: 0.85rem;
+           display: flex; gap: 1rem; align-items: center; }
+  .pager a { color: #88f; }
+  .pager .disabled { color: #333; }
+  .summary-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; color: #888; font-size: 0.75rem; }
+</style>
+
+<p class="small muted">
+  Every finding the audit pipeline produced. Filter by target, concern,
+  severity, curation status. Click through to the full evaluation transcript.
+</p>
+
+<form class="filter-form" method="get" action="">
+  <label>
+    Target
+    <select name="target">
+      <option value="">— any —</option>
+      {% for name in targets %}
+        <option value="{{ name }}"{% if q.target == name %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>
+    Category
+    <select name="category">
+      <option value="">— any —</option>
+      {% for c in categories %}
+        <option value="{{ c }}"{% if q.category == c %} selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>
+    Concern
+    <select name="concern">
+      <option value="">— any —</option>
+      {% for slug in concerns %}
+        <option value="{{ slug }}"{% if q.concern == slug %} selected{% endif %}>{{ slug }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>
+    Min severity
+    <input type="number" name="min_severity" value="{{ q.min_severity }}"
+           step="0.01" min="0" max="1" placeholder="0.00">
+  </label>
+
+  <label class="checkbox-wrap">
+    <input type="checkbox" name="critical" value="1"{% if q.critical %} checked{% endif %}>
+    Critical only
+  </label>
+
+  <label>
+    Curated
+    <select name="curated">
+      <option value="">— any —</option>
+      <option value="0"{% if q.curated == "0" %} selected{% endif %}>Uncurated</option>
+      <option value="1"{% if q.curated == "1" %} selected{% endif %}>Curated</option>
+    </select>
+  </label>
+
+  <button type="submit">Filter</button>
+  {% if q.target or q.category or q.concern or q.critical or q.curated or q.min_severity %}
+    <a class="clear" href="{% url 'findings_browser' %}">Clear filters</a>
+  {% endif %}
+</form>
+
+<div class="count-banner">
+  <strong>{{ total }}</strong> finding{{ total|pluralize }} matching ·
+  showing page {{ page }} ({{ rows|length }} row{{ rows|length|pluralize }})
+</div>
+
+<div class="table-wrap">
+  <table class="findings">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Target</th>
+        <th>Category</th>
+        <th>Concern</th>
+        <th class="num">Severity</th>
+        <th>Critical</th>
+        <th class="num">Cues</th>
+        <th>Curated</th>
+        <th>Summary</th>
+        <th>Eval</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in rows %}
+        <tr>
+          <td class="small">{{ f.evaluation.timestamp|date:"M d H:i" }}</td>
+          <td class="small">
+            <a href="{% url 'target_detail' f.evaluation.target.name %}">{{ f.evaluation.target.name }}</a>
+          </td>
+          <td class="small">{{ f.category }}</td>
+          <td class="small">
+            {% if f.evaluation.concern_id_slug %}
+              <a href="{% url 'concern_detail' f.evaluation.concern_id_slug %}">{{ f.evaluation.concern_id_slug }}</a>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="num {% if f.severity >= 0.7 %}sev-high{% elif f.severity >= 0.4 %}sev-mid{% else %}sev-low{% endif %}">
+            {{ f.severity|floatformat:2 }}
+          </td>
+          <td>
+            {% if f.critical %}<span class="chip critical">critical</span>{% else %}<span class="muted small">—</span>{% endif %}
+          </td>
+          <td class="num">{{ f.matched_cues.count }}</td>
+          <td>
+            {% if f.curated %}
+              <span class="chip verified">curated</span>
+            {% else %}
+              <span class="chip legacy">pending</span>
+            {% endif %}
+          </td>
+          <td class="summary-cell" title="{{ f.summary }}">{{ f.summary|truncatechars:80 }}</td>
+          <td>
+            <a href="{% url 'eval_detail' f.evaluation.task_id %}" style="font-family:monospace;font-size:0.75rem;">{{ f.evaluation.task_id|slice:":10" }}…</a>
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="10" class="muted small" style="padding: 1rem; text-align: center;">
+            No findings match the current filters.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="pager">
+  {% if has_prev %}
+    <a href="?{% if base_qs %}{{ base_qs }}&{% endif %}page={{ prev_page }}">‹ prev</a>
+  {% else %}
+    <span class="disabled">‹ prev</span>
+  {% endif %}
+  <span>page {{ page }}</span>
+  {% if has_next %}
+    <a href="?{% if base_qs %}{{ base_qs }}&{% endif %}page={{ next_page }}">next ›</a>
+  {% else %}
+    <span class="disabled">next ›</span>
+  {% endif %}
+</div>
+
+{% endblock %}

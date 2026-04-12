@@ -1054,6 +1054,100 @@ def runs_browser(request: HttpRequest) -> HttpResponse:
     })
 
 
+# --- Operator findings browser (staff only) ------------------------------
+
+
+@staff_required
+def findings_browser(request: HttpRequest) -> HttpResponse:
+    """Filterable paginated browser of ALL Finding rows. Complements
+    the runs browser (which shows Evaluations) with a finding-centric
+    view for inspecting what the audit pipeline actually surfaced."""
+    from .models import Finding
+
+    qs = (
+        Finding.objects
+        .select_related("evaluation", "evaluation__target")
+        .prefetch_related("matched_cues")
+        .order_by("-severity")
+    )
+
+    q_target = (request.GET.get("target") or "").strip()
+    q_category = (request.GET.get("category") or "").strip()
+    q_concern = (request.GET.get("concern") or "").strip()
+    q_critical = request.GET.get("critical") == "1"
+    q_curated = request.GET.get("curated", "").strip()
+    q_min_sev = (request.GET.get("min_severity") or "").strip()
+
+    if q_target:
+        qs = qs.filter(evaluation__target__name=q_target)
+    if q_category:
+        qs = qs.filter(category=q_category)
+    if q_concern:
+        qs = qs.filter(evaluation__concern_id_slug=q_concern)
+    if q_critical:
+        qs = qs.filter(critical=True)
+    if q_curated == "1":
+        qs = qs.filter(curated=True)
+    elif q_curated == "0":
+        qs = qs.filter(curated=False)
+    if q_min_sev:
+        try:
+            qs = qs.filter(severity__gte=float(q_min_sev))
+        except ValueError:
+            pass
+
+    PAGE_SIZE = 100
+    try:
+        page = max(1, int(request.GET.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * PAGE_SIZE
+    total = qs.count()
+    rows = list(qs[offset : offset + PAGE_SIZE])
+
+    targets = sorted(set(
+        Finding.objects.values_list(
+            "evaluation__target__name", flat=True,
+        ).distinct()
+    ))
+    categories = sorted(set(
+        Finding.objects.values_list("category", flat=True).distinct()
+    ))
+    concerns = sorted(set(
+        Finding.objects.exclude(evaluation__concern_id_slug="")
+        .values_list("evaluation__concern_id_slug", flat=True).distinct()
+    ))
+
+    from urllib.parse import urlencode
+    base_qs = urlencode({
+        k: v for k, v in request.GET.items() if k != "page" and v
+    })
+
+    return render(request, "validator/findings_browser.html", {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "page_size": PAGE_SIZE,
+        "has_next": offset + PAGE_SIZE < total,
+        "has_prev": page > 1,
+        "next_page": page + 1,
+        "prev_page": page - 1,
+        "targets": targets,
+        "categories": categories,
+        "concerns": concerns,
+        "base_qs": base_qs,
+        "q": {
+            "target": q_target,
+            "category": q_category,
+            "concern": q_concern,
+            "critical": q_critical,
+            "curated": q_curated,
+            "min_severity": q_min_sev,
+        },
+        "nav_active": "findings",
+    })
+
+
 # --- Customer dashboard (stub views, implemented in task 8) -------------
 
 

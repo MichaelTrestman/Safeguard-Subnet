@@ -76,6 +76,7 @@
       <a href="{% url 'operator_dashboard' %}"{% if nav_active == 'operator' %} class="active"{% endif %}>Operator</a>
       <a href="{% url 'targets_compare' %}"{% if nav_active == 'targets' %} class="active"{% endif %}>Targets</a>
       <a href="{% url 'runs_browser' %}"{% if nav_active == 'runs' %} class="active"{% endif %}>Runs</a>
+      <a href="{% url 'findings_browser' %}"{% if nav_active == 'findings' %} class="active"{% endif %}>Findings</a>
       <a href="{% url 'concern_library' %}"{% if nav_active == 'concerns' %} class="active"{% endif %}>Concerns</a>
       <a href="{% url 'curation_queue' %}"{% if nav_active == 'curation' %} class="active"{% endif %}>Curation</a>
     {% elif user.is_authenticated %}

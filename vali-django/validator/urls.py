@@ -14,6 +14,7 @@ urlpatterns = [
     path("targets/<str:name>/", views.target_detail, name="target_detail"),
     path("eval/<str:task_id>/", views.eval_detail, name="eval_detail"),
     path("runs/", views.runs_browser, name="runs_browser"),
+    path("findings/", views.findings_browser, name="findings_browser"),
     path("control/probes-per-cycle", views.control_probes_per_cycle, name="control_probes_per_cycle"),
 
     # Customer dashboard (customer login)
