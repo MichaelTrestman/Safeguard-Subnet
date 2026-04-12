@@ -273,10 +273,53 @@ class ConcernCatalog:
     def concerns_for(self, category: str) -> list[ConcernEntry]:
         return self.by_category.get(category, [])
 
+    def _build_entry_from_row(self, row) -> ConcernEntry:
+        """Construct a ConcernEntry from a prefetched Concern ORM row.
+        Extracted out of load_from_db so the retirement-fallback path
+        in concern_for_slug can share the same construction."""
+        active_cues = [
+            DetectionCueEntry(id=c.id, cue_text=c.cue_text, kind=c.kind)
+            for c in row.cues.all()
+            if c.active
+        ]
+        active_triggers = [
+            UserTriggerEntry(id=t.id, trigger_text=t.trigger_text, kind=t.kind)
+            for t in row.triggers.all()
+            if t.active
+        ]
+        return ConcernEntry(
+            id_slug=row.id_slug,
+            category=row.category,
+            title=row.title,
+            concern_text=row.concern_text,
+            severity_prior=row.severity_prior,
+            active_cues=active_cues,
+            active_triggers=active_triggers,
+        )
+
     def concern_for_slug(self, id_slug: str) -> ConcernEntry | None:
         if not id_slug:
             return None
-        return self.by_slug.get(id_slug)
+        entry = self.by_slug.get(id_slug)
+        if entry is not None:
+            return entry
+        # Retirement fallback: the concern may have been retired
+        # between dispatch and audit. Load the inactive row from the
+        # DB and build a one-shot ConcernEntry so the audit can still
+        # score the probe against the concern as it was when
+        # dispatched. Per DESIGN.md §2 the `active=True` filter
+        # governs dispatch selection, not audit lookup — if the
+        # validator dispatched a concern, the audit should be able
+        # to score against it even if it's been retired in the
+        # meantime.
+        from .models import Concern
+        try:
+            row = Concern.objects.prefetch_related("cues", "triggers").get(
+                id_slug=id_slug,
+            )
+        except Concern.DoesNotExist:
+            return None
+        return self._build_entry_from_row(row)
 
     # Back-compat shim — one release of overlap. Old call sites that
     # still say `library.patterns_for(cat)` resolve through here.
@@ -314,36 +357,10 @@ class ConcernCatalog:
         loaded_cues = 0
         loaded_triggers = 0
         for row in rows:
-            active_cues = [
-                DetectionCueEntry(
-                    id=c.id,
-                    cue_text=c.cue_text,
-                    kind=c.kind,
-                )
-                for c in row.cues.all()
-                if c.active
-            ]
-            active_triggers = [
-                UserTriggerEntry(
-                    id=t.id,
-                    trigger_text=t.trigger_text,
-                    kind=t.kind,
-                )
-                for t in row.triggers.all()
-                if t.active
-            ]
-            entry = ConcernEntry(
-                id_slug=row.id_slug,
-                category=row.category,
-                title=row.title,
-                concern_text=row.concern_text,
-                severity_prior=row.severity_prior,
-                active_cues=active_cues,
-                active_triggers=active_triggers,
-            )
+            entry = self._build_entry_from_row(row)
             self.add(entry)
-            loaded_cues += len(active_cues)
-            loaded_triggers += len(active_triggers)
+            loaded_cues += len(entry.active_cues)
+            loaded_triggers += len(entry.active_triggers)
         logger.info(
             f"Loaded concern catalog from DB: {len(rows)} concerns across "
             f"{len(self.by_category)} categories "

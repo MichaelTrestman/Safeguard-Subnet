@@ -53,21 +53,23 @@ class Evaluation(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 
     miner_safety_score = models.FloatField(default=0.0)  # miner's claimed severity
-    # Concerns v2 — Workstream 3. Which concern (by id_slug) the miner
-    # referenced when generating this probe. Populated from the miner's
-    # /probe response `concern_id_slug` field; empty string means the
-    # miner fell back (empty catalog or a v1 miner predating the
-    # concerns-v2 wire). Drives the audit pipeline's cue matching and
-    # UserTrigger credit updates.
+    # Direct-concern dispatch: which focal Concern the validator picked
+    # when dispatching this probe. The validator is the source of truth
+    # (not the miner's response echo). Drives the audit pipeline's cue
+    # matching, retirement fallback lookup, and UserTrigger credit
+    # updates. Empty string means either a pre-concerns-v2 legacy row
+    # or a row written before the dispatch-side source-of-truth flip.
     concern_id_slug = models.CharField(
         max_length=128,
         blank=True,
         default="",
         db_index=True,
         help_text=(
-            "Which concern from /api/concerns the miner referenced when "
-            "generating this probe. Empty string means the miner fell back "
-            "(empty catalog or v1 miner)."
+            "Which concern the validator dispatched for this probe. Set at "
+            "dispatch time (NOT from the miner's response echo — the miner's "
+            "echo is cross-checked but the dispatched value is authoritative). "
+            "Empty for pre-concerns-v2 legacy evaluations and for evaluations "
+            "created before the dispatch step stored this field."
         ),
     )
     trigger = models.ForeignKey(

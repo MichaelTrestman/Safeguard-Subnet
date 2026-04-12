@@ -44,14 +44,27 @@ from .wallet_lock import acquire as acquire_wallet_lock, WalletLockError
 
 logger = logging.getLogger("vali.loop")
 
-# Default scenario categories used when a RegisteredTarget didn't specify
-# its own. Mirrored from validator/views.py — eventually consolidate into
-# a constants module if a third caller appears. The miner picks the
-# category at dispatch time.
-DEFAULT_SCENARIO_CATEGORIES = [
-    "self-harm", "illegal-activity", "fraud",
-    "harassment", "pii-generation", "unauthorized-access",
-]
+def _pick_focal_concern(concerns: list[dict]) -> dict | None:
+    """Pick a focal Concern for a probe. 50/50 alternation between
+    severity-weighted random and uniform random per probe.
+
+    - Weighted branch: uses `severity_prior` as the weight.
+      Zero-weight concerns are excluded from the weighted branch but
+      still get picked via the uniform branch the other 50% of the
+      time, so they never fully starve.
+    - Uniform branch: plain random.choice.
+
+    Input is a list of dict rows with the keys `id_slug`, `category`,
+    and `severity_prior` (as produced by `_resolve_active_concerns`).
+    Returns None on an empty input list.
+    """
+    if not concerns:
+        return None
+    if random.random() < 0.5:
+        weights = [max(0.0, float(c.get("severity_prior") or 0.0)) for c in concerns]
+        if sum(weights) > 0:
+            return random.choices(concerns, weights=weights, k=1)[0]
+    return random.choice(concerns)
 
 # Per-probe HTTP timeout. Miners run multiple LLM calls per task so this
 # has to be generous — 600s matches the legacy validator and is the same
@@ -171,6 +184,7 @@ async def _send_probe_to_miner(
     task_id: str,
     target_endpoint: str,
     category: str,
+    concern_id_slug: str,
     client_hotkey: str = "",
 ) -> dict | None:
     """POST one probe task to one miner's /probe endpoint, signed with
@@ -183,11 +197,17 @@ async def _send_probe_to_miner(
     market — it is NEVER a reason to skip the miner from future dispatch.
     Skipping registered miners is censorship and a Yuma Consensus violation.
 
-    Wire format is the same as legacy `send_task_to_miner`:
+    Wire format:
         POST {miner_endpoint}/probe
         Content-Type: application/json
         X-Epistula-* headers
-        body = {"task_id": ..., "target_validator_endpoint": ..., "scenario_category": ...}
+        body = {"task_id": ..., "target_validator_endpoint": ...,
+                "scenario_category": ..., "concern_id_slug": ...}
+
+    `concern_id_slug` is the validator-picked focal concern for this
+    probe — the miner is expected to probe against THAT specific concern.
+    `scenario_category` is retained for logging / back-compat and is
+    always set to the concern's category.
     """
     import httpx
     from .epistula import create_epistula_headers
@@ -200,6 +220,7 @@ async def _send_probe_to_miner(
         "task_id": task_id,
         "target_validator_endpoint": target_endpoint,
         "scenario_category": category,
+        "concern_id_slug": concern_id_slug,
     }
     from django.conf import settings as _settings
     relay_ep = getattr(_settings, "SAFEGUARD_RELAY_ENDPOINT", "")
@@ -254,88 +275,51 @@ async def _dispatch_target_to_miners(
     """
     import httpx
 
-    # DESIGN.md §2 "Customer-scoped concerns via RegisteredTarget".
-    # When the target has at least one active Concern wired through
-    # RegisteredTarget.concerns, restrict the category pool to the
-    # categories those concerns are filed under. Empty set ->
-    # fall back to the operator-configured `target.categories`
-    # (legacy dispatch) -> fall back to DEFAULT_SCENARIO_CATEGORIES.
-    #
-    # Must wrap in sync_to_async: `target.concerns.filter(...)` is a
-    # Django ORM call and this function runs inside the asyncio loop.
-    # Without the wrap, Django raises SynchronousOnlyOperation and the
-    # outer try/except swallows it on every dispatch — the feature
-    # never works and the log gets a warning per tick.
+    # Direct-concern dispatch. The validator curates the concern
+    # catalog and IS the source of research questions per DESIGN.md §2
+    # "Concerns, curated by validators." For each probe, pick a focal
+    # Concern from the active catalog (50/50 severity-weighted vs
+    # uniform via _pick_focal_concern) and send its id_slug to the
+    # miner. `scenario_category` is carried alongside as `concern.category`
+    # for log labeling and back-compat during miner rollout.
     @sync_to_async
-    def _resolve_scoped_categories() -> list[str]:
-        try:
-            return sorted({
-                c for c in target.concerns.filter(active=True).values_list(
-                    "category", flat=True
-                ) if c
-            })
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                f"[dispatch] failed to read target.concerns for "
-                f"{target.name}: {e}"
+    def _resolve_active_concerns() -> list[dict]:
+        """Snapshot of active Concern rows as lightweight dicts with
+        the fields the dispatcher needs. Returns dicts (not ORM
+        instances) so nothing escapes the sync boundary."""
+        from .models import Concern
+        return list(
+            Concern.objects.filter(active=True).values(
+                "id_slug", "category", "severity_prior",
             )
-            return []
+        )
 
-    @sync_to_async
-    def _resolve_global_concern_categories() -> set[str]:
-        """Set of categories where at least one active Concern exists in
-        the validator-curated catalog. Used to restrict dispatch to
-        concern-covered categories so every probe is anchored on a real
-        research question the operator has authored. Per DESIGN.md §2
-        "Concerns, curated by validators": curation is how the operator
-        decides what's worth researching, and probes exist to answer
-        those concerns. A probe in an uncovered category has no research
-        question to answer — it would only exercise the pre-concerns
-        fallback judge rubric."""
-        try:
-            from .models import Concern
-            return set(
-                Concern.objects.filter(active=True)
-                .values_list("category", flat=True)
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                f"[dispatch] failed to read global concern categories: {e}"
-            )
-            return set()
+    active_concerns = await _resolve_active_concerns()
 
-    scoped_categories = await _resolve_scoped_categories()
-    concern_covered = await _resolve_global_concern_categories()
-
-    if scoped_categories:
-        categories = scoped_categories
-    else:
-        categories = target.categories or DEFAULT_SCENARIO_CATEGORIES
-        if not categories:
-            categories = DEFAULT_SCENARIO_CATEGORIES
-
-    # Restrict the dispatch pool to concern-covered categories when any
-    # overlap exists. Every probe gets anchored on an active concern —
-    # the validator (per DESIGN.md §2) is the one deciding what's worth
-    # researching, and probes that land in uncovered categories only
-    # produce generic-rubric fallback scoring which is the thing the
-    # concerns v2 shift was built to replace. Fall back to the legacy
-    # uniform pool only when the catalog has zero overlap (empty
-    # catalog, or a target configured for categories the operator has
-    # not yet curated) — otherwise the system would go dark.
-    covered_pool = [c for c in categories if c in concern_covered]
-    if covered_pool:
-        categories = covered_pool
+    if not active_concerns:
+        logger.warning(
+            "[dispatch] empty concern catalog — skipping probe dispatch "
+            f"for target={target.name} (author concerns in the operator UI "
+            "to start dispatching probes)"
+        )
+        return 0, []
 
     hotkeys = list(metagraph.hotkeys)
 
     async def _one(uid: int, endpoint: str) -> dict | None:
         async with semaphore:
             task_id = str(uuid.uuid4())
-            category = random.choice(categories)
+            focal = _pick_focal_concern(active_concerns)
+            if focal is None:
+                # Defensive — the empty-catalog check above should
+                # have already returned, but guard against a race
+                # where the catalog is cleared mid-dispatch.
+                return None
+            concern_id_slug = focal["id_slug"]
+            category = focal["category"]
             response = await _send_probe_to_miner(
                 client, wallet, endpoint, task_id,
-                target.relay_endpoint, category,
+                target.relay_endpoint, category, concern_id_slug,
                 client_hotkey=target.client_hotkey,
             )
             if response is None:
@@ -345,6 +329,7 @@ async def _dispatch_target_to_miners(
                 "hotkey": hotkeys[uid] if 0 <= uid < len(hotkeys) else "",
                 "task_id": task_id,
                 "category": category,
+                "concern_id_slug": concern_id_slug,
                 "response": response,
             }
 
@@ -1579,12 +1564,22 @@ def _persist_in_progress_evaluations(
             uid = r["uid"]
             transcript = response.get("transcript", [])
             miner_safety_score = float(response.get("miner_safety_score", 0.0))
-            # Concerns v2 — Workstream 3. The miner tells us which
-            # concern they referenced when generating this probe. Null
-            # or missing means the miner fell back (empty catalog or
-            # v1 miner); we store "" rather than None so the DB field
-            # is non-nullable.
-            concern_id_slug = response.get("concern_id_slug", "") or ""
+            # Direct-concern dispatch: the validator is the source of
+            # truth for concern_id_slug. We dispatched a specific focal
+            # concern to this miner; store THAT value on the Evaluation
+            # row, not whatever the miner happens to echo back. The
+            # echo is cross-checked as a sanity signal — a mismatch
+            # indicates an internal miner bug (concern switched mid-
+            # probe) or a Byzantine miner lying about which concern it
+            # probed. Log a warning but use the dispatched value.
+            concern_id_slug = r.get("concern_id_slug", "") or ""
+            echoed = response.get("concern_id_slug", "") or ""
+            if echoed and echoed != concern_id_slug:
+                logger.warning(
+                    f"[dispatch cross-check] miner uid={uid} echoed "
+                    f"concern_id_slug={echoed!r} but we dispatched "
+                    f"{concern_id_slug!r} — using dispatched value"
+                )
 
             # Concerns v2 — TA-V.2. The miner may also attach a
             # `trigger_id` pointing at the specific UserTrigger row it
