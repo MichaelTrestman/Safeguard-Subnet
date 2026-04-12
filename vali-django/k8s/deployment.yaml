@@ -6,6 +6,9 @@ metadata:
   labels: { app: vali-django }
 spec:
   replicas: 1
+  # NOTE: Recreate (not RollingUpdate) because the ReadWriteOnce PVC
+  # can only be mounted by one pod at a time. For zero-downtime deploys,
+  # remove the PVC dependency or switch to ReadWriteMany storage.
   strategy:
     type: Recreate
   selector:
