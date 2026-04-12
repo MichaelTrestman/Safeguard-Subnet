@@ -1,13 +1,13 @@
 {% extends "public/base_public.html" %}
 
-{% block title %}Safeguard &mdash; A Decentralized Immune System for the AI Ecosystem{% endblock %}
+{% block title %}SafeGuard &mdash; A Decentralized Immune System for the AI Ecosystem{% endblock %}
 {% block nav_about %}active{% endblock %}
 
 {% block content %}
 
 <!-- ==================== HERO ==================== -->
 <div class="hero">
-    <h1>Safeguard: A Decentralized<br>Immune System for the AI Ecosystem</h1>
+    <h1>SafeGuard: A Decentralized<br>Immune System for the AI Ecosystem</h1>
     <p class="subtitle">Continuous adversarial safety testing for live AI services.<br>
     Crowdsourced red-teaming. Human input on hard cases. An evolving model of the human/AI threat boundary.</p>
     <a href="{% url 'public:catalog' %}" class="hero-cta">Browse the concern catalog &rarr;</a>
@@ -15,16 +15,16 @@
 
 <!-- ==================== WHAT IT IS ==================== -->
 <section class="fade-in" id="what-it-is">
-    <h2 class="section-header solution">The Safeguard Way</h2>
-    <p class="safeguard-pitch">
-        Safeguard is a decentralized safety research engine for artificial intelligence services.
+    <h2 class="section-header solution">The SafeGuard Way</h2>
+    <p class="SafeGuard-pitch">
+        SafeGuard is a decentralized safety research engine for artificial intelligence services.
 
         It continuously probes live AI &mdash; chatbots, coding agents, enterprise assistants, customer-service models &mdash; for the ways they can harm or fail their users.
     </p>
-    <p class="safeguard-pitch">
+    <p class="SafeGuard-pitch">
         Distributed red-teamers compete to find new ways AIs fail. Network operators curate the catalog. Humans adjudicate the edge cases where automated judges disagree. Customers &mdash; AI vendors, enterprise buyers, any organization shipping AI to users &mdash; register a target and receive a <em>concern-outcome profile</em>: an auditable record of which concerns were tested, which were found, how results are trending, and how their system compares to every other target in the network against the same rubric.
     </p>
-    <p class="safeguard-pitch">
+    <p class="SafeGuard-pitch">
         The catalog of concerns and risk factors is public. <a href="{% url 'public:catalog' %}" style="color: var(--solution-color);">Browse it here &rarr;</a> It grows every cycle. The longer SafeGuard runs, the more ways-AIs-fail it has seen and turned into reusable tests.
     </p>
 </section>
@@ -33,8 +33,8 @@
 <!-- ==================== BUILT ON BITTENSOR ==================== -->
 <section class="fade-in" id="built-on-bittensor">
     <h2 class="section-header solution">Built on Bittensor</h2>
-    <p class="safeguard-pitch">
-        Safeguard runs as a subnet on <a href="https://bittensor.com" target="_blank">Bittensor</a>, a decentralized network where open economic roles replace the single-vendor model. No one company owns the concern catalog, the target list, or the scoring rubric. Three open roles keep the network running, and every contribution is paid on chain in TAO.
+    <p class="SafeGuard-pitch">
+        SafeGuard runs as a subnet on <a href="https://learnbittensor.org/" target="_blank">Bittensor</a>, a decentralized network where open economic roles replace the single-vendor model. No one company owns the concern catalog, the target list, or the scoring rubric. Three open roles keep the network running, and every contribution is paid on chain in TAO.
     </p>
 
     <div class="how-it-works">
@@ -53,11 +53,11 @@
         <div class="step-card">
             <div class="step-number">Delegators</div>
             <h3>The Underwriters</h3>
-            <p>Anyone holding TAO can stake on a Safeguard validator and earn a share of network emissions. Delegation is the capital layer of the network &mdash; it's how the infrastructure pays for itself without a sales team, a single paying customer, or permission from a gatekeeper. No KYC, no custody, no whitelist.</p>
+            <p>Anyone holding TAO can stake on a SafeGuard validator and earn a share of network emissions. Delegation is the capital layer of the network &mdash; it's how the infrastructure pays for itself without a sales team, a single paying customer, or permission from a gatekeeper. No KYC, no custody, no whitelist.</p>
         </div>
     </div>
 
-    <p class="safeguard-pitch" style="margin-top: 2rem;">
+    <p class="SafeGuard-pitch" style="margin-top: 2rem;">
         Why Bittensor as the substrate? A single company running the world's shared AI failure catalog has the same problem as a single company running the DNS root: the architecture has to be open for the catalog to be trusted, and the incentives have to pay in something other than one company's payroll budget.
     </p>
 </section>
@@ -70,57 +70,45 @@
     <div class="how-it-works">
         <div class="step-card">
             <div class="step-number">Step 01</div>
-            <h3>Concerns Get Curated</h3>
-            <p>A concern is not a prompt. It's a situation and a hypothesis &mdash; e.g. "the AI walks a rushed user through staging their .env file into a commit, even when it normally knows better." Validator operators author, version, merge and retire concerns. Curation is validator work, not a separate mining incentive.</p>
+            <h3>Concerns</h3>
+            <p>The SafeGuard model starts with a *concern*, which is a natural language description of a bad situation we want to avoid and want to test under what conditions it might happen &mdash; e.g. "the AI walks a rushed user through staging their .env file into a commit."</p>
         </div>
         <div class="step-card">
             <div class="step-number">Step 02</div>
             <h3>Miners Probe Through The Relay</h3>
-            <p>Probe miners fetch the active concern catalog, pick an angle of attack, and conduct a multi-turn adversarial conversation through Safeguard's relay. Every target response is cryptographically committed before the miner sees it &mdash; fabricated findings earn zero.</p>
+            <p>Probe miners fetch the active concern catalog, pick an angle of attack, and conduct a multi-turn adversarial conversation through SafeGuard's relay. Every target response is cryptographically committed before the miner sees it to prevent fabrication.</p>
         </div>
         <div class="step-card">
             <div class="step-number">Step 03</div>
-            <h3>Diverse Judges Audit</h3>
+            <h3>Diverse Auditors</h3>
             <p>The miner and the validator run <em>different models</em> over the same transcripts using the <em>same rubric</em>. Convergence is cheap; <em>disagreement</em> is the signal that a transcript sits on a meaningful edge. The rubric is the source of truth &mdash; model choice is deliberately diverse.</p>
         </div>
         <div class="step-card">
             <div class="step-number">Step 04</div>
             <h3>Humans Adjudicate The Edges</h3>
-            <p>Disagreement doesn't get averaged &mdash; it gets routed. A human reviews the transcript, the miner's rationale, and both sides of the audit. The label overrides the formula, updates the concern's stats, and &mdash; when the miner won the argument &mdash; pays a discovery bonus.</p>
+            <p>Disagreement between AI judges doesn't get averaged &mdash; it gets investigated. A human reviews the transcript, the miner's rationale, and both sides of the audit. The label overrides the formula, updates the concern's stats, and &mdash; when the miner won the argument &mdash; pays a discovery bonus.<br>
+            Human review is not mere quality control for when the AI is confused, it's how the knowledge gets made. The diverse-judge mechanism routes edge cases to humans efficiently &mdash; human attention is spent on the transcripts where two well-calibrated models can't agree, which is exactly where new concerns are born and rubrics evolve, and we want to avoid wasting our miners' valuable time on easy cases&dash;they are experts, not drones. The incentive mechanism will reflect that by rewarding people well for valuable insights, not paying the bare minimum for drudging data entry.</p>
         </div>
     </div>
-</section>
-<!-- ==================== WHY CONCERN PROFILES ==================== -->
-<section class="fade-in" id="the-product">
-    <h2 class="section-header solution">Why Concern Profiles Beat Safety Classifiers</h2>
-    <p class="safeguard-pitch">
-        A safety classifier is inflammation &mdash; <em>one number</em> that tells you something is wrong, but not what, not where, and not whether you've seen it before. A <em>concern-outcome profile</em> is adaptive immunity: a memory of named failure modes, per target service version, with finding rates, trends, human-labelled edges, and the transcripts that demonstrate each one.
-    </p>
-    <p class="safeguard-pitch">
-        <strong>The concern catalog is the product.</strong> Every concern a validator curates, every finding a human confirms, every edge the audit argues over &mdash; it all flows into a shared memory. A jailbreak that works on one enterprise assistant becomes a probe every other assistant gets tested against. An ops-safety lapse in a coding agent becomes a named concern every coding agent gets tested on. The more clients in the network, the more failure modes the catalog has already seen before they can reach your users.
-    </p>
-    <p class="safeguard-pitch">
-        Customers feed their own profile back in as patching training data for the next service version. Aggregates &mdash; at the concern level, tiered for ethics &mdash; become public research output. Named concerns make sandbagging harder to hide: a faked "safe" rate on a specific named concern is trend-detectable in a way that a single safety score is not.
-    </p>
 </section>
 
 <!-- ==================== THE CLOSED LOOP ==================== -->
 <section class="fade-in" id="closed-loop">
     <h2 class="section-header solution">The Closed Loop</h2>
-    <p class="safeguard-pitch">
-        Most AI safety products do one or two of these things. Safeguard does all four, and the loop is the point &mdash; every pass sharpens the next.
+    <p class="SafeGuard-pitch">
+        Most AI safety products do one or two of these things. SafeGuard does all four, and the loop is the point &mdash; every pass sharpens the next.
     </p>
 
     <div class="how-it-works">
         <div class="step-card">
             <div class="step-number">Discover</div>
             <h3>Find What Nobody<br>Reported Yet</h3>
-            <p>A vulnerability scanner is a library of known attacks. It can't find what nobody's filed a PR for. Safeguard pays miners to probe live targets and argue novel findings &mdash; new concerns enter the catalog from field discovery, not from release notes.</p>
+            <p>A vulnerability scanner is a library of known attacks. It can't find what nobody's filed a PR for. SafeGuard pays miners to probe live targets and argue novel findings &mdash; new concerns enter the catalog from field discovery, not from release notes.</p>
         </div>
         <div class="step-card">
             <div class="step-number">Catalogue</div>
             <h3>Turn Findings Into<br>Named Concerns</h3>
-            <p>A bounty platform rewards a clever jailbreak, cuts a cheque, and lets the finding evaporate into a private report. Safeguard curates every validated discovery into a named, versioned concern. Tomorrow's miners fetch today's findings from the same catalog every customer gets tested against.</p>
+            <p>A bounty platform rewards a clever jailbreak, cuts a cheque, and lets the finding evaporate into a private report. SafeGuard curates every validated discovery into a named, versioned concern. Tomorrow's miners fetch today's findings from the same catalog every customer gets tested against.</p>
         </div>
         <div class="step-card">
             <div class="step-number">Propagate</div>
@@ -130,57 +118,19 @@
         <div class="step-card">
             <div class="step-number">Refine</div>
             <h3>Humans Sharpen<br>The Edges</h3>
-            <p>A benchmark scores once and goes stale. Safeguard routes the edge cases &mdash; where two diverse judges can't agree &mdash; to human adjudicators, whose labels rewrite rubrics and spawn new concerns. The catalog doesn't just grow. It gets sharper exactly where automation fails.</p>
+            <p>A benchmark scores once and goes stale. SafeGuard routes the edge cases &mdash; where two diverse judges can't agree &mdash; to human adjudicators, whose labels rewrite rubrics and spawn new concerns. The catalog doesn't just grow. It gets sharper exactly where automation fails.</p>
         </div>
     </div>
 
-    <p class="safeguard-pitch" style="margin-top: 2rem;">
+    <p class="SafeGuard-pitch" style="margin-top: 2rem;">
         Scanners have the catalogue. Bounties have the discovery. Benchmarks have the shared memory. Enterprise red-teams have the humans. Nothing else runs them as one loop &mdash; which is why, in every other approach, the network gets no stronger after you buy it.
-    </p>
-</section>
-
-<!-- ==================== DESIGN PRINCIPLES ==================== -->
-<section class="fade-in">
-    <h2 class="section-header solution">Four Principles</h2>
-    <p class="safeguard-pitch">
-        If a change contradicts any of them, the change is wrong.
-    </p>
-    <div class="how-it-works">
-        <div class="step-card">
-            <div class="step-number">01</div>
-            <h3>Diversity Of Model,<br>Convergence Of Rubric</h3>
-            <p>One source of truth for the rubric text; different models on each side. Two calls to the same model give you noise. Two models reading the same rubric and disagreeing give you an edge worth a human's time.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">02</div>
-            <h3>Concerns, Curated<br>By Validators</h3>
-            <p>Concerns are the unit of evaluation. Validators curate them against threat intelligence, incident reports, customer asks and HITL-surfaced edges. The catalog is public; miners fetch it at run time.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">03</div>
-            <h3>Miners Mine Findings<br>That Match Concerns</h3>
-            <p>Baseline income for easy findings the audit agrees with. A <em>discovery bonus</em> for miners who argue a novel case and win when a human adjudicates. The incentive rewards discovery, not imitation of the audit.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">04</div>
-            <h3>Other Subnets Are<br>Customers, Not Competitors</h3>
-            <p>Every Safeguard evaluation makes a peer subnet more credible to regulators, enterprises and users. Open by default. Cross-subnet by design. No custodial burns, no whitelists, no self-mining.</p>
-        </div>
-    </div>
-</section>
-
-<!-- ==================== HITL AS VALUE LAYER ==================== -->
-<section class="fade-in">
-    <h2 class="section-header solution">Humans Refine The Edges</h2>
-    <p class="safeguard-pitch">
-        Human review is not quality control for when the AI is confused. It's where the knowledge gets made. The diverse-judge mechanism routes edge cases to humans efficiently &mdash; human attention is spent on the transcripts where two well-calibrated models can't agree, which is exactly where new concerns are born and rubrics evolve.
     </p>
 </section>
 
 <!-- ==================== WHAT'S RUNNING ==================== -->
 <section class="fade-in">
     <h2 class="section-header solution">Live Now</h2>
-    <p style="color: #aaa; margin-bottom: 1rem;">Safeguard is running on Bittensor testnet with real probes, real audits, and real chain economics.</p>
+    <p style="color: #aaa; margin-bottom: 1rem;">SafeGuard is running on Bittensor testnet with real probes, real audits, and real chain economics.</p>
 
     <div class="reports-grid">
         <div class="report-card">
@@ -200,8 +150,8 @@
         </div>
         <div class="report-card">
             <div class="report-status">Live</div>
-            <h3>Multi-Persona Comparative Testing</h3>
-            <p>The same concern catalog is tested against multiple target personas simultaneously &mdash; different system-prompt framings, same model. Differential finding rates reveal which framings break safety guardrails.</p>
+            <h3>Multi-Persona Fuzz Testing</h3>
+            <p>The same concern catalog is currently being tested against minimally prompt engineered  target personas to allow us to test our system by revealing the differences even subtle prompt context differences can cause downstream.</p>
         </div>
     </div>
 </section>
@@ -222,23 +172,23 @@
     <div class="participate-grid">
         <div class="participate-card">
             <h3>Register A Target</h3>
-            <p>Your AI product or Bittensor subnet registers with Safeguard, picks the concerns you want tested, and receives a concern-outcome profile &mdash; an auditable record of what was tested and what was found.</p>
-            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Integration Guide</a>
+            <p>Your AI product or Bittensor subnet registers with SafeGuard, picks the concerns you want tested, and receives a concern-outcome profile &mdash; an auditable record of what was tested and what was found.</p>
+            <a href="https://github.com/MichaelTrestman/SafeGuard-Subnet#readme" target="_blank" class="card-cta">Integration Guide</a>
         </div>
         <div class="participate-card">
             <h3>Run A Probe Miner</h3>
             <p>Fetch the concern catalog. Pick an angle. Conduct multi-turn adversarial probes through the relay. When you find something novel, argue it &mdash; human labels override the audit, and winning pays a discovery bonus.</p>
-            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Miner Docs</a>
+            <a href="https://github.com/MichaelTrestman/SafeGuard-Subnet#readme" target="_blank" class="card-cta">Miner Docs</a>
         </div>
         <div class="participate-card">
             <h3>Run A Validator</h3>
             <p>Curate your own concern catalog. Dispatch probes to miners. Run the audit pipeline. Route edge cases to human reviewers. Set chain weights. Your curation shapes what the entire network tests for.</p>
-            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Validator Setup</a>
+            <a href="https://github.com/MichaelTrestman/SafeGuard-Subnet#readme" target="_blank" class="card-cta">Validator Setup</a>
         </div>
         <div class="participate-card">
             <h3>Delegate</h3>
-            <p>Stake TAO on Safeguard validators and earn emissions while underwriting the evaluation infrastructure other subnets depend on to become trustworthy.</p>
-            <a href="https://github.com/MichaelTrestman/Safeguard-Subnet#readme" target="_blank" class="card-cta">Delegate TAO</a>
+            <p>Stake TAO on SafeGuard validators and earn emissions while underwriting the evaluation infrastructure other subnets depend on to become trustworthy.</p>
+            <a href="https://github.com/MichaelTrestman/SafeGuard-Subnet#readme" target="_blank" class="card-cta">Delegate TAO</a>
         </div>
     </div>
 </section>
