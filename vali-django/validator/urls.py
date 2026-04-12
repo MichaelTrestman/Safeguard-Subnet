@@ -12,6 +12,7 @@ urlpatterns = [
     path("operator/", views.operator_dashboard, name="operator_dashboard"),
     path("targets/<str:name>/", views.target_detail, name="target_detail"),
     path("eval/<str:task_id>/", views.eval_detail, name="eval_detail"),
+    path("runs/", views.runs_browser, name="runs_browser"),
 
     # Customer dashboard (customer login)
     path("dashboard/", views.customer_dashboard, name="customer_dashboard"),

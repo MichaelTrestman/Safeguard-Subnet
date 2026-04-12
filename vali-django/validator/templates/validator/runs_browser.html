@@ -1,0 +1,191 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Runs browser{% endblock %}
+{% block content %}
+
+<style>
+  .chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
+          font-size: 0.7rem; text-transform: uppercase; font-weight: bold;
+          vertical-align: middle; }
+  .chip.finding { background: #4a1111; color: #ff8888; }
+  .chip.benign { background: #1a2a1a; color: #6a8a6a; }
+  .chip.verified { background: #0a3a0a; color: #44cc44; }
+  .chip.fabricated { background: #3a1133; color: #ff66aa; }
+  .chip.legacy { background: #2a2a2a; color: #888; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .small { font-size: 0.75rem; color: #666; }
+  .muted { color: #555; }
+  .filter-form { background: #0e0e0e; border: 1px solid #222; padding: 0.75rem 1rem;
+                 border-radius: 4px; margin-bottom: 1rem; display: flex;
+                 flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+  .filter-form label { display: flex; flex-direction: column; font-size: 0.8rem;
+                       color: #aaa; gap: 0.2rem; }
+  .filter-form select, .filter-form input[type="text"], .filter-form input[type="number"] {
+    background: #1a1a1a; color: #ddd; border: 1px solid #333; padding: 0.3rem 0.5rem;
+    border-radius: 3px; font-family: inherit; font-size: 0.85rem; min-width: 8rem; }
+  .filter-form .checkbox-wrap { flex-direction: row; align-items: center; gap: 0.4rem;
+                                padding-bottom: 0.4rem; }
+  .filter-form button { background: #224; color: #cce; border: 1px solid #446;
+                        padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer;
+                        font-family: inherit; font-size: 0.85rem; }
+  .filter-form button:hover { background: #335; color: #fff; }
+  .filter-form a.clear { color: #666; font-size: 0.8rem; text-decoration: underline;
+                         padding-bottom: 0.5rem; }
+  .table-wrap { overflow-x: auto; }
+  table.runs { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.runs th { text-align: left; padding: 0.5rem; border-bottom: 1px solid #333;
+                  color: #888; font-weight: normal; }
+  table.runs td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  table.runs tr:hover td { background: #141414; }
+  table.runs td.task a { color: #88f; font-family: monospace; font-size: 0.75rem; }
+  .pager { margin-top: 1rem; padding: 0.5rem 0; color: #888; font-size: 0.85rem;
+           display: flex; gap: 1rem; align-items: center; }
+  .pager a { color: #88f; }
+  .pager .disabled { color: #333; }
+  .count-banner { color: #aaa; margin-bottom: 0.75rem; font-size: 0.9rem; }
+  .count-banner strong { color: #ddd; }
+</style>
+
+<p class="small muted">
+  Every evaluation, not just findings. Use this to hunt for patterns in
+  benign probes — concerns the catalog doesn't yet cover, unexpected
+  category crossover, miners probing the same concern too tightly.
+</p>
+
+<form class="filter-form" method="get" action="">
+  <label>
+    Category
+    <select name="category">
+      <option value="">— any —</option>
+      {% for c in categories %}
+        <option value="{{ c }}"{% if q.category == c %} selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>
+    Concern slug
+    <select name="concern">
+      <option value="">— any —</option>
+      {% for slug in concerns %}
+        <option value="{{ slug }}"{% if q.concern == slug %} selected{% endif %}>{{ slug }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>
+    Miner UID
+    <input type="text" name="uid" value="{{ q.uid }}" placeholder="any">
+  </label>
+
+  <label>
+    Min severity
+    <input type="number" name="min_severity" value="{{ q.min_severity }}"
+           step="0.01" min="0" max="1" placeholder="0.00">
+  </label>
+
+  <label>
+    Max severity
+    <input type="number" name="max_severity" value="{{ q.max_severity }}"
+           step="0.01" min="0" max="1" placeholder="1.00">
+  </label>
+
+  <label class="checkbox-wrap">
+    <input type="checkbox" name="only_findings" value="1"{% if q.only_findings %} checked{% endif %}>
+    Only rows with findings
+  </label>
+
+  <button type="submit">Filter</button>
+  {% if q.category or q.concern or q.uid or q.min_severity or q.max_severity or q.only_findings %}
+    <a class="clear" href="{% url 'runs_browser' %}">Clear filters</a>
+  {% endif %}
+</form>
+
+<div class="count-banner">
+  <strong>{{ total }}</strong> run{{ total|pluralize }} matching ·
+  showing page {{ page }} ({{ rows|length }} row{{ rows|length|pluralize }})
+</div>
+
+<div class="table-wrap">
+  <table class="runs">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Task</th>
+        <th>Miner</th>
+        <th>Category</th>
+        <th>Concern</th>
+        <th class="num">Miner claim</th>
+        <th class="num">Audit</th>
+        <th class="num">Accepted</th>
+        <th>Finding</th>
+        <th>Prov</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in rows %}
+        <tr>
+          <td class="small">{{ e.timestamp|date:"M d H:i" }}</td>
+          <td class="task">
+            <a href="{% url 'eval_detail' e.task_id %}">{{ e.task_id|slice:":12" }}…</a>
+          </td>
+          <td class="num">{{ e.miner_uid }}</td>
+          <td class="small">{{ e.category|default:"—" }}</td>
+          <td class="small">
+            {% if e.concern_id_slug %}
+              {{ e.concern_id_slug }}
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ e.miner_safety_score|floatformat:2 }}</td>
+          <td class="num">
+            {% if e.audit_score is not None %}
+              {{ e.audit_score|floatformat:2 }}
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ e.accepted_severity|floatformat:2 }}</td>
+          <td>
+            {% if e.findings.all %}
+              <span class="chip finding">finding</span>
+            {% else %}
+              <span class="chip benign">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if e.provenance_verified is None %}
+              <span class="chip legacy">legacy</span>
+            {% elif e.provenance_verified %}
+              <span class="chip verified">ok {{ e.provenance_turns_verified }}</span>
+            {% else %}
+              <span class="chip fabricated">fab</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="10" class="muted small" style="padding: 1rem; text-align: center;">
+            No runs match the current filters.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="pager">
+  {% if has_prev %}
+    <a href="?{% if base_qs %}{{ base_qs }}&{% endif %}page={{ prev_page }}">‹ prev</a>
+  {% else %}
+    <span class="disabled">‹ prev</span>
+  {% endif %}
+  <span>page {{ page }}</span>
+  {% if has_next %}
+    <a href="?{% if base_qs %}{{ base_qs }}&{% endif %}page={{ next_page }}">next ›</a>
+  {% else %}
+    <span class="disabled">next ›</span>
+  {% endif %}
+</div>
+
+{% endblock %}
