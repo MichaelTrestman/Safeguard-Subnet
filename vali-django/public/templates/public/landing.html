@@ -1,6 +1,6 @@
 {% extends "public/base_public.html" %}
 
-{% block title %}SafeGuard &mdash; A Decentralized Immune System for the AI Ecosystem{% endblock %}
+{% block title %}SafeGuard &mdash; A Decentralized Immune System for the Human/AI Boundary{% endblock %}
 {% block nav_about %}active{% endblock %}
 
 {% block content %}
@@ -8,8 +8,8 @@
 <!-- ==================== HERO ==================== -->
 <div class="hero">
     <h1>SafeGuard: A Decentralized<br>Immune System for the AI Ecosystem</h1>
-    <p class="subtitle">Continuous adversarial safety testing for live AI services.<br>
-    Crowdsourced red-teaming. Human input on hard cases. An evolving model of the human/AI threat boundary.</p>
+    <p class="subtitle">Adversarial safety testing for AI services.<br>
+    Crowdsourced red-teaming. <br>Human input on hard cases. <br>An evolving model threat of the human/AI interface boundary, powered by AI/human collaboration.</p>
     <a href="{% url 'public:catalog' %}" class="hero-cta">Browse the concern catalog &rarr;</a>
 </div>
 
@@ -92,40 +92,6 @@
     </div>
 </section>
 
-<!-- ==================== THE CLOSED LOOP ==================== -->
-<section class="fade-in" id="closed-loop">
-    <h2 class="section-header solution">The Closed Loop</h2>
-    <p class="SafeGuard-pitch">
-        Most AI safety products do one or two of these things. SafeGuard does all four, and the loop is the point &mdash; every pass sharpens the next.
-    </p>
-
-    <div class="how-it-works">
-        <div class="step-card">
-            <div class="step-number">Discover</div>
-            <h3>Find What Nobody<br>Reported Yet</h3>
-            <p>A vulnerability scanner is a library of known attacks. It can't find what nobody's filed a PR for. SafeGuard pays miners to probe live targets and argue novel findings &mdash; new concerns enter the catalog from field discovery, not from release notes.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">Catalogue</div>
-            <h3>Turn Findings Into<br>Named Concerns</h3>
-            <p>A bounty platform rewards a clever jailbreak, cuts a cheque, and lets the finding evaporate into a private report. SafeGuard curates every validated discovery into a named, versioned concern. Tomorrow's miners fetch today's findings from the same catalog every customer gets tested against.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">Propagate</div>
-            <h3>Shared Memory<br>Across Clients</h3>
-            <p>An enterprise red-team engagement is a one-time report that dies inside one company's Jira. A failure found in one customer's coding agent becomes a named concern every coding agent in the network gets tested on &mdash; before the next customer's users have to find it the hard way.</p>
-        </div>
-        <div class="step-card">
-            <div class="step-number">Refine</div>
-            <h3>Humans Sharpen<br>The Edges</h3>
-            <p>A benchmark scores once and goes stale. SafeGuard routes the edge cases &mdash; where two diverse judges can't agree &mdash; to human adjudicators, whose labels rewrite rubrics and spawn new concerns. The catalog doesn't just grow. It gets sharper exactly where automation fails.</p>
-        </div>
-    </div>
-
-    <p class="SafeGuard-pitch" style="margin-top: 2rem;">
-        Scanners have the catalogue. Bounties have the discovery. Benchmarks have the shared memory. Enterprise red-teams have the humans. Nothing else runs them as one loop &mdash; which is why, in every other approach, the network gets no stronger after you buy it.
-    </p>
-</section>
 
 <!-- ==================== WHAT'S RUNNING ==================== -->
 <section class="fade-in">
