@@ -1,0 +1,93 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Compare: {{ exp_a.title }} vs {{ exp_b.title }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; Compare</p>{% endblock %}
+
+{% block head_extra %}
+<style>
+  .cmp-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.2rem; }
+  .cmp-side { padding: 0.8rem 1rem; }
+  .cmp-a { border-left: 3px solid #6ea; }
+  .cmp-b { border-left: 3px solid #6cf; }
+  .cmp-grid th, .cmp-grid td { vertical-align: top; padding: 0.5rem; }
+  .cmp-cell { min-width: 180px; }
+  .cmp-differ { background: #2a1a1a; border-radius: 4px; padding: 0.4rem; }
+  .cmp-match  { background: #0d1f0d; border-radius: 4px; padding: 0.4rem; }
+  .cmp-empty  { color: #666; font-style: italic; padding: 0.4rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h3 style="margin-top:0;">Compare experiments</h3>
+
+<div class="cmp-meta">
+  <div class="card cmp-side cmp-a">
+    <div class="small muted" style="margin-bottom:0.2rem;">A</div>
+    <div><strong><a href="{% url 'experiment_detail' slug=exp_a.slug %}">{{ exp_a.title }}</a></strong></div>
+    <div class="small">Target: {{ exp_a.target.name }}</div>
+    <div class="small">Schema v{{ exp_a.field_schema_version }} &middot; {{ n_trials_a }} trial{{ n_trials_a|pluralize }} &middot; {{ exp_a.get_status_display }}</div>
+  </div>
+  <div class="card cmp-side cmp-b">
+    <div class="small muted" style="margin-bottom:0.2rem;">B</div>
+    <div><strong><a href="{% url 'experiment_detail' slug=exp_b.slug %}">{{ exp_b.title }}</a></strong></div>
+    <div class="small">Target: {{ exp_b.target.name }}</div>
+    <div class="small">Schema v{{ exp_b.field_schema_version }} &middot; {{ n_trials_b }} trial{{ n_trials_b|pluralize }} &middot; {{ exp_b.get_status_display }}</div>
+  </div>
+</div>
+
+<p class="small" style="margin-bottom:0.6rem;">Cells where A's modal value differs from B's are highlighted red. Green = same modal. Em-dashes = no claims yet for that (entity, field). Accuracy (if schema has expected_values) shows on the second line.</p>
+
+<div class="table-wrap">
+<table class="cmp-grid">
+  <thead>
+    <tr>
+      <th>Entity</th>
+      <th>Field</th>
+      <th style="border-left:3px solid #6ea;">A &middot; {{ exp_a.target.name }}</th>
+      <th style="border-left:3px solid #6cf;">B &middot; {{ exp_b.target.name }}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+      {% for cell in row.cells %}
+      <tr>
+        {% if forloop.first %}
+        <td rowspan="{{ row.n_cells }}"><strong>{{ row.entity_display }}</strong><br><span class="small muted">{{ row.entity_key }}</span></td>
+        {% endif %}
+        <td class="small"><code>{{ cell.field_name }}</code></td>
+        <td class="cmp-cell">
+          {% if cell.a %}
+            <div class="{% if cell.differ %}cmp-differ{% else %}cmp-match{% endif %}">
+              <div style="font-weight:bold;color:{% if cell.a.bucket == 'green' %}#6ee66e{% elif cell.a.bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.a.modal_value|truncatechars:48 }}</div>
+              <div class="small">{{ cell.a.rate_pct }}% &middot; {{ cell.a.modal_count }}/{{ cell.a.total }}</div>
+              {% if cell.a.has_expected %}
+              <div class="small" style="color:{% if cell.a.acc_bucket == 'green' %}#6ee66e{% elif cell.a.acc_bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">
+                {{ cell.a.acc_rate_pct }}% correct vs "{{ cell.a.expected_value|truncatechars:24 }}"
+              </div>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="cmp-empty">&mdash;</div>
+          {% endif %}
+        </td>
+        <td class="cmp-cell">
+          {% if cell.b %}
+            <div class="{% if cell.differ %}cmp-differ{% else %}cmp-match{% endif %}">
+              <div style="font-weight:bold;color:{% if cell.b.bucket == 'green' %}#6ee66e{% elif cell.b.bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.b.modal_value|truncatechars:48 }}</div>
+              <div class="small">{{ cell.b.rate_pct }}% &middot; {{ cell.b.modal_count }}/{{ cell.b.total }}</div>
+              {% if cell.b.has_expected %}
+              <div class="small" style="color:{% if cell.b.acc_bucket == 'green' %}#6ee66e{% elif cell.b.acc_bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">
+                {{ cell.b.acc_rate_pct }}% correct vs "{{ cell.b.expected_value|truncatechars:24 }}"
+              </div>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="cmp-empty">&mdash;</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

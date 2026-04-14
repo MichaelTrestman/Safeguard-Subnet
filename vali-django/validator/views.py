@@ -2545,11 +2545,28 @@ def experiment_detail(request: HttpRequest, slug: str) -> HttpResponse:
             "any_expected": any_expected,
         }
 
+    # v2.3 — siblings that share the same schema shape, for one-click
+    # "Compare" links. Small set (same-schema experiments are few); walk
+    # in Python rather than storing a denormalized fingerprint.
+    compare_candidates = []
+    my_fp = _schema_fingerprint(experiment.field_schema or {})
+    if my_fp != ((), ()):
+        for other in (
+            Experiment.objects.exclude(pk=experiment.pk)
+            .select_related("target")
+            .order_by("-created_at")
+        ):
+            if _schema_fingerprint(other.field_schema or {}) == my_fp:
+                compare_candidates.append(other)
+                if len(compare_candidates) >= 20:
+                    break
+
     return render(request, "validator/experiment_detail.html", {
         "experiment": experiment,
         "trial_summaries": trial_summaries,
         "total_inconsistencies": total_inconsistencies,
         "field_grid": field_grid,
+        "compare_candidates": compare_candidates,
         "nav_active": "experiments",
     })
 
@@ -2901,3 +2918,215 @@ def experiment_reextract(request: HttpRequest, slug: str) -> HttpResponse:
         f"trials={n_trials} total_claims={total_extracted}"
     )
     return redirect("experiment_detail", slug=slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def experiment_toggle_public(request: HttpRequest, slug: str) -> HttpResponse:
+    """Flip Experiment.is_public. Only completed experiments can go public;
+    refuse to expose drafts/running/failed rows even if the operator asks.
+    """
+    from .models import Experiment
+
+    experiment = get_object_or_404(Experiment, slug=slug)
+    if not experiment.is_public and experiment.status != Experiment.STATUS_COMPLETED:
+        return HttpResponse(
+            "Only completed experiments can be made public.", status=400,
+        )
+    experiment.is_public = not experiment.is_public
+    experiment.save(update_fields=["is_public"])
+    return redirect("experiment_detail", slug=slug)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.3 — clone for comparison + side-by-side compare view
+# ---------------------------------------------------------------------------
+
+
+def _schema_fingerprint(schema: dict) -> tuple:
+    """Stable identity for a field_schema: sorted entity keys + sorted
+    field names. Display names, descriptions, types, and expected_values
+    may differ between compared experiments — only the shape matters.
+    """
+    schema = schema or {}
+    ekeys = tuple(sorted(
+        (e.get("key") or "") for e in (schema.get("entities") or [])
+    ))
+    fnames = tuple(sorted(
+        (f.get("name") or "") for f in (schema.get("fields") or [])
+    ))
+    return (ekeys, fnames)
+
+
+def _field_grid_payload(experiment) -> dict | None:
+    """Shared aggregation: return the same `field_grid` structure that
+    experiment_detail computes, for a single experiment. None if the
+    experiment has no schema. Used by compare view to avoid duplicating
+    the query/nest/rollup logic.
+    """
+    from .models import ExtractedClaim
+    from django.db.models import Count, Q
+
+    schema = experiment.field_schema or {}
+    entities = schema.get("entities") or []
+    fields = schema.get("fields") or []
+    expected_values = schema.get("expected_values") or {}
+    if not entities or not fields:
+        return None
+
+    grouped = (
+        ExtractedClaim.objects
+        .filter(experiment=experiment)
+        .values("entity_key", "field_name", "value_text")
+        .annotate(
+            count=Count("id"),
+            n_correct=Count("id", filter=Q(matches_expected=True)),
+            n_incorrect=Count("id", filter=Q(matches_expected=False)),
+        )
+    )
+    nested: dict = {}
+    for row in grouped:
+        nested.setdefault(row["entity_key"], {}) \
+              .setdefault(row["field_name"], {})[row["value_text"]] = {
+                  "count": row["count"],
+                  "n_correct": row["n_correct"],
+                  "n_incorrect": row["n_incorrect"],
+              }
+
+    def _b(r):
+        if r >= 0.8: return "green"
+        if r >= 0.5: return "yellow"
+        return "red"
+
+    cells_by_coord: dict = {}
+    for ent in entities:
+        ek = ent["key"]
+        expected_for_entity = expected_values.get(ek, {})
+        for f in fields:
+            fn = f["name"]
+            values = nested.get(ek, {}).get(fn, {})
+            total = sum(v["count"] for v in values.values())
+            if total == 0:
+                cells_by_coord[(ek, fn)] = None
+                continue
+            modal_value, modal_stats = max(
+                values.items(), key=lambda kv: kv[1]["count"]
+            )
+            rate = modal_stats["count"] / total
+            n_correct = sum(v["n_correct"] for v in values.values())
+            n_incorrect = sum(v["n_incorrect"] for v in values.values())
+            n_rated = n_correct + n_incorrect
+            has_expected = fn in expected_for_entity and n_rated > 0
+            acc_rate = (n_correct / n_rated) if n_rated else None
+            cells_by_coord[(ek, fn)] = {
+                "modal_value": modal_value,
+                "modal_count": modal_stats["count"],
+                "total": total,
+                "rate": rate,
+                "rate_pct": int(round(rate * 100)),
+                "bucket": _b(rate),
+                "has_expected": has_expected,
+                "expected_value": expected_for_entity.get(fn, ""),
+                "acc_rate_pct": int(round(acc_rate * 100)) if acc_rate is not None else None,
+                "acc_bucket": _b(acc_rate) if acc_rate is not None else None,
+            }
+    return cells_by_coord
+
+
+@staff_required
+@require_http_methods(["POST"])
+def experiment_clone(request: HttpRequest, slug: str) -> HttpResponse:
+    """v2.3 — Create a child experiment with the same schema, for
+    target-version comparison workflows. Operator edits target afterward
+    via the schema/edit flow if they want it pointed at a different target.
+    parent_experiment FK lets the detail page surface "this is a clone of…"
+    and "compared against…" linkages.
+    """
+    from .models import Experiment
+
+    parent = get_object_or_404(Experiment, slug=slug)
+    new_slug = _generate_unique_experiment_slug(parent.title + " clone")
+    child = Experiment.objects.create(
+        slug=new_slug,
+        title=parent.title + " (clone)",
+        experiment_type=parent.experiment_type,
+        status=Experiment.STATUS_DRAFT,
+        target=parent.target,
+        challenge_claim=parent.challenge_claim,
+        consistency_check_claim=parent.consistency_check_claim,
+        runs_per_trial=parent.runs_per_trial,
+        field_schema=parent.field_schema,
+        field_schema_version=parent.field_schema_version,
+        parent_experiment=parent,
+        created_by=request.user,
+    )
+    return redirect("experiment_detail", slug=child.slug)
+
+
+@staff_required
+def experiment_compare(request: HttpRequest, slug_a: str, slug_b: str) -> HttpResponse:
+    """v2.3 — Side-by-side comparison of two experiments' field grids.
+    Typical use: same schema, different target (or same target, different
+    target version). Refuses to compare experiments whose schemas have
+    different shape (entity keys ∪ field names).
+    """
+    from .models import Experiment, Evaluation
+
+    exp_a = get_object_or_404(Experiment, slug=slug_a)
+    exp_b = get_object_or_404(Experiment, slug=slug_b)
+
+    fp_a = _schema_fingerprint(exp_a.field_schema or {})
+    fp_b = _schema_fingerprint(exp_b.field_schema or {})
+    if fp_a != fp_b:
+        return HttpResponse(
+            "Cannot compare: schemas have different shape "
+            f"(entity keys / field names differ). "
+            f"A: entities={fp_a[0]}, fields={fp_a[1]} · "
+            f"B: entities={fp_b[0]}, fields={fp_b[1]}",
+            status=400,
+            content_type="text/plain",
+        )
+
+    cells_a = _field_grid_payload(exp_a) or {}
+    cells_b = _field_grid_payload(exp_b) or {}
+
+    # Walk A's schema as canonical display order (identical shape by the
+    # fingerprint check; A's display names/types are what we render).
+    schema = exp_a.field_schema or {}
+    entities = schema.get("entities") or []
+    fields = schema.get("fields") or []
+    field_names = [f["name"] for f in fields]
+
+    rows = []
+    for ent in entities:
+        ek = ent["key"]
+        row_cells = []
+        for fn in field_names:
+            a = cells_a.get((ek, fn))
+            b = cells_b.get((ek, fn))
+            differ = (
+                a is not None and b is not None
+                and a.get("modal_value") != b.get("modal_value")
+            )
+            row_cells.append({
+                "field_name": fn,
+                "a": a,
+                "b": b,
+                "differ": differ,
+            })
+        rows.append({
+            "entity_key": ek,
+            "entity_display": ent.get("display", ek),
+            "cells": row_cells,
+            "n_cells": len(row_cells),
+        })
+
+    return render(request, "validator/experiment_compare.html", {
+        "exp_a": exp_a,
+        "exp_b": exp_b,
+        "fields": field_names,
+        "rows": rows,
+        "n_trials_a": Evaluation.objects.filter(experiment=exp_a).count(),
+        "n_trials_b": Evaluation.objects.filter(experiment=exp_b).count(),
+        "nav_active": "experiments",
+    })

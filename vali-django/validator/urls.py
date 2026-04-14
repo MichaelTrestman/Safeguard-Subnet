@@ -59,6 +59,9 @@ urlpatterns = [
     path("experiments/<str:slug>/run/", views.experiment_run, name="experiment_run"),
     path("experiments/<str:slug>/schema/", views.experiment_edit_schema, name="experiment_edit_schema"),
     path("experiments/<str:slug>/reextract/", views.experiment_reextract, name="experiment_reextract"),
+    path("experiments/<str:slug>/clone/", views.experiment_clone, name="experiment_clone"),
+    path("experiments/compare/<str:slug_a>/vs/<str:slug_b>/", views.experiment_compare, name="experiment_compare"),
+    path("experiments/<str:slug>/visibility/", views.experiment_toggle_public, name="experiment_toggle_public"),
 
     # Concern catalog distribution (Epistula API).
     # Mounted under /api/ so the bare /concerns URL can redirect to

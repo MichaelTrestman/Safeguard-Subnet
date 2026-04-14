@@ -33,6 +33,21 @@
     {% elif experiment.status == 'failed' %}<span class="chip failed">Failed</span>
     {% endif %}
     <span class="chip" style="background:#1a2a3a;color:#88ccff;">{{ experiment.get_experiment_type_display }}</span>
+    {# --- Public/Private visibility toggle (logged-out /experiments/ showcase) --- #}
+    {% if experiment.status == 'completed' or experiment.is_public %}
+    <form method="post" action="{% url 'experiment_toggle_public' slug=experiment.slug %}" style="display:inline;margin:0;">
+      {% csrf_token %}
+      {% if experiment.is_public %}
+        <button type="submit" class="chip"
+                style="background:#1a3a1a;color:#8c8;border:1px solid #484;cursor:pointer;"
+                title="Visible on public /experiments/. Click to unpublish.">Public</button>
+      {% else %}
+        <button type="submit" class="chip"
+                style="background:#222;color:#888;border:1px solid #444;cursor:pointer;"
+                title="Private — not shown on public /experiments/. Click to publish.">Private</button>
+      {% endif %}
+    </form>
+    {% endif %}
   </div>
 </div>
 
@@ -94,6 +109,11 @@
         <button type="submit" style="background:#333;color:#cde;border:1px solid #555;padding:0.3rem 0.8rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">Re-extract trials</button>
       </form>
       {% endif %}
+      <form method="post" action="{% url 'experiment_clone' slug=experiment.slug %}" style="display:inline;margin:0;"
+            onsubmit="return confirm('Clone this experiment with the same schema (new blank trial set)? Useful for comparing the same schema across target versions or different targets.');">
+        {% csrf_token %}
+        <button type="submit" style="background:#333;color:#cde;border:1px solid #555;padding:0.3rem 0.8rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">Clone</button>
+      </form>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.5rem;font-size:0.85rem;">
@@ -110,6 +130,33 @@
       {% endfor %}
     </div>
   </div>
+</div>
+{% endif %}
+
+{# --- Compare with / lineage (v2.3) --- #}
+{% if experiment.parent_experiment or compare_candidates %}
+<div class="card" style="margin-bottom:1rem;">
+  <h4 style="margin:0 0 0.4rem 0;">Comparisons</h4>
+  {% if experiment.parent_experiment %}
+    <div style="font-size:0.85rem;margin-bottom:0.4rem;">
+      <span class="muted">Cloned from:</span>
+      <a href="{% url 'experiment_detail' slug=experiment.parent_experiment.slug %}">{{ experiment.parent_experiment.title }}</a>
+      <span class="small muted">({{ experiment.parent_experiment.target.name }})</span>
+      &middot; <a href="{% url 'experiment_compare' slug_a=experiment.parent_experiment.slug slug_b=experiment.slug %}">Compare</a>
+    </div>
+  {% endif %}
+  {% if compare_candidates %}
+    <div class="small muted" style="margin-bottom:0.3rem;">Other experiments with the same schema shape:</div>
+    <ul style="margin:0;padding-left:1.2rem;font-size:0.85rem;">
+      {% for other in compare_candidates %}
+      <li style="margin-bottom:0.2rem;">
+        <a href="{% url 'experiment_detail' slug=other.slug %}">{{ other.title }}</a>
+        <span class="small muted">&middot; {{ other.target.name }} &middot; {{ other.status }}</span>
+        &middot; <a href="{% url 'experiment_compare' slug_a=experiment.slug slug_b=other.slug %}">Compare</a>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
 </div>
 {% endif %}
 
