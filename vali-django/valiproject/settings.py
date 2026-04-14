@@ -29,6 +29,11 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # SecurityMiddleware enforces SECURE_SSL_REDIRECT, SECURE_HSTS_*, and
+    # SECURE_PROXY_SSL_HEADER. Default-inert; only acts when those settings
+    # are non-default (see BEHIND_CLOUDFLARE block below). Must sit first
+    # so HTTPS redirects happen before any other handler runs.
+    "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
     # WhiteNoise serves /static/ for the public landing. Must sit above
     # SessionMiddleware so anon asset fetches don't touch the session.
