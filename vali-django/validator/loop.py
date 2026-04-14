@@ -383,6 +383,66 @@ async def _dispatch_target_to_miners(
 # Generous timeout for experiments: N sessions × multi-turn × relay latency
 EXPERIMENT_QUERY_TIMEOUT = float(os.getenv("EXPERIMENT_QUERY_TIMEOUT", "1200"))
 
+# How stale an Experiment.status='running' row must be before the reaper
+# marks it failed. 2× EXPERIMENT_QUERY_TIMEOUT gives the dispatch thread
+# ample time to finish naturally before we declare it dead.
+ZOMBIE_EXPERIMENT_STALE_SECONDS = float(
+    os.getenv("ZOMBIE_EXPERIMENT_STALE_SECONDS",
+              str(EXPERIMENT_QUERY_TIMEOUT * 2))
+)
+
+
+@sync_to_async
+def _reap_zombie_experiments() -> int:
+    """Mark experiments as failed if they've been status='running' past
+    the zombie threshold with no recent claim activity. Runs periodically
+    from the main loop body. Returns the number marked failed.
+
+    Zombies happen when:
+      - The validator pod is restarted while a fire-and-forget dispatch
+        thread is in flight (daemon threads die with the process).
+      - A dispatch errors in a way that skips the status-flip branch.
+      - DB trouble during finalization.
+
+    This reaper catches all three without needing a dedicated worker.
+    Safe to call often — the query is a single indexed filter.
+    """
+    from datetime import timedelta
+    from .models import Experiment
+
+    cutoff = djtz.now() - timedelta(seconds=ZOMBIE_EXPERIMENT_STALE_SECONDS)
+    candidates = list(
+        Experiment.objects
+        .filter(status=Experiment.STATUS_RUNNING)
+        .filter(started_at__lt=cutoff)
+    )
+    if not candidates:
+        return 0
+
+    reaped = 0
+    for exp in candidates:
+        # A run that's still genuinely progressing will have recent
+        # ExtractedClaim inserts; don't reap those, just let them finish.
+        from .models import ExtractedClaim
+        latest_claim_at = (
+            ExtractedClaim.objects
+            .filter(experiment=exp)
+            .order_by("-extracted_at")
+            .values_list("extracted_at", flat=True)
+            .first()
+        )
+        if latest_claim_at and latest_claim_at >= cutoff:
+            continue  # recent activity — treat as still alive
+        exp.status = Experiment.STATUS_FAILED
+        exp.completed_at = djtz.now()
+        exp.save(update_fields=["status", "completed_at"])
+        reaped += 1
+        logger.warning(
+            f"Zombie reaper: marked experiment {exp.slug!r} as failed "
+            f"(started={exp.started_at}, no claim activity since cutoff)"
+        )
+    return reaped
+
 
 async def dispatch_experiment(
     wallet,
@@ -2308,6 +2368,15 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
             iteration = await _bump_tick()
             if iteration % 25 == 0:
                 logger.info(f"Validator loop heartbeat (iter={iteration})")
+                # Zombie experiment reaper — cheap single-filter query.
+                # Clears status='running' rows abandoned by lost dispatch
+                # threads (pod restart, error, DB trouble).
+                try:
+                    n_reaped = await _reap_zombie_experiments()
+                    if n_reaped:
+                        logger.info(f"Zombie reaper: marked {n_reaped} experiment(s) failed")
+                except Exception as e:
+                    logger.warning(f"Zombie reaper failed (non-fatal): {e}")
 
             # ----- Per-tick metagraph sync (lite) -----
             # Refresh hotkey list + UID set. lite=True skips fetching full
