@@ -497,12 +497,13 @@ async def dispatch_experiment(
 
             eval_row = await _persist()
 
-            # Run audit (consistency branch)
-            @sync_to_async
-            def _audit():
-                return _audit_one_evaluation(task_id, bait_library=None)
-
-            audit_result = await _audit()
+            # Run audit (consistency branch). _audit_one_evaluation is
+            # already @sync_to_async-decorated — calling it directly
+            # returns an awaitable. Wrapping it in another sync_to_async
+            # (the original bug) returned a coroutine object that was
+            # never awaited, so audit_score stayed None and contribution
+            # stayed 0 on every experiment trial.
+            audit_result = await _audit_one_evaluation(task_id, bait_library=None)
 
             return {
                 "uid": uid,
