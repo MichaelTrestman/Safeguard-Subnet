@@ -17,7 +17,25 @@ spec:
     metadata:
       labels: { app: vali-django }
     spec:
+      serviceAccountName: vali-django-sa
       containers:
+        # Cloud SQL Auth Proxy sidecar: IAM-authenticated tunnel to
+        # Cloud SQL over localhost:5432. Eliminates the IP-whitelist
+        # whack-a-mole that bit us every pod reschedule. Uses Workload
+        # Identity (KSA vali-django-sa → GSA safeguard-validator@...).
+        # Django reads DATABASE_URL pointing at localhost instead of
+        # the Cloud SQL public IP.
+        - name: cloudsql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.0
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "safeguard-testnet:us-central1:safeguard-db"
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
         - name: vali
           image: us-central1-docker.pkg.dev/safeguard-testnet/safeguard/vali-django:latest
           imagePullPolicy: Always
