@@ -63,7 +63,7 @@
   </style>
 </head>
 <body>
-  <h1>Safeguard Validator</h1>
+  <h1>Safeguard{% if validator_display_name %}, validated by {{ validator_display_name }}{% endif %}</h1>
   <h2>{% block subtitle %}Operator console{% endblock %}</h2>
   <nav class="topnav">
     {# Public site links — reachable from every authed page #}
@@ -79,6 +79,7 @@
       <a href="{% url 'findings_browser' %}"{% if nav_active == 'findings' %} class="active"{% endif %}>Findings</a>
       <a href="{% url 'concern_library' %}"{% if nav_active == 'concerns' %} class="active"{% endif %}>Concerns</a>
       <a href="{% url 'curation_queue' %}"{% if nav_active == 'curation' %} class="active"{% endif %}>Curation</a>
+      <a href="{% url 'experiment_list' %}"{% if nav_active == 'experiments' %} class="active"{% endif %}>Experiments</a>
     {% elif user.is_authenticated %}
       <span class="topnav-sep">|</span>
       <a href="{% url 'customer_dashboard' %}">Dashboard</a>

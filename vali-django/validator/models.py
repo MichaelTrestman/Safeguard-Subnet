@@ -113,6 +113,21 @@ class Evaluation(models.Model):
         related_name="evaluations",
     )
 
+    # Experiment FK — set when this evaluation is a trial of an
+    # Experiment. Null for regular adversarial probes. When set, the
+    # transcript stores multi-session data (flat turn list with
+    # session_index tags), and experiment_report holds the miner's
+    # structured consistency report.
+    experiment = models.ForeignKey(
+        "Experiment", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="trials",
+        help_text="Set when this evaluation is a trial of an experiment. Null for regular probes.",
+    )
+    experiment_report = models.JSONField(
+        default=dict, blank=True,
+        help_text="Miner's structured consistency report (experiment trials only).",
+    )
+
     # Sub-phase 2.9 — provenance verification state.
     #   provenance_verified:
     #     True  = every per-turn entry in the submitted transcript was
@@ -768,3 +783,91 @@ class RelayCommitment(models.Model):
     class Meta:
         unique_together = [("session", "turn_index")]
         indexes = [models.Index(fields=["session", "turn_index"])]
+
+
+# ---------------------------------------------------------------------------
+# Experiments — DESIGN.md §10 "Consistency check challenge mode"
+#
+# Experiments are operator-initiated investigations dispatched to miners
+# alongside (but separately from) the automated probe loop. The first
+# type is **consistency checks**: the miner asks the same factual
+# questions across N independent sessions and reports any contradictions.
+#
+# Experiments produce Evaluation rows (one per miner trial) with an
+# `experiment` FK. Contribution flows through _build_cycle_contributions
+# → mechid 0 weights with no changes to the weight pipeline.
+# ---------------------------------------------------------------------------
+
+
+class Experiment(models.Model):
+    """An operator-created investigation dispatched to miners.
+
+    Each eligible miner's execution of the experiment creates one
+    Evaluation row with `experiment` FK set. That Evaluation's
+    `contribution` flows into mechid 0 weights via
+    _build_cycle_contributions — no weight pipeline changes needed.
+    """
+    TYPE_CONSISTENCY = "consistency"
+    TYPE_CHOICES = [
+        (TYPE_CONSISTENCY, "Consistency Check"),
+        # future: ("fairness", "Statistical Fairness Check")
+    ]
+
+    STATUS_DRAFT = "draft"
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_RUNNING, "Running"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    slug = models.SlugField(max_length=100, unique=True, db_index=True)
+    title = models.CharField(max_length=200)
+    experiment_type = models.CharField(
+        max_length=20, choices=TYPE_CHOICES, default=TYPE_CONSISTENCY,
+    )
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True,
+    )
+
+    target = models.ForeignKey(
+        RegisteredTarget, on_delete=models.CASCADE, related_name="experiments",
+    )
+
+    # The challenge: what factual claims should the miner obtain?
+    challenge_claim = models.TextField(
+        help_text=(
+            "Describe the factual claims miners should obtain from the target. "
+            "E.g. 'Find out: What year was the Eiffel Tower built? Who designed it? "
+            "How tall is it?'"
+        ),
+    )
+    # Optional: what constitutes an inconsistency? Sensible default when blank.
+    consistency_check_claim = models.TextField(
+        blank=True, default="",
+        help_text=(
+            "How to define inconsistencies across sessions. Leave blank for "
+            "the default: 'Any factual claims that differ between sessions.'"
+        ),
+    )
+    runs_per_trial = models.PositiveIntegerField(
+        default=5,
+        help_text="How many independent sessions each miner runs per trial.",
+    )
+
+    created_by = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_experiments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.slug} ({self.experiment_type}/{self.status})"

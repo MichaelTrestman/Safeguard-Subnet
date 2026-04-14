@@ -1,0 +1,158 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Experiment: {{ experiment.title }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; {{ experiment.title }}</p>{% endblock %}
+
+{% block head_extra %}
+<style>
+  .exp-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.8rem; margin-bottom: 1.5rem; }
+  .exp-meta .card { padding: 0.8rem 1rem; }
+  .trial-card { margin-bottom: 1.5rem; }
+  .trial-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+  .inc-item { background: #1a1111; border: 1px solid #432; border-radius: 6px; padding: 0.8rem 1rem; margin-bottom: 0.6rem; }
+  .inc-claim { color: #ff8888; font-weight: bold; margin-bottom: 0.3rem; }
+  .inc-ref { font-size: 0.85rem; color: #aaa; margin: 0.2rem 0; }
+  .inc-ref code { background: #2a1a1a; color: #ffaa88; padding: 0.1rem 0.4rem; }
+  .inc-explanation { font-size: 0.85rem; color: #888; margin-top: 0.3rem; font-style: italic; }
+  .session-block { background: #111; border: 1px solid #222; border-radius: 4px; padding: 0.6rem; margin: 0.4rem 0; max-height: 500px; overflow-y: auto; }
+  .session-toggle { cursor: pointer; color: #88f; font-size: 0.85rem; }
+  .session-toggle:hover { color: #fff; }
+  .turn { margin: 0.3rem 0; font-size: 0.85rem; }
+  .turn-user { color: #88f; }
+  .turn-assistant { color: #e0e0e0; }
+  .turn-role { color: #666; font-size: 0.75rem; text-transform: uppercase; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;">
+  <h3 style="margin:0;">{{ experiment.title }}</h3>
+  <div>
+    {% if experiment.status == 'draft' %}<span class="chip legacy">Draft</span>
+    {% elif experiment.status == 'running' %}<span class="chip cooldown">Running</span>
+    {% elif experiment.status == 'completed' %}<span class="chip success">Completed</span>
+    {% elif experiment.status == 'failed' %}<span class="chip failed">Failed</span>
+    {% endif %}
+    <span class="chip" style="background:#1a2a3a;color:#88ccff;">{{ experiment.get_experiment_type_display }}</span>
+  </div>
+</div>
+
+{# --- Configuration --- #}
+<div class="exp-meta">
+  <div class="card">
+    <h4>Target</h4>
+    <div class="value" style="font-size:1rem;">{{ experiment.target.name }}</div>
+  </div>
+  <div class="card">
+    <h4>Runs / Trial</h4>
+    <div class="value">{{ experiment.runs_per_trial }}</div>
+  </div>
+  <div class="card">
+    <h4>Trials</h4>
+    <div class="value">{{ trial_summaries|length }}</div>
+  </div>
+  <div class="card">
+    <h4>Inconsistencies</h4>
+    <div class="value {% if total_inconsistencies > 0 %}err{% endif %}">{{ total_inconsistencies }}</div>
+  </div>
+</div>
+
+{# --- Challenge + check claims --- #}
+<div class="card" style="margin-bottom:1rem;">
+  <h4>Challenge Claim</h4>
+  <p style="margin:0.3rem 0;white-space:pre-wrap;">{{ experiment.challenge_claim }}</p>
+  {% if experiment.consistency_check_claim %}
+  <h4 style="margin-top:0.8rem;">Consistency Check Claim</h4>
+  <p style="margin:0.3rem 0;white-space:pre-wrap;">{{ experiment.consistency_check_claim }}</p>
+  {% else %}
+  <p class="small" style="margin-top:0.5rem;">Consistency check: default (any factual claims that differ between sessions)</p>
+  {% endif %}
+</div>
+
+{# --- Run button --- #}
+{% if experiment.status == 'draft' or experiment.status == 'completed' or experiment.status == 'failed' %}
+<form method="post" action="{% url 'experiment_run' slug=experiment.slug %}" style="margin-bottom:1.5rem;"
+      onsubmit="var b=this.querySelector('button'); b.disabled=true; b.textContent='Dispatching... (may take several minutes)'; b.style.background='#555'; b.style.cursor='wait';">
+  {% csrf_token %}
+  <button type="submit" style="background:#363;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;font-size:0.95rem;">
+    {% if experiment.status == 'draft' %}Run Experiment{% else %}Re-run Experiment{% endif %}
+  </button>
+  <span class="small" style="margin-left:0.5rem;">Dispatches to all eligible probe miners (may take several minutes). Safe to close the page — dispatch continues server-side.</span>
+</form>
+{% endif %}
+
+{# --- Per-miner trial results --- #}
+{% if trial_summaries %}
+<h3>Trials</h3>
+{% for ts in trial_summaries %}
+<div class="card trial-card">
+  <div class="trial-header">
+    <div>
+      <strong>Miner UID {{ ts.eval.miner_uid }}</strong>
+      <span class="small">({{ ts.eval.miner_hotkey|truncatechars:16 }})</span>
+    </div>
+    <div>
+      {% if ts.provenance_verified %}<span class="chip verified">Provenance OK</span>
+      {% elif ts.provenance_verified == False %}<span class="chip fabricated">Provenance Failed</span>
+      {% else %}<span class="chip legacy">Legacy</span>
+      {% endif %}
+      <span class="small">contribution: {{ ts.contribution|floatformat:3 }}</span>
+    </div>
+  </div>
+
+  <div style="font-size:0.85rem;color:#888;margin-bottom:0.5rem;">
+    {{ ts.n_sessions }} sessions &middot; {{ ts.n_inconsistencies }} inconsistencies found
+    &middot; {{ ts.eval.timestamp|date:"Y-m-d H:i" }}
+  </div>
+
+  {# --- Inconsistencies --- #}
+  {% if ts.inconsistencies %}
+  <div style="margin-bottom:0.8rem;">
+    <strong style="color:#ff8888;font-size:0.9rem;">Inconsistencies:</strong>
+    {% for inc in ts.inconsistencies %}
+    <div class="inc-item">
+      <div class="inc-claim">{{ inc.claim }}</div>
+      {% for ref in inc.references %}
+      <div class="inc-ref">
+        Session {{ ref.session_index }}, turn {{ ref.turn_index }}:
+        <code>{{ ref.text_span }}</code>
+      </div>
+      {% endfor %}
+      {% if inc.explanation %}
+      <div class="inc-explanation">{{ inc.explanation }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# --- Sessions (collapsible) --- #}
+  <details>
+    <summary class="session-toggle">Show {{ ts.n_sessions }} session transcripts</summary>
+    {% for si, turns in ts.sessions.items %}
+    <div class="session-block">
+      <div style="color:#666;font-size:0.75rem;margin-bottom:0.3rem;">Session {{ si }}</div>
+      {% for turn in turns %}
+      <div class="turn {% if turn.role == 'user' %}turn-user{% else %}turn-assistant{% endif %}">
+        <span class="turn-role">{{ turn.role }}:</span>
+        <span style="white-space:pre-wrap;">{{ turn.content }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </details>
+</div>
+{% endfor %}
+{% elif experiment.status != 'draft' %}
+<div class="card" style="text-align:center;color:#666;padding:2rem;">
+  No trials returned yet.
+</div>
+{% endif %}
+
+{# --- Timestamps --- #}
+<div class="small" style="margin-top:2rem;">
+  Created: {{ experiment.created_at|date:"Y-m-d H:i:s" }}
+  {% if experiment.created_by %} by {{ experiment.created_by.username }}{% endif %}
+  {% if experiment.started_at %} &middot; Started: {{ experiment.started_at|date:"Y-m-d H:i:s" }}{% endif %}
+  {% if experiment.completed_at %} &middot; Completed: {{ experiment.completed_at|date:"Y-m-d H:i:s" }}{% endif %}
+</div>
+{% endblock %}

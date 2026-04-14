@@ -1,0 +1,59 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Experiments{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; Experiments</p>{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+  <h3 style="margin:0;">Experiments</h3>
+  <a href="{% url 'experiment_create' %}" style="background:#336;color:#fff;padding:0.5rem 1.2rem;border-radius:4px;font-size:0.9rem;">+ New Experiment</a>
+</div>
+
+<div style="margin-bottom:1rem;font-size:0.85rem;">
+  Filter:
+  <a href="{% url 'experiment_list' %}"{% if not status_filter %} style="color:#fff;font-weight:bold;"{% endif %}>All</a>
+  <a href="?status=draft"{% if status_filter == 'draft' %} style="color:#fff;font-weight:bold;"{% endif %}>Draft</a>
+  <a href="?status=running"{% if status_filter == 'running' %} style="color:#fff;font-weight:bold;"{% endif %}>Running</a>
+  <a href="?status=completed"{% if status_filter == 'completed' %} style="color:#fff;font-weight:bold;"{% endif %}>Completed</a>
+  <a href="?status=failed"{% if status_filter == 'failed' %} style="color:#fff;font-weight:bold;"{% endif %}>Failed</a>
+</div>
+
+{% if experiments %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Title</th>
+      <th>Target</th>
+      <th>Type</th>
+      <th>Status</th>
+      <th class="num">Runs/Trial</th>
+      <th class="num">Trials</th>
+      <th>Created</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for exp in experiments %}
+    <tr>
+      <td><a href="{% url 'experiment_detail' slug=exp.slug %}">{{ exp.title }}</a></td>
+      <td>{{ exp.target.name }}</td>
+      <td><span class="chip" style="background:#1a2a3a;color:#88ccff;">{{ exp.get_experiment_type_display }}</span></td>
+      <td>
+        {% if exp.status == 'draft' %}<span class="chip legacy">Draft</span>
+        {% elif exp.status == 'running' %}<span class="chip cooldown">Running</span>
+        {% elif exp.status == 'completed' %}<span class="chip success">Completed</span>
+        {% elif exp.status == 'failed' %}<span class="chip failed">Failed</span>
+        {% endif %}
+      </td>
+      <td class="num">{{ exp.runs_per_trial }}</td>
+      <td class="num">{{ exp.n_trials }}</td>
+      <td class="small">{{ exp.created_at|date:"Y-m-d H:i" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card" style="text-align:center;color:#666;padding:3rem;">
+  No experiments yet. <a href="{% url 'experiment_create' %}">Create one</a> to start consistency checking.
+</div>
+{% endif %}
+{% endblock %}

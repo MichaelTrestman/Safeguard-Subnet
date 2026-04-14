@@ -33,6 +33,8 @@ spec:
               value: "test"
             - name: NETUID
               value: "444"
+            - name: VALIDATOR_DISPLAY_NAME
+              value: "Trexman"
             - name: SAFEGUARD_RELAY_ENDPOINT
               value: "http://136.116.237.112:9090/probe/relay"
             - name: DJANGO_SECRET_KEY

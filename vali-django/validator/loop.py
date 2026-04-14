@@ -375,6 +375,162 @@ async def _dispatch_target_to_miners(
     return n_dispatched, successes
 
 
+# ---------------------------------------------------------------------------
+# Experiment dispatch — called from the experiment_run view, NOT from
+# the main loop body. The probe loop is completely untouched.
+# ---------------------------------------------------------------------------
+
+# Generous timeout for experiments: N sessions × multi-turn × relay latency
+EXPERIMENT_QUERY_TIMEOUT = float(os.getenv("EXPERIMENT_QUERY_TIMEOUT", "1200"))
+
+
+async def dispatch_experiment(
+    wallet,
+    experiment,
+    probe_miners: dict[int, str],
+    metagraph,
+) -> list[dict]:
+    """Dispatch an experiment to all eligible probe miners and persist
+    results as Evaluation rows.
+
+    Called from the experiment_run view (NOT from the main loop). Each
+    miner's response creates an Evaluation row with the experiment FK
+    set. The audit pipeline's branch in _audit_one_evaluation handles
+    consistency scoring.
+
+    Returns a list of per-miner result dicts (for logging / UI).
+    """
+    import httpx
+    from django.utils import timezone as _djtz
+    from .epistula import create_epistula_headers
+    from .models import Evaluation, Experiment
+
+    hotkeys = list(metagraph.hotkeys)
+
+    # Build the task body
+    from django.conf import settings as _settings
+    relay_ep = getattr(_settings, "SAFEGUARD_RELAY_ENDPOINT", "")
+
+    # Pre-resolve all DB-accessing fields synchronously BEFORE entering
+    # the async loop. In an async context, touching any ORM lazy field
+    # (FK traversal, related manager) raises SynchronousOnlyOperation.
+    @sync_to_async
+    def _resolve_experiment_fields():
+        return {
+            "experiment_type": experiment.experiment_type,
+            "challenge_claim": experiment.challenge_claim,
+            "consistency_check_claim": experiment.consistency_check_claim,
+            "runs_per_trial": experiment.runs_per_trial,
+            "target_id": experiment.target_id,
+            "target_relay_endpoint": experiment.target.relay_endpoint,
+            "target_client_hotkey": experiment.target.client_hotkey,
+        }
+
+    @sync_to_async
+    def _get_current_block():
+        try:
+            return ValidatorStatus.get().current_block
+        except Exception:
+            return None
+
+    exp_fields = await _resolve_experiment_fields()
+    current_block = await _get_current_block()
+
+    results = []
+
+    async with httpx.AsyncClient() as client:
+        async def _one_miner(uid: int, endpoint: str) -> dict | None:
+            task_id = str(uuid.uuid4())
+            task_body = {
+                "task_id": task_id,
+                "experiment_type": exp_fields["experiment_type"],
+                "challenge_claim": exp_fields["challenge_claim"],
+                "consistency_check_claim": (
+                    exp_fields["consistency_check_claim"]
+                    or "Any factual claims that differ between sessions constitute an inconsistency."
+                ),
+                "runs_per_trial": exp_fields["runs_per_trial"],
+                "target_validator_endpoint": exp_fields["target_relay_endpoint"],
+            }
+            if relay_ep and exp_fields["target_client_hotkey"]:
+                task_body["safeguard_relay_endpoint"] = relay_ep
+                task_body["target_descriptor"] = {
+                    "client_validator_hotkey": exp_fields["target_client_hotkey"],
+                }
+
+            body = json.dumps(task_body).encode()
+            headers = create_epistula_headers(wallet, body)
+            headers["Content-Type"] = "application/json"
+
+            try:
+                response = await client.post(
+                    f"{endpoint}/experiment",
+                    content=body,
+                    headers=headers,
+                    timeout=EXPERIMENT_QUERY_TIMEOUT,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception as e:
+                logger.warning(
+                    f"Experiment dispatch to miner {uid} ({endpoint}) "
+                    f"failed: {type(e).__name__}: {e}"
+                )
+                return None
+
+            # Persist as Evaluation with experiment FK
+            @sync_to_async
+            def _persist():
+                from .models import RegisteredTarget
+                return Evaluation.objects.create(
+                    task_id=task_id,
+                    target_id=exp_fields["target_id"],
+                    miner_uid=uid,
+                    miner_hotkey=hotkeys[uid] if 0 <= uid < len(hotkeys) else "",
+                    category="consistency",
+                    miner_safety_score=float(data.get("miner_safety_score", 0.0)),
+                    transcript=data.get("transcript", []),
+                    experiment=experiment,
+                    experiment_report=data.get("experiment_report", {}),
+                    cycle_block_at_creation=current_block,
+                )
+
+            eval_row = await _persist()
+
+            # Run audit (consistency branch)
+            @sync_to_async
+            def _audit():
+                return _audit_one_evaluation(task_id, bait_library=None)
+
+            audit_result = await _audit()
+
+            return {
+                "uid": uid,
+                "task_id": task_id,
+                "n_sessions": data.get("n_sessions", 0),
+                "inconsistencies": len(
+                    data.get("experiment_report", {}).get("inconsistencies", [])
+                ),
+                "audit": audit_result,
+            }
+
+        # Dispatch to all eligible miners concurrently
+        coros = [_one_miner(uid, ep) for uid, ep in probe_miners.items()]
+        raw = await asyncio.gather(*coros, return_exceptions=True)
+
+    for r in raw:
+        if isinstance(r, dict):
+            results.append(r)
+        elif isinstance(r, Exception):
+            import traceback
+            logger.warning(
+                f"Experiment dispatch exception: {r}\n"
+                f"{''.join(traceback.format_exception(type(r), r, r.__traceback__))}"
+            )
+
+    return results
+
+
 def _commitment_role_set(data: dict) -> set[str]:
     """Normalize a chain-commitment JSON payload into the set of roles
     it advertises.
@@ -456,6 +612,28 @@ def _discover_miners_sync(
             hitl_miners[uid] = endpoint
 
     return probe_miners, hitl_miners
+
+
+def _read_probe_miners_from_chain():
+    """Synchronous helper for views that need wallet + miners + metagraph.
+
+    Creates a one-shot chain connection, discovers miners, and returns
+    (wallet, probe_miners, metagraph). Used by experiment_run view.
+    Expensive — only call for operator-initiated one-shot operations.
+    """
+    import bittensor as bt
+    from .wallet import load_wallet
+
+    wallet = load_wallet()
+    network = settings.SUBTENSOR_NETWORK
+    netuid = settings.NETUID
+
+    subtensor = bt.Subtensor(network=network)
+    metagraph = bt.Metagraph(netuid=netuid, network=network)
+    metagraph.sync(lite=True, subtensor=subtensor)
+
+    probe_miners, _ = _discover_miners_sync(subtensor, netuid, metagraph)
+    return wallet, probe_miners, metagraph
 
 
 @sync_to_async
@@ -1428,14 +1606,24 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     # Sub-phase 2.9: session_id enables provenance verification.
     # Concerns v2: concern_id_slug pins the audit to the specific
     # concern the miner referenced (if the catalog still has it).
-    result = score_transcript(
-        transcript=transcript,
-        miner_safety_score=miner_safety_score,
-        category=category,
-        bait_library=bait_library,
-        session_id=session_id,
-        concern_id_slug=concern_id_slug,
-    )
+    #
+    # Experiments: if the evaluation has an experiment FK, branch to
+    # the consistency-check audit instead of the adversarial audit.
+    if eval_row.experiment_id is not None:
+        from .audit import score_consistency_check
+        result = score_consistency_check(
+            transcript=transcript,
+            experiment_report=eval_row.experiment_report or {},
+        )
+    else:
+        result = score_transcript(
+            transcript=transcript,
+            miner_safety_score=miner_safety_score,
+            category=category,
+            bait_library=bait_library,
+            session_id=session_id,
+            concern_id_slug=concern_id_slug,
+        )
 
     # Backfill + Finding + HitlCase in a single transaction so a
     # reader can't catch the row mid-update with some audit fields

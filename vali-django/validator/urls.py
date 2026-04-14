@@ -51,6 +51,12 @@ urlpatterns = [
     path("concerns/<str:slug>/retire/", views.concern_retire, name="concern_retire"),
     path("concerns/<str:slug>/activate/", views.concern_activate, name="concern_activate"),
 
+    # Experiments (staff only) — DESIGN.md §10
+    path("experiments/", views.experiment_list, name="experiment_list"),
+    path("experiments/create/", views.experiment_create, name="experiment_create"),
+    path("experiments/<str:slug>/", views.experiment_detail, name="experiment_detail"),
+    path("experiments/<str:slug>/run/", views.experiment_run, name="experiment_run"),
+
     # Concern catalog distribution (Epistula API).
     # Mounted under /api/ so the bare /concerns URL can redirect to
     # the trailing-slash operator UI via Django's APPEND_SLASH

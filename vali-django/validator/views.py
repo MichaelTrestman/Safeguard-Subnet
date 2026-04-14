@@ -2141,3 +2141,223 @@ bait_library = concern_library
 bait_detail = concern_detail
 bait_edit = concern_edit
 bait_create = concern_create
+
+
+# ---------------------------------------------------------------------------
+# Experiment views (staff only) — DESIGN.md §10
+# ---------------------------------------------------------------------------
+
+
+@staff_required
+def experiment_list(request: HttpRequest) -> HttpResponse:
+    """List all experiments with status, target, and result summary."""
+    from .models import Experiment
+    experiments = (
+        Experiment.objects
+        .select_related("target", "created_by")
+        .order_by("-created_at")
+    )
+    status_filter = request.GET.get("status", "")
+    if status_filter:
+        experiments = experiments.filter(status=status_filter)
+
+    # Annotate with trial counts
+    from django.db.models import Count, Sum
+    experiments = experiments.annotate(
+        n_trials=Count("trials", distinct=True),
+    )
+
+    return render(request, "validator/experiment_list.html", {
+        "experiments": experiments,
+        "status_filter": status_filter,
+        "nav_active": "experiments",
+    })
+
+
+def _generate_unique_experiment_slug(title: str) -> str:
+    from .models import Experiment
+    base = slugify(title)[:80] or "experiment"
+    slug = base
+    n = 2
+    while Experiment.objects.filter(slug=slug).exists():
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
+@staff_required
+def experiment_create(request: HttpRequest) -> HttpResponse:
+    """Create a new experiment."""
+    from .models import Experiment, RegisteredTarget
+
+    if request.method == "POST":
+        title = (request.POST.get("title") or "").strip()
+        if not title:
+            return HttpResponse("title is required", status=400)
+        challenge_claim = (request.POST.get("challenge_claim") or "").strip()
+        if not challenge_claim:
+            return HttpResponse("challenge_claim is required", status=400)
+        consistency_check_claim = (request.POST.get("consistency_check_claim") or "").strip()
+        try:
+            runs_per_trial = int(request.POST.get("runs_per_trial", 5))
+        except (ValueError, TypeError):
+            runs_per_trial = 5
+        runs_per_trial = max(2, min(20, runs_per_trial))
+
+        target_id = request.POST.get("target_id")
+        if not target_id:
+            return HttpResponse("target is required", status=400)
+        try:
+            target = RegisteredTarget.objects.get(pk=target_id)
+        except RegisteredTarget.DoesNotExist:
+            return HttpResponse("target not found", status=404)
+
+        slug = _generate_unique_experiment_slug(title)
+        experiment = Experiment.objects.create(
+            slug=slug,
+            title=title,
+            experiment_type=Experiment.TYPE_CONSISTENCY,
+            target=target,
+            challenge_claim=challenge_claim,
+            consistency_check_claim=consistency_check_claim,
+            runs_per_trial=runs_per_trial,
+            created_by=request.user,
+        )
+        return redirect("experiment_detail", slug=slug)
+
+    targets = RegisteredTarget.objects.order_by("name")
+    return render(request, "validator/experiment_create.html", {
+        "targets": targets,
+        "nav_active": "experiments",
+    })
+
+
+@staff_required
+def experiment_detail(request: HttpRequest, slug: str) -> HttpResponse:
+    """View experiment configuration and per-miner trial results."""
+    from .models import Experiment, Evaluation
+    experiment = get_object_or_404(Experiment, slug=slug)
+    trials = (
+        Evaluation.objects
+        .filter(experiment=experiment)
+        .order_by("-timestamp")
+    )
+
+    # Build trial summaries for the template
+    trial_summaries = []
+    total_inconsistencies = 0
+    for trial in trials:
+        report = trial.experiment_report or {}
+        incs = report.get("inconsistencies", [])
+        n_incs = len(incs)
+        total_inconsistencies += n_incs
+
+        # Group transcript by session_index for display
+        sessions = {}
+        for turn in (trial.transcript or []):
+            si = turn.get("session_index", 0)
+            sessions.setdefault(si, []).append(turn)
+
+        trial_summaries.append({
+            "eval": trial,
+            "n_sessions": len(sessions),
+            "n_inconsistencies": n_incs,
+            "inconsistencies": incs,
+            "sessions": dict(sorted(sessions.items())),
+            "contribution": trial.contribution,
+            "provenance_verified": trial.provenance_verified,
+        })
+
+    return render(request, "validator/experiment_detail.html", {
+        "experiment": experiment,
+        "trial_summaries": trial_summaries,
+        "total_inconsistencies": total_inconsistencies,
+        "nav_active": "experiments",
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+async def experiment_run(request: HttpRequest, slug: str) -> HttpResponse:
+    """Dispatch the experiment to all eligible probe miners.
+
+    Async view — dispatches, waits for all miners to respond (up to
+    EXPERIMENT_QUERY_TIMEOUT), persists results, redirects back to
+    the detail page. Runs outside the main loop.
+
+    Note: no @login_required or @staff_required — both are sync
+    decorators that break async views. Auth check is inline via
+    sync_to_async.
+    """
+    from asgiref.sync import sync_to_async
+
+    # Auth check — must wrap in sync_to_async because request.user
+    # triggers a lazy DB query that Django forbids in async context.
+    @sync_to_async
+    def _check_auth():
+        if not request.user.is_authenticated:
+            return "login"
+        if not request.user.is_staff:
+            return "forbidden"
+        return "ok"
+
+    auth = await _check_auth()
+    if auth == "login":
+        return redirect("login")
+    if auth == "forbidden":
+        return HttpResponse("Forbidden: staff only", status=403)
+
+    from .models import Experiment
+    from .loop import dispatch_experiment, _read_probe_miners_from_chain
+
+    experiment = await sync_to_async(get_object_or_404)(Experiment, slug=slug)
+    if experiment.status not in (Experiment.STATUS_DRAFT, Experiment.STATUS_COMPLETED, Experiment.STATUS_FAILED):
+        return HttpResponse(
+            f"Cannot run experiment in status '{experiment.status}'", status=400,
+        )
+
+    # Discover eligible probe miners from the latest metagraph
+    try:
+        wallet, probe_miners, metagraph = await sync_to_async(
+            _read_probe_miners_from_chain
+        )()
+    except Exception as e:
+        logger.error(f"Failed to read miners for experiment dispatch: {e}")
+        return HttpResponse(f"Failed to discover miners: {e}", status=500)
+
+    if not probe_miners:
+        return HttpResponse("No eligible probe miners discovered", status=400)
+
+    # Update status
+    @sync_to_async
+    def _set_running():
+        experiment.status = Experiment.STATUS_RUNNING
+        experiment.started_at = djtz.now()
+        experiment.save(update_fields=["status", "started_at"])
+    await _set_running()
+
+    # Blocking dispatch — browser waits for the redirect until all miners
+    # have returned (or the EXPERIMENT_QUERY_TIMEOUT hits). Takes 1-10 min
+    # depending on N miners × runs_per_trial. The view template shows a
+    # "Dispatching..." button state while this runs. Fire-and-forget is a
+    # v2 improvement (requires a separate thread + async_to_sync to escape
+    # Django's per-request thread executor).
+    try:
+        await dispatch_experiment(wallet, experiment, probe_miners, metagraph)
+    except Exception as e:
+        logger.error(f"Experiment dispatch failed: {e}")
+        @sync_to_async
+        def _set_failed():
+            experiment.status = Experiment.STATUS_FAILED
+            experiment.save(update_fields=["status"])
+        await _set_failed()
+        return redirect("experiment_detail", slug=slug)
+
+    @sync_to_async
+    def _set_completed():
+        experiment.status = Experiment.STATUS_COMPLETED
+        experiment.completed_at = djtz.now()
+        experiment.save(update_fields=["status", "completed_at"])
+    await _set_completed()
+
+    return redirect("experiment_detail", slug=slug)

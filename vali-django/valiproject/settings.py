@@ -48,6 +48,7 @@ TEMPLATES = [
             "context_processors": [
                 "django.contrib.auth.context_processors.auth",
                 "django.template.context_processors.request",
+                "validator.context_processors.validator_identity",
             ],
         },
     },
@@ -102,6 +103,8 @@ VALIDATOR_WALLET = os.environ.get("VALIDATOR_WALLET", "")
 VALIDATOR_HOTKEY = os.environ.get("VALIDATOR_HOTKEY", "")
 SUBTENSOR_NETWORK = os.environ.get("SUBTENSOR_NETWORK", "test")
 NETUID = int(os.environ.get("NETUID", "444"))
+
+VALIDATOR_DISPLAY_NAME = os.environ.get("VALIDATOR_DISPLAY_NAME", "")
 
 LOOP_INTERVAL_S = float(os.environ.get("LOOP_INTERVAL_S", "12"))
 HEALTH_MAX_WEIGHT_AGE_S = float(os.environ.get("HEALTH_MAX_WEIGHT_AGE_S", "1800"))

@@ -1,0 +1,53 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Create Experiment{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; New</p>{% endblock %}
+{% block content %}
+<h3>New Experiment</h3>
+
+<div style="background:#0f1a2a;border:1px solid #345;border-left:4px solid #47a;border-radius:6px;padding:1rem 1.2rem;margin-bottom:1rem;color:#cde;">
+  <div style="font-weight:bold;color:#9cf;margin-bottom:0.4rem;font-size:1rem;">What is a consistency check?</div>
+  <p style="margin:0.3rem 0;font-size:0.9rem;">
+    A consistency check dispatches a factual challenge to miners. Each miner independently asks the
+    target the same questions <strong>N times</strong> in separate sessions, then reports any
+    contradictions it finds. The insight: you can detect hallucinations without knowing the right
+    answer &mdash; just by catching the target contradicting itself.
+  </p>
+  <p style="margin:0.4rem 0 0.1rem;font-size:0.85rem;color:#9ab;">
+    The <strong>challenge claim</strong> defines what facts to obtain. The optional
+    <strong>consistency check claim</strong> defines what counts as an inconsistency
+    (defaults to "any factual claims that differ").
+  </p>
+</div>
+
+<div class="card">
+  <form method="post" action="{% url 'experiment_create' %}">
+    {% csrf_token %}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Title (required)</label><br>
+      <input type="text" name="title" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Target (required)</label><br>
+      <select name="target_id" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+        <option value="">-- Select target --</option>
+        {% for t in targets %}
+        <option value="{{ t.pk }}">{{ t.name }} ({{ t.client_hotkey|truncatechars:16 }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Challenge claim (required) &mdash; what factual claims should miners obtain from the target?</label><br>
+      <textarea name="challenge_claim" required style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;min-height:120px;box-sizing:border-box;" placeholder="E.g. Find out: What year was the Eiffel Tower built? Who designed it? How tall is it?"></textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Consistency check claim (optional) &mdash; what defines an inconsistency?</label><br>
+      <textarea name="consistency_check_claim" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;min-height:80px;box-sizing:border-box;" placeholder="Leave blank for default: 'Any factual claims that differ between sessions.'"></textarea>
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Runs per trial (2&ndash;20)</label><br>
+      <input type="number" name="runs_per_trial" value="5" min="2" max="20" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Create Experiment</button>
+  </form>
+</div>
+{% endblock %}
