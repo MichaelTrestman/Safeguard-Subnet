@@ -2279,10 +2279,70 @@ def experiment_detail(request: HttpRequest, slug: str) -> HttpResponse:
             "provenance_verified": trial.provenance_verified,
         })
 
+    # v2 — field consistency grid.
+    # Aggregate ExtractedClaim rows into {entity_key: {field_name: {value_text: count}}}.
+    # Modal value per cell + consistency rate. SQL GROUP BY kept narrow
+    # (no JSON operators) so it scales.
+    from .models import ExtractedClaim
+    from django.db.models import Count
+    field_grid = None
+    schema = experiment.field_schema or {}
+    entities = schema.get("entities") or []
+    fields = schema.get("fields") or []
+    if entities and fields:
+        grouped = (
+            ExtractedClaim.objects
+            .filter(experiment=experiment)
+            .values("entity_key", "field_name", "value_text")
+            .annotate(count=Count("id"))
+        )
+        # Build {entity: {field: {value: count}}} then derive modal + rate.
+        nested: dict[str, dict[str, dict[str, int]]] = {}
+        for row in grouped:
+            nested.setdefault(row["entity_key"], {}) \
+                  .setdefault(row["field_name"], {})[row["value_text"]] = row["count"]
+
+        field_names = [f["name"] for f in fields]
+        grid_rows = []
+        for ent in entities:
+            ek = ent["key"]
+            row_cells = []
+            for fn in field_names:
+                values = nested.get(ek, {}).get(fn, {})
+                total = sum(values.values())
+                if total == 0:
+                    row_cells.append(None)
+                    continue
+                modal_value, modal_count = max(values.items(), key=lambda kv: kv[1])
+                rate = modal_count / total
+                # Color bucket for template: green >=0.8, yellow >=0.5, red <0.5
+                if rate >= 0.8:
+                    bucket = "green"
+                elif rate >= 0.5:
+                    bucket = "yellow"
+                else:
+                    bucket = "red"
+                row_cells.append({
+                    "modal_value": modal_value,
+                    "modal_count": modal_count,
+                    "total": total,
+                    "rate": rate,
+                    "rate_pct": int(round(rate * 100)),
+                    "bucket": bucket,
+                    "distinct_values": len(values),
+                })
+            grid_rows.append({
+                "entity_key": ek,
+                "entity_display": ent.get("display", ek),
+                "cells": row_cells,
+            })
+        field_grid = {"fields": field_names, "rows": grid_rows}
+
     return render(request, "validator/experiment_detail.html", {
         "experiment": experiment,
         "trial_summaries": trial_summaries,
         "total_inconsistencies": total_inconsistencies,
+        "field_grid": field_grid,
         "nav_active": "experiments",
     })
 

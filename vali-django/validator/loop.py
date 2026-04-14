@@ -424,6 +424,8 @@ async def dispatch_experiment(
             "target_id": experiment.target_id,
             "target_relay_endpoint": experiment.target.relay_endpoint,
             "target_client_hotkey": experiment.target.client_hotkey,
+            "field_schema": experiment.field_schema,
+            "field_schema_version": experiment.field_schema_version,
         }
 
     @sync_to_async
@@ -451,6 +453,8 @@ async def dispatch_experiment(
                 ),
                 "runs_per_trial": exp_fields["runs_per_trial"],
                 "target_validator_endpoint": exp_fields["target_relay_endpoint"],
+                # v2: structured extraction schema (empty dict = v1 legacy)
+                "field_schema": exp_fields["field_schema"],
             }
             if relay_ep and exp_fields["target_client_hotkey"]:
                 task_body["safeguard_relay_endpoint"] = relay_ep
@@ -492,6 +496,9 @@ async def dispatch_experiment(
                     transcript=data.get("transcript", []),
                     experiment=experiment,
                     experiment_report=data.get("experiment_report", {}),
+                    # v2: miner's structured claims (projection written
+                    # in audit pipeline below)
+                    extracted_claims=data.get("extracted_claims", []),
                     cycle_block_at_creation=current_block,
                 )
 
@@ -1734,6 +1741,113 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                     trigger_qs.update(
                         success_count=F("success_count") + 1,
                     )
+
+        # v2 — Project extracted_claims JSONField into ExtractedClaim rows
+        # for SQL-based aggregation queries. Only fires for experiment
+        # evaluations with a non-empty extracted_claims list. Each claim
+        # is validated (span exists in the provenance-verified transcript)
+        # before insertion; invalid claims are silently dropped. Coerces
+        # value to typed column based on the field_schema's declared type.
+        if eval_row.experiment_id is not None and eval_row.extracted_claims:
+            from .models import ExtractedClaim
+            import datetime as _dt
+
+            # Load schema once; needed for type coercion + expected_values.
+            schema = eval_row.experiment.field_schema or {}
+            schema_version = eval_row.experiment.field_schema_version or 1
+            fields_by_name = {
+                f["name"]: f for f in (schema.get("fields") or [])
+            }
+            entity_keys = {e["key"] for e in (schema.get("entities") or [])}
+            expected_values = schema.get("expected_values") or {}
+
+            # Group transcript by session_index to verify span existence.
+            sessions_assistant_text: dict[int, str] = {}
+            for turn in (eval_row.transcript or []):
+                if turn.get("role") != "assistant":
+                    continue
+                si = turn.get("session_index", 0)
+                sessions_assistant_text[si] = (
+                    sessions_assistant_text.get(si, "") + " " + turn.get("content", "")
+                )
+
+            # Wipe any existing claims for this trial + schema version so
+            # re-audit / re-extract produces clean projection. Keeps the
+            # DB state idempotent with the JSONField source of truth.
+            ExtractedClaim.objects.filter(
+                evaluation=eval_row,
+                field_schema_version=schema_version,
+            ).delete()
+
+            to_insert = []
+            for raw in eval_row.extracted_claims:
+                if not isinstance(raw, dict):
+                    continue
+                ek = raw.get("entity_key")
+                fn = raw.get("field_name")
+                span = raw.get("text_span", "")
+                if ek not in entity_keys or fn not in fields_by_name:
+                    continue
+                si = raw.get("session_index", 0)
+                session_text = sessions_assistant_text.get(si, "")
+                if not span or span not in session_text:
+                    continue  # span verification failed (asymmetry of verification)
+
+                field_type = fields_by_name[fn].get("type", "string")
+                value_text = str(raw.get("value_text") or raw.get("value") or "")[:500]
+                value_numeric = None
+                value_date = None
+
+                raw_val = raw.get("value")
+                if field_type in ("int", "float", "number", "numeric"):
+                    try:
+                        value_numeric = float(raw_val) if raw_val is not None else None
+                    except (TypeError, ValueError):
+                        value_numeric = None
+                elif field_type == "date":
+                    try:
+                        if isinstance(raw_val, str):
+                            value_date = _dt.date.fromisoformat(raw_val[:10])
+                    except (TypeError, ValueError):
+                        value_date = None
+
+                # Optional canonical-answer comparison (2.2 but cheap to
+                # populate now — null stays null if no expected value).
+                matches_expected = None
+                ent_expected = expected_values.get(ek) or {}
+                if fn in ent_expected:
+                    expected = ent_expected[fn]
+                    if value_numeric is not None and isinstance(expected, (int, float)):
+                        matches_expected = abs(value_numeric - float(expected)) < 1e-9
+                    else:
+                        matches_expected = (
+                            value_text.strip().lower() == str(expected).strip().lower()
+                        )
+
+                to_insert.append(ExtractedClaim(
+                    evaluation=eval_row,
+                    experiment_id=eval_row.experiment_id,
+                    miner_uid=eval_row.miner_uid,
+                    session_index=si,
+                    turn_index=raw.get("turn_index", -1),
+                    entity_key=ek,
+                    field_name=fn,
+                    value_text=value_text,
+                    value_numeric=value_numeric,
+                    value_date=value_date,
+                    text_span=span[:2000],
+                    span_char_offset=int(raw.get("span_char_offset", 0) or 0),
+                    field_schema_version=schema_version,
+                    matches_expected=matches_expected,
+                ))
+
+            if to_insert:
+                ExtractedClaim.objects.bulk_create(to_insert, batch_size=200)
+                logger.info(
+                    f"Projected {len(to_insert)} ExtractedClaim rows for "
+                    f"experiment {eval_row.experiment.slug} (from "
+                    f"{len(eval_row.extracted_claims)} raw claims)"
+                )
 
     return {
         "task_id": task_id,

@@ -127,6 +127,15 @@ class Evaluation(models.Model):
         default=dict, blank=True,
         help_text="Miner's structured consistency report (experiment trials only).",
     )
+    # v2 — miner's per-session structured field extractions. Source of
+    # truth (re-extractable, audit trail). Projected to ExtractedClaim
+    # rows on audit for SQL GROUP BY queries. Shape:
+    # [{"session_index": 0, "entity_key": "the-aleph",
+    #   "field_name": "year_first_published",
+    #   "value": 1941, "value_text": "1941",
+    #   "text_span": "published in 1941", "span_offset": 89,
+    #   "turn_index": 1}, ...]
+    extracted_claims = models.JSONField(default=list, blank=True)
 
     # Sub-phase 2.9 — provenance verification state.
     #   provenance_verified:
@@ -858,6 +867,32 @@ class Experiment(models.Model):
         help_text="How many independent sessions each miner runs per trial.",
     )
 
+    # v2 — structured field extraction. Shape:
+    # {
+    #   "entities": [{"key": "the-aleph", "display": "The Aleph"}, ...],
+    #   "fields": [
+    #     {"name": "author_full_name", "type": "string", "description": "..."},
+    #     {"name": "year_first_published", "type": "int", "description": "..."},
+    #   ],
+    #   "expected_values": {  # optional canonical answers (2.2)
+    #     "the-aleph": {"author_full_name": "Jorge Luis Borges", "year_first_published": 1945}
+    #   }
+    # }
+    # Empty dict = v1 legacy mode (free-form consistency analysis only).
+    field_schema = models.JSONField(default=dict, blank=True)
+    field_schema_version = models.PositiveIntegerField(default=1)
+    # v2 — comparison runs. FK to the parent experiment that defined the
+    # shared schema. Used by the compare view to render per-field diffs
+    # across target versions. Null = standalone experiment.
+    parent_experiment = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="child_runs",
+        help_text=(
+            "Optional: this experiment is a comparison run of the parent "
+            "(same schema, different target/version)."
+        ),
+    )
+
     created_by = models.ForeignKey(
         "auth.User", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="created_experiments",
@@ -871,3 +906,57 @@ class Experiment(models.Model):
 
     def __str__(self) -> str:
         return f"{self.slug} ({self.experiment_type}/{self.status})"
+
+
+class ExtractedClaim(models.Model):
+    """v2 — Projection of Evaluation.extracted_claims into a queryable
+    relational table. Rebuildable from the JSONField source of truth.
+    Derived on write (audit pipeline). Indexed for per-(experiment,
+    entity, field) aggregation.
+
+    Not the source of truth — Evaluation.extracted_claims is. This table
+    exists so `GROUP BY entity_key, field_name` stays O(log N) on Postgres
+    btree indexes instead of O(N × jsonb_array_elements) on JSONB
+    aggregation.
+    """
+    evaluation = models.ForeignKey(
+        Evaluation, on_delete=models.CASCADE, related_name="claims"
+    )
+    # Denormalized for per-experiment aggregation queries without a join.
+    experiment = models.ForeignKey(
+        Experiment, on_delete=models.CASCADE, related_name="claims"
+    )
+    miner_uid = models.IntegerField()
+    session_index = models.IntegerField()
+    turn_index = models.IntegerField()
+    entity_key = models.CharField(max_length=200, db_index=True)
+    field_name = models.CharField(max_length=100, db_index=True)
+    # Typed storage — populate the column matching the schema's field type.
+    # value_text is always populated (stringified form); value_numeric /
+    # value_date populated when the schema type is numeric/date, for
+    # range queries without JSONB expression indexes.
+    value_text = models.TextField()
+    value_numeric = models.FloatField(null=True, blank=True)
+    value_date = models.DateField(null=True, blank=True)
+    # Provenance — where the value came from.
+    text_span = models.TextField()
+    span_char_offset = models.IntegerField()
+    field_schema_version = models.PositiveIntegerField()
+    extracted_at = models.DateTimeField(auto_now_add=True)
+    # Correctness (set if Experiment.field_schema has expected_values
+    # defined for this field). True/False = compared; null = no
+    # canonical answer to compare against.
+    matches_expected = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["experiment", "entity_key", "field_name"]),
+            models.Index(fields=["experiment", "field_name", "value_text"]),
+            models.Index(fields=["evaluation", "session_index"]),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"Claim(exp={self.experiment_id} "
+            f"{self.entity_key}.{self.field_name}={self.value_text[:40]})"
+        )

@@ -68,6 +68,40 @@
   {% endif %}
 </div>
 
+{# --- Field consistency grid (v2) --- #}
+{% if field_grid %}
+<h3 style="margin-top:1.5rem;">Field consistency</h3>
+<p class="small" style="margin-bottom:0.6rem;">Modal value + consistency rate per (entity, field), across all trials × sessions. Green &ge;80%, yellow &ge;50%, red &lt;50%. Hover cells for counts.</p>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Entity</th>
+      {% for fn in field_grid.fields %}<th>{{ fn }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in field_grid.rows %}
+    <tr>
+      <td><strong>{{ row.entity_display }}</strong><br><span class="small muted">{{ row.entity_key }}</span></td>
+      {% for cell in row.cells %}
+        {% if cell %}
+          <td style="background:{% if cell.bucket == 'green' %}#0a2a0a{% elif cell.bucket == 'yellow' %}#3a3311{% else %}#3a1111{% endif %};"
+              title="{{ cell.modal_count }} of {{ cell.total }} claims say this · {{ cell.distinct_values }} distinct values">
+            <div style="font-weight:bold;color:{% if cell.bucket == 'green' %}#6ee66e{% elif cell.bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.modal_value|truncatechars:48 }}</div>
+            <div class="small">{{ cell.rate_pct }}% &middot; {{ cell.modal_count }}/{{ cell.total }}</div>
+          </td>
+        {% else %}
+          <td><span class="muted small">no data</span></td>
+        {% endif %}
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
 {# --- Run button --- #}
 {% if experiment.status == 'draft' or experiment.status == 'completed' or experiment.status == 'failed' %}
 <form method="post" action="{% url 'experiment_run' slug=experiment.slug %}" style="margin-bottom:1.5rem;"
