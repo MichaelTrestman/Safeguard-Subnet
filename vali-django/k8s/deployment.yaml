@@ -47,14 +47,30 @@ spec:
         # validates the forwarded password at the Auth Proxy/Cloud SQL
         # boundary. Stability sweep 2.x-4.
         - name: pgbouncer
-          image: edoburu/pgbouncer:1.23.1
+          image: edoburu/pgbouncer:v1.23.1-p3
           env:
             - name: DB_HOST
               value: "127.0.0.1"
             - name: DB_PORT
               value: "5432"
+            # Upstream credentials — edoburu's entrypoint defaults user
+            # to "postgres" when DB_USER is unset, which Cloud SQL
+            # rejects (our user is "safeguard"). Password via secretKeyRef.
+            - name: DB_USER
+              value: "safeguard"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: db-password
+            - name: DB_NAME
+              value: "safeguard"
+            # AUTH_TYPE controls how edoburu stores DB_PASSWORD in userlist.
+            # scram-sha-256 keeps plaintext (required for pgbouncer to do
+            # SCRAM with Cloud SQL upstream). See test deployment for full
+            # rationale.
             - name: AUTH_TYPE
-              value: "trust"
+              value: "scram-sha-256"
             - name: POOL_MODE
               value: "transaction"
             - name: MAX_CLIENT_CONN
