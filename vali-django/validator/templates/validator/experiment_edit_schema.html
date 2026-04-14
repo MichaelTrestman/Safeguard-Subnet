@@ -1,0 +1,31 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Edit schema: {{ experiment.title }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; <a href="{% url 'experiment_detail' slug=experiment.slug %}">{{ experiment.title }}</a> &rarr; Edit schema</p>{% endblock %}
+
+{% block content %}
+<h3>Edit schema — {{ experiment.title }}</h3>
+
+<div style="background:#0f1a2a;border:1px solid #345;border-left:4px solid #47a;border-radius:6px;padding:0.8rem 1rem;margin-bottom:1rem;color:#cde;font-size:0.9rem;">
+  <strong>Editing schema v{{ experiment.field_schema_version }}.</strong>
+  Saving will bump to v{{ experiment.field_schema_version|add:1 }} and then you can re-extract existing trials against the new schema from the detail page.
+</div>
+
+<div class="card">
+  <form method="post" action="{% url 'experiment_edit_schema' slug=experiment.slug %}">
+    {% csrf_token %}
+
+    {# Expose challenge so the "Propose from challenge" button in the partial works. Read-only. #}
+    <div style="margin-bottom:0.8rem;">
+      <label style="color:#888;font-size:0.8rem;">Challenge claim</label><br>
+      <textarea name="challenge_claim" readonly style="background:#181818;color:#aaa;border:1px solid #333;padding:0.4rem;border-radius:4px;width:100%;min-height:80px;box-sizing:border-box;">{{ experiment.challenge_claim }}</textarea>
+    </div>
+
+    {% include "validator/_schema_editor.html" %}
+
+    <div style="margin-top:1rem;display:flex;gap:0.6rem;">
+      <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Save schema</button>
+      <a href="{% url 'experiment_detail' slug=experiment.slug %}" style="background:#333;color:#ccc;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;text-decoration:none;">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

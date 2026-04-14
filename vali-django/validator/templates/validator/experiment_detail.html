@@ -69,9 +69,33 @@
 </div>
 
 {# --- Schema summary (v2) --- #}
+{% if not experiment.field_schema.entities %}
+<div class="card" style="margin-bottom:1rem;background:#1a1a0f;border:1px solid #554;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div>
+      <strong style="color:#fc6;">Legacy mode (no schema)</strong>
+      <div class="small" style="color:#aa9;margin-top:0.2rem;">This experiment runs free-form consistency analysis only. Add a schema to unlock structured field extraction and per-field consistency/accuracy tracking.</div>
+    </div>
+    <a href="{% url 'experiment_edit_schema' slug=experiment.slug %}" style="background:#554;color:#fd8;border:1px solid #887;padding:0.4rem 1rem;border-radius:4px;text-decoration:none;">Add schema</a>
+  </div>
+</div>
+{% endif %}
+
 {% if experiment.field_schema.entities %}
 <div class="card" style="margin-bottom:1rem;">
-  <h4>Schema (v{{ experiment.field_schema_version }})</h4>
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <h4 style="margin:0;">Schema (v{{ experiment.field_schema_version }})</h4>
+    <div style="display:flex;gap:0.4rem;">
+      <a href="{% url 'experiment_edit_schema' slug=experiment.slug %}" style="background:#333;color:#cde;border:1px solid #555;padding:0.3rem 0.8rem;border-radius:4px;font-size:0.8rem;text-decoration:none;">Edit schema</a>
+      {% if trial_summaries %}
+      <form method="post" action="{% url 'experiment_reextract' slug=experiment.slug %}" style="display:inline;margin:0;"
+            onsubmit="return confirm('Re-run field extraction against all {{ trial_summaries|length }} existing trials at schema v{{ experiment.field_schema_version }}? This calls Chutes once per session (expensive if many trials) but reuses stored transcripts — no new miner dispatches.');">
+        {% csrf_token %}
+        <button type="submit" style="background:#333;color:#cde;border:1px solid #555;padding:0.3rem 0.8rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">Re-extract trials</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.5rem;font-size:0.85rem;">
     <div>
       <div style="color:#888;text-transform:uppercase;font-size:0.7rem;margin-bottom:0.3rem;">Entities ({{ experiment.field_schema.entities|length }})</div>

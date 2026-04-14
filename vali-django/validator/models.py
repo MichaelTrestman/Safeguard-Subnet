@@ -918,6 +918,13 @@ class ExtractedClaim(models.Model):
     exists so `GROUP BY entity_key, field_name` stays O(log N) on Postgres
     btree indexes instead of O(N × jsonb_array_elements) on JSONB
     aggregation.
+
+    Storage is string-only. The target's answers come out of an LLM as
+    text anyway ("1945", "around 1945", "June 1953") — typed columns
+    with coercion created more edge cases than they solved. Field types
+    in the schema stay as LLM-extraction hints and comparison-rule hints
+    for canonical-answer matching (Phase 2.2), not as storage
+    discriminators.
     """
     evaluation = models.ForeignKey(
         Evaluation, on_delete=models.CASCADE, related_name="claims"
@@ -931,13 +938,7 @@ class ExtractedClaim(models.Model):
     turn_index = models.IntegerField()
     entity_key = models.CharField(max_length=200, db_index=True)
     field_name = models.CharField(max_length=100, db_index=True)
-    # Typed storage — populate the column matching the schema's field type.
-    # value_text is always populated (stringified form); value_numeric /
-    # value_date populated when the schema type is numeric/date, for
-    # range queries without JSONB expression indexes.
     value_text = models.TextField()
-    value_numeric = models.FloatField(null=True, blank=True)
-    value_date = models.DateField(null=True, blank=True)
     # Provenance — where the value came from.
     text_span = models.TextField()
     span_char_offset = models.IntegerField()

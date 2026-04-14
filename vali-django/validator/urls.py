@@ -54,8 +54,11 @@ urlpatterns = [
     # Experiments (staff only) — DESIGN.md §10
     path("experiments/", views.experiment_list, name="experiment_list"),
     path("experiments/create/", views.experiment_create, name="experiment_create"),
+    path("experiments/propose_schema/", views.experiment_propose_schema, name="experiment_propose_schema"),
     path("experiments/<str:slug>/", views.experiment_detail, name="experiment_detail"),
     path("experiments/<str:slug>/run/", views.experiment_run, name="experiment_run"),
+    path("experiments/<str:slug>/schema/", views.experiment_edit_schema, name="experiment_edit_schema"),
+    path("experiments/<str:slug>/reextract/", views.experiment_reextract, name="experiment_reextract"),
 
     # Concern catalog distribution (Epistula API).
     # Mounted under /api/ so the bare /concerns URL can redirect to

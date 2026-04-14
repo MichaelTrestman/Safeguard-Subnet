@@ -1746,18 +1746,19 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
         # for SQL-based aggregation queries. Only fires for experiment
         # evaluations with a non-empty extracted_claims list. Each claim
         # is validated (span exists in the provenance-verified transcript)
-        # before insertion; invalid claims are silently dropped. Coerces
-        # value to typed column based on the field_schema's declared type.
+        # before insertion; invalid claims are silently dropped.
+        #
+        # Storage is string-only. Schema types are hints to the LLM, not
+        # storage discriminators — coercion at extraction time added edge
+        # cases without solving a real problem. Canonical-answer
+        # comparison (matches_expected) uses a smart compare that tries
+        # numeric equivalence first, then case-insensitive string.
         if eval_row.experiment_id is not None and eval_row.extracted_claims:
             from .models import ExtractedClaim
-            import datetime as _dt
 
-            # Load schema once; needed for type coercion + expected_values.
             schema = eval_row.experiment.field_schema or {}
             schema_version = eval_row.experiment.field_schema_version or 1
-            fields_by_name = {
-                f["name"]: f for f in (schema.get("fields") or [])
-            }
+            field_names = {f["name"] for f in (schema.get("fields") or [])}
             entity_keys = {e["key"] for e in (schema.get("entities") or [])}
             expected_values = schema.get("expected_values") or {}
 
@@ -1779,6 +1780,25 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                 field_schema_version=schema_version,
             ).delete()
 
+            def _canonical_compare(value_text: str, expected) -> bool:
+                """Match claim text against an expected value. Tries
+                numeric equivalence first ("1945" matches 1945, 1945.0,
+                "1945 AD" — because we split on whitespace and parse the
+                first token); falls back to case-insensitive trimmed
+                string compare.
+                """
+                if expected is None:
+                    return False
+                vt = (value_text or "").strip()
+                try:
+                    left = float(vt.split()[0]) if vt else None
+                    right = float(expected)
+                    if left is not None:
+                        return abs(left - right) < 1e-9
+                except (ValueError, TypeError, IndexError):
+                    pass
+                return vt.lower() == str(expected).strip().lower()
+
             to_insert = []
             for raw in eval_row.extracted_claims:
                 if not isinstance(raw, dict):
@@ -1786,43 +1806,23 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                 ek = raw.get("entity_key")
                 fn = raw.get("field_name")
                 span = raw.get("text_span", "")
-                if ek not in entity_keys or fn not in fields_by_name:
+                if ek not in entity_keys or fn not in field_names:
                     continue
                 si = raw.get("session_index", 0)
                 session_text = sessions_assistant_text.get(si, "")
                 if not span or span not in session_text:
                     continue  # span verification failed (asymmetry of verification)
 
-                field_type = fields_by_name[fn].get("type", "string")
+                # String-only storage. Use value_text if miner sent it,
+                # else stringify the raw value.
                 value_text = str(raw.get("value_text") or raw.get("value") or "")[:500]
-                value_numeric = None
-                value_date = None
 
-                raw_val = raw.get("value")
-                if field_type in ("int", "float", "number", "numeric"):
-                    try:
-                        value_numeric = float(raw_val) if raw_val is not None else None
-                    except (TypeError, ValueError):
-                        value_numeric = None
-                elif field_type == "date":
-                    try:
-                        if isinstance(raw_val, str):
-                            value_date = _dt.date.fromisoformat(raw_val[:10])
-                    except (TypeError, ValueError):
-                        value_date = None
-
-                # Optional canonical-answer comparison (2.2 but cheap to
-                # populate now — null stays null if no expected value).
+                # Optional canonical-answer comparison (null stays null
+                # if no expected value defined for this entity/field).
                 matches_expected = None
                 ent_expected = expected_values.get(ek) or {}
                 if fn in ent_expected:
-                    expected = ent_expected[fn]
-                    if value_numeric is not None and isinstance(expected, (int, float)):
-                        matches_expected = abs(value_numeric - float(expected)) < 1e-9
-                    else:
-                        matches_expected = (
-                            value_text.strip().lower() == str(expected).strip().lower()
-                        )
+                    matches_expected = _canonical_compare(value_text, ent_expected[fn])
 
                 to_insert.append(ExtractedClaim(
                     evaluation=eval_row,
@@ -1833,8 +1833,6 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
                     entity_key=ek,
                     field_name=fn,
                     value_text=value_text,
-                    value_numeric=value_numeric,
-                    value_date=value_date,
                     text_span=span[:2000],
                     span_char_offset=int(raw.get("span_char_offset", 0) or 0),
                     field_schema_version=schema_version,

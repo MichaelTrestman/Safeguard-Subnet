@@ -47,7 +47,13 @@
       <label style="color:#888;font-size:0.8rem;">Runs per trial (2&ndash;20)</label><br>
       <input type="number" name="runs_per_trial" value="5" min="2" max="20" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:6rem;">
     </div>
-    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Create Experiment</button>
+
+    {# v2.1 — schema editor (optional but encouraged) #}
+    {% include "validator/_schema_editor.html" %}
+
+    <div style="margin-top:1rem;">
+      <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Create Experiment</button>
+    </div>
   </form>
 </div>
 {% endblock %}

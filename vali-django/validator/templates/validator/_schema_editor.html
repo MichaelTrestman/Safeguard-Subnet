@@ -1,0 +1,221 @@
+{# Reusable schema editor partial. Include with: {% include "validator/_schema_editor.html" %} #}
+{# Expects `experiment` in context (may be None for the create flow — then seed empty). #}
+
+<div class="card" style="margin-top:1rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">
+    <h4 style="margin:0;">Schema
+      {% if experiment %}<span class="small muted">v{{ experiment.field_schema_version }}</span>{% endif %}
+    </h4>
+    <button type="button" id="propose-btn" style="background:#1a3a5a;color:#cde;border:1px solid #47a;padding:0.4rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.85rem;">
+      Propose schema from challenge
+    </button>
+  </div>
+  <p class="small" style="color:#888;margin:0.2rem 0 0.8rem;">
+    Declare entities and fields the target should commit to. Optional expected values turn this into a fact-check: when set, each claim is marked correct/incorrect, separate from consistency.
+    Empty schema = v1 legacy mode (free-form consistency analysis only).
+  </p>
+
+  {# --- Entities --- #}
+  <div style="margin-top:0.8rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <label style="color:#888;font-size:0.8rem;text-transform:uppercase;">Entities</label>
+      <button type="button" id="add-entity-btn" style="background:none;color:#88f;border:1px solid #345;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">+ Add entity</button>
+    </div>
+    <div id="entities-list" style="margin-top:0.4rem;"></div>
+  </div>
+
+  {# --- Fields --- #}
+  <div style="margin-top:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <label style="color:#888;font-size:0.8rem;text-transform:uppercase;">Fields</label>
+      <button type="button" id="add-field-btn" style="background:none;color:#88f;border:1px solid #345;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">+ Add field</button>
+    </div>
+    <div id="fields-list" style="margin-top:0.4rem;"></div>
+  </div>
+
+  {# --- Expected values grid (optional; rebuilds when entities/fields change) --- #}
+  <div id="expected-values-section" style="margin-top:1rem;display:none;">
+    <label style="color:#888;font-size:0.8rem;text-transform:uppercase;">Expected values <span style="text-transform:none;color:#666;">(optional &mdash; fact-check mode)</span></label>
+    <p class="small" style="color:#888;margin:0.2rem 0 0.4rem;">Leave blank for consistency-only. Filled cells mark claims as correct/incorrect against the canonical answer.</p>
+    <div id="expected-grid-wrap" style="margin-top:0.4rem;overflow-x:auto;"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const ENTITY_SEED = {% if experiment.field_schema.entities %}{{ experiment.field_schema.entities|safe }}{% else %}[]{% endif %};
+  const FIELD_SEED = {% if experiment.field_schema.fields %}{{ experiment.field_schema.fields|safe }}{% else %}[]{% endif %};
+  const EXPECTED_SEED = {% if experiment.field_schema.expected_values %}{{ experiment.field_schema.expected_values|safe }}{% else %}{}{% endif %};
+
+  const entitiesList = document.getElementById("entities-list");
+  const fieldsList = document.getElementById("fields-list");
+  const expectedSection = document.getElementById("expected-values-section");
+  const expectedGridWrap = document.getElementById("expected-grid-wrap");
+
+  function slugify(s) {
+    return (s || "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100);
+  }
+  function snakify(s) {
+    return (s || "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+  }
+
+  function getEntities() {
+    return Array.from(entitiesList.children).map(row => ({
+      key: row.querySelector(".ent-key").value.trim(),
+      display: row.querySelector(".ent-display").value.trim(),
+    })).filter(e => e.key || e.display);
+  }
+  function getFields() {
+    return Array.from(fieldsList.children).map(row => ({
+      name: row.querySelector(".fld-name").value.trim(),
+      type: row.querySelector(".fld-type").value,
+      description: row.querySelector(".fld-desc").value.trim(),
+    })).filter(f => f.name);
+  }
+  function getExpected() {
+    const result = {};
+    document.querySelectorAll(".expected-input").forEach(inp => {
+      const ek = inp.dataset.ek, fn = inp.dataset.fn, val = inp.value.trim();
+      if (val) {
+        if (!result[ek]) result[ek] = {};
+        result[ek][fn] = val;
+      }
+    });
+    return result;
+  }
+
+  function makeEntityRow(key, display) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:0.4rem;margin-bottom:0.3rem;align-items:center;";
+    row.innerHTML = `
+      <input name="entity_display" class="ent-display" type="text" placeholder="Display name (e.g. The Aleph)" value="${(display||"").replace(/"/g,"&quot;")}" style="flex:2;background:#222;color:#fff;border:1px solid #444;padding:0.35rem;border-radius:4px;">
+      <input name="entity_key" class="ent-key" type="text" placeholder="key (slug)" value="${(key||"").replace(/"/g,"&quot;")}" style="flex:1;background:#181818;color:#ccc;border:1px solid #333;padding:0.35rem;border-radius:4px;font-family:monospace;font-size:0.85em;">
+      <button type="button" class="rm-btn" style="background:#3a1a1a;color:#f88;border:none;padding:0.3rem 0.6rem;border-radius:4px;cursor:pointer;">&times;</button>
+    `;
+    // Auto-slugify key from display as user types display (unless user has edited key)
+    const displayIn = row.querySelector(".ent-display");
+    const keyIn = row.querySelector(".ent-key");
+    let keyManuallyEdited = !!key;
+    keyIn.addEventListener("input", () => { keyManuallyEdited = true; });
+    displayIn.addEventListener("input", () => {
+      if (!keyManuallyEdited) keyIn.value = slugify(displayIn.value);
+      rebuildExpectedGrid();
+    });
+    keyIn.addEventListener("input", rebuildExpectedGrid);
+    row.querySelector(".rm-btn").addEventListener("click", () => { row.remove(); rebuildExpectedGrid(); });
+    return row;
+  }
+
+  function makeFieldRow(name, type, description) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:0.4rem;margin-bottom:0.3rem;align-items:center;";
+    const typeOpts = ["string","int","float","date"].map(t => `<option value="${t}"${t===type?' selected':''}>${t}</option>`).join("");
+    row.innerHTML = `
+      <input name="field_name" class="fld-name" type="text" placeholder="field_name (snake_case)" value="${(name||"").replace(/"/g,"&quot;")}" style="flex:1;background:#222;color:#fff;border:1px solid #444;padding:0.35rem;border-radius:4px;font-family:monospace;font-size:0.85em;">
+      <select name="field_type" class="fld-type" style="background:#222;color:#fff;border:1px solid #444;padding:0.35rem;border-radius:4px;">${typeOpts}</select>
+      <input name="field_description" class="fld-desc" type="text" placeholder="Description (what to extract)" value="${(description||"").replace(/"/g,"&quot;")}" style="flex:2;background:#222;color:#fff;border:1px solid #444;padding:0.35rem;border-radius:4px;">
+      <button type="button" class="rm-btn" style="background:#3a1a1a;color:#f88;border:none;padding:0.3rem 0.6rem;border-radius:4px;cursor:pointer;">&times;</button>
+    `;
+    row.querySelector(".fld-name").addEventListener("input", (ev) => {
+      ev.target.value = snakify(ev.target.value).slice(0, 80);
+      rebuildExpectedGrid();
+    });
+    row.querySelector(".rm-btn").addEventListener("click", () => { row.remove(); rebuildExpectedGrid(); });
+    return row;
+  }
+
+  function rebuildExpectedGrid() {
+    const entities = getEntities();
+    const fields = getFields();
+    if (entities.length === 0 || fields.length === 0) {
+      expectedSection.style.display = "none";
+      expectedGridWrap.innerHTML = "";
+      return;
+    }
+    expectedSection.style.display = "block";
+    // Preserve existing expected values before rebuild
+    const currentExpected = getExpected();
+    // Merge with seed values (seed wins only for untouched cells)
+    let html = '<table style="width:auto;border-collapse:collapse;"><thead><tr><th style="padding:0.3rem 0.6rem;text-align:left;border-bottom:1px solid #333;color:#888;font-size:0.75rem;text-transform:uppercase;">Entity</th>';
+    fields.forEach(f => {
+      html += `<th style="padding:0.3rem 0.6rem;text-align:left;border-bottom:1px solid #333;color:#888;font-size:0.75rem;text-transform:uppercase;">${f.name}</th>`;
+    });
+    html += '</tr></thead><tbody>';
+    entities.forEach(e => {
+      html += `<tr><td style="padding:0.3rem 0.6rem;border-bottom:1px solid #222;"><strong>${e.display || e.key}</strong></td>`;
+      fields.forEach(f => {
+        // Prefer currentExpected (user just typed it) > seed
+        let val = "";
+        if (currentExpected[e.key] && currentExpected[e.key][f.name] !== undefined) {
+          val = currentExpected[e.key][f.name];
+        } else if (EXPECTED_SEED[e.key] && EXPECTED_SEED[e.key][f.name] !== undefined) {
+          val = EXPECTED_SEED[e.key][f.name];
+        }
+        const safeVal = String(val).replace(/"/g, "&quot;");
+        html += `<td style="padding:0.3rem 0.6rem;border-bottom:1px solid #222;"><input name="expected[${e.key}][${f.name}]" data-ek="${e.key}" data-fn="${f.name}" class="expected-input" type="text" value="${safeVal}" placeholder="—" style="background:#181818;color:#fff;border:1px solid #333;padding:0.25rem;border-radius:3px;font-size:0.85rem;width:10rem;"></td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    expectedGridWrap.innerHTML = html;
+  }
+
+  // Seed existing rows
+  ENTITY_SEED.forEach(e => entitiesList.appendChild(makeEntityRow(e.key, e.display)));
+  FIELD_SEED.forEach(f => fieldsList.appendChild(makeFieldRow(f.name, f.type, f.description)));
+  rebuildExpectedGrid();
+
+  document.getElementById("add-entity-btn").addEventListener("click", () => {
+    entitiesList.appendChild(makeEntityRow("", ""));
+    rebuildExpectedGrid();
+  });
+  document.getElementById("add-field-btn").addEventListener("click", () => {
+    fieldsList.appendChild(makeFieldRow("", "string", ""));
+    rebuildExpectedGrid();
+  });
+
+  // Propose schema from challenge
+  document.getElementById("propose-btn").addEventListener("click", async () => {
+    const challengeEl = document.querySelector("textarea[name='challenge_claim']");
+    if (!challengeEl) {
+      alert("Challenge claim field not found on this page.");
+      return;
+    }
+    const challenge = challengeEl.value.trim();
+    if (!challenge) {
+      alert("Type the challenge claim first, then click propose.");
+      challengeEl.focus();
+      return;
+    }
+    const btn = document.getElementById("propose-btn");
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = "Proposing...";
+    try {
+      const csrf = document.querySelector("input[name='csrfmiddlewaretoken']").value;
+      const resp = await fetch("{% url 'experiment_propose_schema' %}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+        body: JSON.stringify({ challenge_claim: challenge }),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        alert("Propose failed: " + resp.status + " — " + err.slice(0, 400));
+        return;
+      }
+      const data = await resp.json();
+      if (!confirm("Replace current entities and fields with the proposal (" + data.entities.length + " entities, " + data.fields.length + " fields)?")) return;
+      entitiesList.innerHTML = "";
+      fieldsList.innerHTML = "";
+      (data.entities || []).forEach(e => entitiesList.appendChild(makeEntityRow(e.key, e.display)));
+      (data.fields || []).forEach(f => fieldsList.appendChild(makeFieldRow(f.name, f.type, f.description)));
+      rebuildExpectedGrid();
+    } catch (e) {
+      alert("Propose error: " + e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  });
+})();
+</script>
