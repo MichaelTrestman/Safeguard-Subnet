@@ -68,6 +68,27 @@
   {% endif %}
 </div>
 
+{# --- Schema summary (v2) --- #}
+{% if experiment.field_schema.entities %}
+<div class="card" style="margin-bottom:1rem;">
+  <h4>Schema (v{{ experiment.field_schema_version }})</h4>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.5rem;font-size:0.85rem;">
+    <div>
+      <div style="color:#888;text-transform:uppercase;font-size:0.7rem;margin-bottom:0.3rem;">Entities ({{ experiment.field_schema.entities|length }})</div>
+      {% for ent in experiment.field_schema.entities %}
+      <div>&bull; <strong>{{ ent.display }}</strong> <span class="small muted">({{ ent.key }})</span></div>
+      {% endfor %}
+    </div>
+    <div>
+      <div style="color:#888;text-transform:uppercase;font-size:0.7rem;margin-bottom:0.3rem;">Fields ({{ experiment.field_schema.fields|length }})</div>
+      {% for fld in experiment.field_schema.fields %}
+      <div>&bull; <strong>{{ fld.name }}</strong> <span class="small muted">{{ fld.type }}</span>{% if fld.description %} &mdash; <span class="small">{{ fld.description }}</span>{% endif %}</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {# --- Field consistency grid (v2) --- #}
 {% if field_grid %}
 <h3 style="margin-top:1.5rem;">Field consistency</h3>
