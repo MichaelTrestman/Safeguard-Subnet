@@ -148,10 +148,28 @@ if os.environ.get("BEHIND_CLOUDFLARE", "").lower() in ("1", "true", "yes"):
     CSRF_COOKIE_SECURE = True  # no-op today (no CsrfViewMiddleware) but
     # belt-and-suspenders in case CSRF gets turned on later.
     SECURE_SSL_REDIRECT = True
-    # kubelet probes come via pod IP with no X-Forwarded-Proto; they'd
-    # otherwise get 301'd to https://<pod-ip>/healthz which the pod doesn't
-    # serve. Exempt /healthz from the redirect.
-    SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+    # Exempt paths that are legitimately hit over HTTP by internal/
+    # programmatic traffic that doesn't follow POST redirects:
+    #   - /healthz: kubelet probes via pod IP (no X-Forwarded-Proto)
+    #   - /probe/relay: miner POSTs probe turns; httpx doesn't auto-
+    #     follow 301 on POST (2026-04-14 discovered when stress test
+    #     on prod produced empty transcripts)
+    #   - /register, /evaluate, /status/<hk>, /registry, /api/concerns:
+    #     Epistula-authed API endpoints hit by miners and target AIs;
+    #     chain-signature auth at the body/header layer means HTTPS
+    #     adds nothing security-wise, and redirect breaks them the
+    #     same way /probe/relay broke.
+    # Human-facing paths (/, /app/, /operator/, /experiments/, etc.)
+    # still redirect to HTTPS.
+    SECURE_REDIRECT_EXEMPT = [
+        r"^healthz$",
+        r"^probe/",
+        r"^register$",
+        r"^evaluate$",
+        r"^status/",
+        r"^registry$",
+        r"^api/",
+    ]
 
 # --- Validator-specific config ---
 VALIDATOR_WALLET = os.environ.get("VALIDATOR_WALLET", "")
