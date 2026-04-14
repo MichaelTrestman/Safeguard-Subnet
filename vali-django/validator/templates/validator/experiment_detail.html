@@ -150,12 +150,12 @@
 {# --- Run button --- #}
 {% if experiment.status == 'draft' or experiment.status == 'completed' or experiment.status == 'failed' %}
 <form method="post" action="{% url 'experiment_run' slug=experiment.slug %}" style="margin-bottom:1.5rem;"
-      onsubmit="var b=this.querySelector('button'); b.disabled=true; b.textContent='Dispatching... (may take several minutes)'; b.style.background='#555'; b.style.cursor='wait';">
+      onsubmit="var b=this.querySelector('button'); b.disabled=true; b.textContent='Dispatching...'; b.style.background='#555';">
   {% csrf_token %}
   <button type="submit" style="background:#363;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;font-size:0.95rem;">
     {% if experiment.status == 'draft' %}Run Experiment{% else %}Re-run Experiment{% endif %}
   </button>
-  <span class="small" style="margin-left:0.5rem;">Dispatches to all eligible probe miners (may take several minutes). Safe to close the page — dispatch continues server-side.</span>
+  <span class="small" style="margin-left:0.5rem;">Dispatches to all eligible probe miners. Page redirects immediately; dispatch runs in background. Safe to close the tab — refresh the detail page later to watch trials land.</span>
 </form>
 {% endif %}
 

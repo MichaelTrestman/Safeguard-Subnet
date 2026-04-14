@@ -2288,7 +2288,11 @@ async def experiment_propose_schema(request: HttpRequest) -> JsonResponse:
                         {"role": "user", "content": f"Challenge: {challenge}"},
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 1024,
+                    # Bumped from 1024 because some TEE models spend most
+                    # of the budget in <think>...</think> before emitting
+                    # JSON, and a truncated think block leaves no JSON to
+                    # parse at all.
+                    "max_tokens": 4096,
                 },
             )
             resp.raise_for_status()
@@ -2300,8 +2304,11 @@ async def experiment_propose_schema(request: HttpRequest) -> JsonResponse:
     # Strip markdown fences if present
     cleaned = re.sub(r"^```(?:json)?\s*", "", content.strip())
     cleaned = re.sub(r"\s*```$", "", cleaned)
-    # Strip <think> blocks some models emit
-    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    # Strip <think> blocks some models emit. Close-paired first, then
+    # any unclosed <think>... at the tail (mirrors the miner's pattern
+    # in prober._strip_think).
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
 
     try:
         proposal = json.loads(cleaned)
@@ -2553,7 +2560,8 @@ async def experiment_run(request: HttpRequest, slug: str) -> HttpResponse:
     if not probe_miners:
         return HttpResponse("No eligible probe miners discovered", status=400)
 
-    # Update status
+    # Update status to running BEFORE returning, so a concurrent Run
+    # click sees status=running and is rejected by the guard above.
     @sync_to_async
     def _set_running():
         experiment.status = Experiment.STATUS_RUNNING
@@ -2561,29 +2569,65 @@ async def experiment_run(request: HttpRequest, slug: str) -> HttpResponse:
         experiment.save(update_fields=["status", "started_at"])
     await _set_running()
 
-    # Blocking dispatch — browser waits for the redirect until all miners
-    # have returned (or the EXPERIMENT_QUERY_TIMEOUT hits). Takes 1-10 min
-    # depending on N miners × runs_per_trial. The view template shows a
-    # "Dispatching..." button state while this runs. Fire-and-forget is a
-    # v2 improvement (requires a separate thread + async_to_sync to escape
-    # Django's per-request thread executor).
-    try:
-        await dispatch_experiment(wallet, experiment, probe_miners, metagraph)
-    except Exception as e:
-        logger.error(f"Experiment dispatch failed: {e}")
-        @sync_to_async
-        def _set_failed():
-            experiment.status = Experiment.STATUS_FAILED
-            experiment.save(update_fields=["status"])
-        await _set_failed()
-        return redirect("experiment_detail", slug=slug)
+    # Fire-and-forget: spawn a daemon thread with its own event loop and
+    # return the redirect immediately. The thread runs independent of
+    # the request lifecycle, so closing the browser tab no longer kills
+    # the dispatch (which was the v1 zombie trap — see dev-blog-012 and
+    # 2026-04-14 cities-experiment loss).
+    #
+    # Why a thread, not asyncio.create_task: Django's per-request
+    # ThreadSensitiveExecutor is torn down when the view returns,
+    # killing any sync_to_async ORM call inside an in-loop coroutine.
+    # A new thread gets its own executor and ORM connections.
+    import threading
+    from asgiref.sync import async_to_sync as _async_to_sync
 
-    @sync_to_async
-    def _set_completed():
-        experiment.status = Experiment.STATUS_COMPLETED
-        experiment.completed_at = djtz.now()
-        experiment.save(update_fields=["status", "completed_at"])
-    await _set_completed()
+    experiment_id = experiment.id
+
+    def _background_dispatch():
+        from .models import Experiment as _Experiment
+        from .loop import dispatch_experiment as _dispatch
+        from django.utils import timezone as _tz
+
+        async def _do_it():
+            try:
+                # Re-fetch experiment in this thread's ORM context.
+                exp = await sync_to_async(_Experiment.objects.get)(id=experiment_id)
+                await _dispatch(wallet, exp, probe_miners, metagraph)
+
+                @sync_to_async
+                def _mark_completed():
+                    e = _Experiment.objects.get(id=experiment_id)
+                    e.status = _Experiment.STATUS_COMPLETED
+                    e.completed_at = _tz.now()
+                    e.save(update_fields=["status", "completed_at"])
+                await _mark_completed()
+            except Exception as e:
+                logger.error(
+                    f"Background experiment dispatch failed for id={experiment_id}: {e}"
+                )
+                try:
+                    @sync_to_async
+                    def _mark_failed():
+                        ex = _Experiment.objects.get(id=experiment_id)
+                        ex.status = _Experiment.STATUS_FAILED
+                        ex.save(update_fields=["status"])
+                    await _mark_failed()
+                except Exception as e2:
+                    logger.error(
+                        f"Could not mark experiment {experiment_id} failed: {e2}"
+                    )
+
+        try:
+            _async_to_sync(_do_it)()
+        except Exception as e:
+            logger.error(f"Background dispatch thread crashed: {e}")
+
+    threading.Thread(
+        target=_background_dispatch,
+        name=f"exp-dispatch-{experiment_id}",
+        daemon=True,
+    ).start()
 
     return redirect("experiment_detail", slug=slug)
 
