@@ -119,6 +119,35 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 USE_TZ = True
 TIME_ZONE = "UTC"
 
+# ---------------------------------------------------------------------------
+# HTTPS hardening. Only activates when BEHIND_CLOUDFLARE=1 is set in the pod
+# env. Test stack (direct HTTP LB at 34.135.204.42) leaves this off.
+#
+# Threat: operator dashboard was served over plain HTTP at the raw prod LB IP
+# (136.116.237.112:9090). Session cookies + login passwords traveled in
+# cleartext. Only the project-safeguard.ai domain had TLS (via Cloudflare).
+# See claude-brainstormz/safeguard-security-review-2026-04-14.md Critical #2.
+#
+# Fix: trust Cloudflare's X-Forwarded-Proto so Django knows the request was
+# HTTPS end-to-end, then mark cookies Secure and 301-redirect any HTTP
+# request to HTTPS. /healthz is exempt so kubelet's in-cluster probes keep
+# working (they hit http://<pod-ip>:9090/healthz with no forwarding header).
+#
+# NOT yet enabled: HSTS (needs testing first — once you set HSTS-preload
+# clients refuse HTTP for a year, hard to revert). Cloudflare-only firewall
+# (blocks raw LB IP access from non-Cloudflare sources; deferred to a
+# separate careful ship with dynamic IP-range refresh).
+if os.environ.get("BEHIND_CLOUDFLARE", "").lower() in ("1", "true", "yes"):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True  # no-op today (no CsrfViewMiddleware) but
+    # belt-and-suspenders in case CSRF gets turned on later.
+    SECURE_SSL_REDIRECT = True
+    # kubelet probes come via pod IP with no X-Forwarded-Proto; they'd
+    # otherwise get 301'd to https://<pod-ip>/healthz which the pod doesn't
+    # serve. Exempt /healthz from the redirect.
+    SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+
 # --- Validator-specific config ---
 VALIDATOR_WALLET = os.environ.get("VALIDATOR_WALLET", "")
 VALIDATOR_HOTKEY = os.environ.get("VALIDATOR_HOTKEY", "")

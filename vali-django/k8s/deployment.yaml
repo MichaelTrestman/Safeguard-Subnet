@@ -177,6 +177,12 @@ spec:
             # the secret. See settings.py USE_PGBOUNCER block.
             - name: USE_PGBOUNCER
               value: "1"
+            # HTTPS hardening — Django trusts Cloudflare's X-Forwarded-Proto,
+            # marks cookies Secure, 301s HTTP→HTTPS (with /healthz exempt so
+            # kubelet probes still pass). See settings.py BEHIND_CLOUDFLARE
+            # block + safeguard-security-review-2026-04-14.md Critical #2.
+            - name: BEHIND_CLOUDFLARE
+              value: "1"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
