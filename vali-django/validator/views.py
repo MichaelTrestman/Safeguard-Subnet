@@ -2450,59 +2450,100 @@ def experiment_detail(request: HttpRequest, slug: str) -> HttpResponse:
     # Modal value per cell + consistency rate. SQL GROUP BY kept narrow
     # (no JSON operators) so it scales.
     from .models import ExtractedClaim
-    from django.db.models import Count
+    from django.db.models import Count, Q
     field_grid = None
     schema = experiment.field_schema or {}
     entities = schema.get("entities") or []
     fields = schema.get("fields") or []
+    expected_values = schema.get("expected_values") or {}
     if entities and fields:
+        # Single GROUP BY; Q-filtered Count annotations fold the
+        # matches_expected rollup into the same query. `n_correct` +
+        # `n_incorrect` may both be 0 for a (entity, field) cell with
+        # no expected_value set — we use that to decide whether to
+        # render the accuracy column for the cell.
         grouped = (
             ExtractedClaim.objects
             .filter(experiment=experiment)
             .values("entity_key", "field_name", "value_text")
-            .annotate(count=Count("id"))
+            .annotate(
+                count=Count("id"),
+                n_correct=Count("id", filter=Q(matches_expected=True)),
+                n_incorrect=Count("id", filter=Q(matches_expected=False)),
+            )
         )
-        # Build {entity: {field: {value: count}}} then derive modal + rate.
-        nested: dict[str, dict[str, dict[str, int]]] = {}
+        # Build {entity: {field: {value: {count, n_correct, n_incorrect}}}}
+        nested: dict[str, dict[str, dict[str, dict]]] = {}
         for row in grouped:
             nested.setdefault(row["entity_key"], {}) \
-                  .setdefault(row["field_name"], {})[row["value_text"]] = row["count"]
+                  .setdefault(row["field_name"], {})[row["value_text"]] = {
+                      "count": row["count"],
+                      "n_correct": row["n_correct"],
+                      "n_incorrect": row["n_incorrect"],
+                  }
+
+        def _bucket(rate: float) -> str:
+            if rate >= 0.8: return "green"
+            if rate >= 0.5: return "yellow"
+            return "red"
 
         field_names = [f["name"] for f in fields]
         grid_rows = []
         for ent in entities:
             ek = ent["key"]
+            expected_for_entity = expected_values.get(ek, {})
             row_cells = []
             for fn in field_names:
                 values = nested.get(ek, {}).get(fn, {})
-                total = sum(values.values())
+                total = sum(v["count"] for v in values.values())
                 if total == 0:
                     row_cells.append(None)
                     continue
-                modal_value, modal_count = max(values.items(), key=lambda kv: kv[1])
-                rate = modal_count / total
-                # Color bucket for template: green >=0.8, yellow >=0.5, red <0.5
-                if rate >= 0.8:
-                    bucket = "green"
-                elif rate >= 0.5:
-                    bucket = "yellow"
-                else:
-                    bucket = "red"
+                modal_value, modal_stats = max(
+                    values.items(), key=lambda kv: kv[1]["count"]
+                )
+                rate = modal_stats["count"] / total
+
+                # Accuracy rollup: sum matches_expected True/False across
+                # all values for this (entity, field). Both being 0 means
+                # the schema has no expected_value for this cell.
+                n_correct = sum(v["n_correct"] for v in values.values())
+                n_incorrect = sum(v["n_incorrect"] for v in values.values())
+                n_rated = n_correct + n_incorrect
+                has_expected = fn in expected_for_entity and n_rated > 0
+                acc_rate = (n_correct / n_rated) if n_rated else None
                 row_cells.append({
                     "modal_value": modal_value,
-                    "modal_count": modal_count,
+                    "modal_count": modal_stats["count"],
                     "total": total,
                     "rate": rate,
                     "rate_pct": int(round(rate * 100)),
-                    "bucket": bucket,
+                    "bucket": _bucket(rate),
                     "distinct_values": len(values),
+                    "has_expected": has_expected,
+                    "expected_value": expected_for_entity.get(fn, ""),
+                    "n_correct": n_correct,
+                    "n_rated": n_rated,
+                    "acc_rate": acc_rate,
+                    "acc_rate_pct": int(round(acc_rate * 100)) if acc_rate is not None else None,
+                    "acc_bucket": _bucket(acc_rate) if acc_rate is not None else None,
                 })
             grid_rows.append({
                 "entity_key": ek,
                 "entity_display": ent.get("display", ek),
                 "cells": row_cells,
             })
-        field_grid = {"fields": field_names, "rows": grid_rows}
+        # Flag whether any cell has expected values so the template can
+        # adjust the intro text. Keeps the legend accurate.
+        any_expected = any(
+            cell and cell.get("has_expected")
+            for r in grid_rows for cell in r["cells"]
+        )
+        field_grid = {
+            "fields": field_names,
+            "rows": grid_rows,
+            "any_expected": any_expected,
+        }
 
     return render(request, "validator/experiment_detail.html", {
         "experiment": experiment,

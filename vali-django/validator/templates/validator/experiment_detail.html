@@ -115,8 +115,10 @@
 
 {# --- Field consistency grid (v2) --- #}
 {% if field_grid %}
-<h3 style="margin-top:1.5rem;">Field consistency</h3>
-<p class="small" style="margin-bottom:0.6rem;">Modal value + consistency rate per (entity, field), across all trials × sessions. Green &ge;80%, yellow &ge;50%, red &lt;50%. Hover cells for counts.</p>
+<h3 style="margin-top:1.5rem;">Field consistency{% if field_grid.any_expected %} &amp; accuracy{% endif %}</h3>
+<p class="small" style="margin-bottom:0.6rem;">Modal value + consistency rate per (entity, field), across all trials × sessions.
+  {% if field_grid.any_expected %}Where the schema has expected values, the second line shows accuracy (matches / rated claims).{% endif %}
+  Green &ge;80%, yellow &ge;50%, red &lt;50%. Hover cells for counts.</p>
 <div class="table-wrap">
 <table>
   <thead>
@@ -132,9 +134,15 @@
       {% for cell in row.cells %}
         {% if cell %}
           <td style="background:{% if cell.bucket == 'green' %}#0a2a0a{% elif cell.bucket == 'yellow' %}#3a3311{% else %}#3a1111{% endif %};"
-              title="{{ cell.modal_count }} of {{ cell.total }} claims say this · {{ cell.distinct_values }} distinct values">
+              title="{{ cell.modal_count }} of {{ cell.total }} claims say this · {{ cell.distinct_values }} distinct values{% if cell.has_expected %} · expected: {{ cell.expected_value }} ({{ cell.n_correct }}/{{ cell.n_rated }} correct){% endif %}">
             <div style="font-weight:bold;color:{% if cell.bucket == 'green' %}#6ee66e{% elif cell.bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.modal_value|truncatechars:48 }}</div>
-            <div class="small">{{ cell.rate_pct }}% &middot; {{ cell.modal_count }}/{{ cell.total }}</div>
+            <div class="small">{{ cell.rate_pct }}% consistent &middot; {{ cell.modal_count }}/{{ cell.total }}</div>
+            {% if cell.has_expected %}
+              <div class="small" style="margin-top:0.15rem;color:{% if cell.acc_bucket == 'green' %}#6ee66e{% elif cell.acc_bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">
+                {{ cell.acc_rate_pct }}% correct &middot; {{ cell.n_correct }}/{{ cell.n_rated }}
+                <span class="muted">vs "{{ cell.expected_value|truncatechars:32 }}"</span>
+              </div>
+            {% endif %}
           </td>
         {% else %}
           <td><span class="muted small">no data</span></td>
