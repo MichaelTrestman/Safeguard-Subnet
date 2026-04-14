@@ -2152,23 +2152,34 @@ bait_create = concern_create
 def experiment_list(request: HttpRequest) -> HttpResponse:
     """List all experiments with status, target, and result summary."""
     from .models import Experiment
-    experiments = (
+    experiments_qs = (
         Experiment.objects
         .select_related("target", "created_by")
+        .prefetch_related("trials")
         .order_by("-created_at")
     )
     status_filter = request.GET.get("status", "")
     if status_filter:
-        experiments = experiments.filter(status=status_filter)
+        experiments_qs = experiments_qs.filter(status=status_filter)
 
-    # Annotate with trial counts
-    from django.db.models import Count, Sum
-    experiments = experiments.annotate(
-        n_trials=Count("trials", distinct=True),
-    )
+    # Inconsistencies live in the experiment_report JSON on each trial, so
+    # we can't aggregate via SQL annotation. Walk trials in Python and
+    # decorate each experiment with a summary dict for the template.
+    rows = []
+    for exp in experiments_qs:
+        n_trials = exp.trials.count()
+        n_inconsistencies = 0
+        for trial in exp.trials.all():
+            report = trial.experiment_report or {}
+            n_inconsistencies += len(report.get("inconsistencies", []))
+        rows.append({
+            "exp": exp,
+            "n_trials": n_trials,
+            "n_inconsistencies": n_inconsistencies,
+        })
 
     return render(request, "validator/experiment_list.html", {
-        "experiments": experiments,
+        "rows": rows,
         "status_filter": status_filter,
         "nav_active": "experiments",
     })

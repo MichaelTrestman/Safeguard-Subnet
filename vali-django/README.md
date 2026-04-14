@@ -281,6 +281,50 @@ vali-django/
 
 ---
 
+## Experiments (consistency-check mining)
+
+Second mining task alongside adversarial probing. Operator creates an
+`Experiment` row with a challenge claim, an optional consistency-check
+claim, and a runs-per-trial count, then dispatches it to eligible probe
+miners. Each miner's execution is a trial — an `Evaluation` row with an
+`experiment` FK. The miner runs N independent relay sessions and returns
+a structured report of factual contradictions; the validator verifies
+provenance and confirms the cited text spans.
+
+**New model.** `Experiment` in `validator/models.py`, with a `status`
+field (`draft` / `running` / `completed` / `failed`), an `experiment_report`
+JSON column on each trial, and a reverse FK from `Evaluation`.
+
+**Operator UI.** `/experiments/` — list, create form, per-miner trial
+results with expandable consistency reports and session transcripts. An
+**Inconsistencies** column on the list page is aggregated in Python from
+each trial's `experiment_report` JSON (not SQL-annotatable) and highlights
+any experiment with a nonzero count.
+
+**Dispatch path.** `dispatch_experiment()` is called from the
+`/experiments/<id>/run/` view, **not** from the background validator loop.
+The view is async — it awaits each miner's `/experiment` endpoint — and
+blocks for the full duration of the dispatch. The main loop
+(`validator/loop.py`) is untouched by this path. Async view gotchas (sync
+auth decorators, FK traversal, fire-and-forget) are documented in the
+safeguard-ops README's "Django async views" section.
+
+**Database connection handling.** The experiment dispatch view makes
+multiple `sync_to_async` ORM calls per request. Under concurrent
+dispatches this bursts past Cloud SQL's connection ceiling on small
+instance tiers. `settings.py` enables connection reuse via
+`CONN_MAX_AGE=60` and `CONN_HEALTH_CHECKS=True`, tunable through the
+`DB_CONN_MAX_AGE` env var. Don't set this back to 0 — Django's default
+churns a connection per request, which will exhaust a db-f1-micro instance
+at moderate concurrency. See dev-blog-012 for the stress-test details.
+
+**Known gaps.** The consistency-audit branch in `_audit_one_evaluation`
+doesn't yet persist its result — experiment trials currently show
+`audit_score=None` and `contribution=0.0`, so they're not yet contributing
+to mechid 0 weights. This is the top open follow-up. Zombie experiments
+(pod restart during an in-flight dispatch) need a reaper; the manual
+workaround is documented in the safeguard-ops README.
+
 ## Status: what's done, what's stubbed
 
 ### Done
