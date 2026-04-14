@@ -89,6 +89,16 @@ else:
         }
     }
 
+# Persistent connection pooling. Default 0 means every request opens+closes
+# a fresh Postgres connection — under async load with sync_to_async hops,
+# 20 concurrent experiment dispatches saturated Cloud SQL's ~25-connection
+# ceiling in seconds (stress test 2026-04-14). 60s reuse cuts churn 5-10x.
+# Django 4.2+ CONN_HEALTH_CHECKS silently replaces a stale connection at
+# the start of a request rather than raising OperationalError mid-query.
+for _db in DATABASES.values():
+    _db.setdefault("CONN_MAX_AGE", int(os.environ.get("DB_CONN_MAX_AGE", "60")))
+    _db.setdefault("CONN_HEALTH_CHECKS", True)
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 STATIC_URL = "static/"
