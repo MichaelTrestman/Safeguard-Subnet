@@ -895,8 +895,13 @@ def healthz(request: HttpRequest) -> JsonResponse:
     """Liveness probe. 503 if any honest check fails.
 
     Honest = "the loop is actually doing its job", not "the web server is up".
+
+    Uses ValidatorStatus.get_cached() (in-process snapshot) rather than
+    hitting the DB. Decouples liveness from DB reachability so a transient
+    Cloud SQL hiccup doesn't 503 /healthz → pod restart → connection churn.
+    See 2026-04-14 AM crash-loop / stability sweep 2.x-2.
     """
-    vstatus = ValidatorStatus.get()
+    vstatus = ValidatorStatus.get_cached()
     now = djtz.now()
     problems: list[str] = []
 

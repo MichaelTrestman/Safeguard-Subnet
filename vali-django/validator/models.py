@@ -12,7 +12,18 @@ Replaces the file-based state in safeguard/:
   validator_status.json    -> ValidatorStatus singleton
   bait/library.json        -> BaitPattern
 """
+import threading as _threading
+
 from django.db import models
+
+
+# In-process cache of the ValidatorStatus singleton. Populated by the loop
+# thread via ValidatorStatus.save() and read by web-request threads via
+# ValidatorStatus.get_cached(). Decouples /healthz from the DB — a DB hiccup
+# no longer cascades to "503 on /healthz" → "pod restart" → more connection
+# churn. See 2026-04-14 AM crash-loop (stability sweep 2.x-2).
+_STATUS_CACHE_LOCK = _threading.Lock()
+_STATUS_CACHE = None  # Set to a ValidatorStatus instance after first save.
 
 
 class RegisteredTarget(models.Model):
@@ -343,6 +354,33 @@ class ValidatorStatus(models.Model):
     def get(cls) -> "ValidatorStatus":
         obj, _ = cls.objects.get_or_create(id=cls.SINGLETON_ID)
         return obj
+
+    @classmethod
+    def get_cached(cls) -> "ValidatorStatus":
+        """In-process cached read. The loop writes via .save(); web requests
+        read via this. Use for /healthz and other liveness checks — a DB
+        hiccup should not cascade to pod restart.
+
+        Cache miss (cold start before the loop has ticked once) falls back
+        to DB once. After first successful save, all reads are in-memory.
+        """
+        global _STATUS_CACHE
+        with _STATUS_CACHE_LOCK:
+            cached = _STATUS_CACHE
+        if cached is not None:
+            return cached
+        # Cold start — one DB hit to seed the cache.
+        obj = cls.get()
+        with _STATUS_CACHE_LOCK:
+            _STATUS_CACHE = obj
+        return obj
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Only reached on successful DB save; never cache a failed write.
+        global _STATUS_CACHE
+        with _STATUS_CACHE_LOCK:
+            _STATUS_CACHE = self
 
 
 class CycleHistory(models.Model):
