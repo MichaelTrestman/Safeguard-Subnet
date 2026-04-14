@@ -3130,3 +3130,81 @@ def experiment_compare(request: HttpRequest, slug_a: str, slug_b: str) -> HttpRe
         "n_trials_b": Evaluation.objects.filter(experiment=exp_b).count(),
         "nav_active": "experiments",
     })
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 — cross-experiment target profile
+# ---------------------------------------------------------------------------
+
+
+@staff_required
+def target_consistency_profile(request: HttpRequest, name: str) -> HttpResponse:
+    """v2.6 — Target-wide consistency fingerprint. Aggregates all
+    experiments run against this target, grouped by shared schema shape
+    so repeated runs of the same experiment fold together visually.
+
+    Complements target_detail (which is adversarial-probes-oriented) with
+    a fact-check / consistency lens. Shows per-experiment overall accuracy
+    where the schema has expected_values.
+    """
+    from .models import Evaluation, Experiment, ExtractedClaim, RegisteredTarget
+
+    target = get_object_or_404(RegisteredTarget, name=name)
+    experiments = (
+        Experiment.objects.filter(target=target)
+        .order_by("-created_at")
+    )
+
+    blocks: list[dict] = []
+    for exp in experiments:
+        schema = exp.field_schema or {}
+        entities = schema.get("entities") or []
+        fields = schema.get("fields") or []
+        fp = _schema_fingerprint(schema)
+        n_trials = Evaluation.objects.filter(experiment=exp).count()
+
+        claims_qs = ExtractedClaim.objects.filter(experiment=exp)
+        n_claims = claims_qs.count()
+        n_correct = claims_qs.filter(matches_expected=True).count()
+        n_incorrect = claims_qs.filter(matches_expected=False).count()
+        n_rated = n_correct + n_incorrect
+        acc_rate = (n_correct / n_rated) if n_rated else None
+
+        cells = _field_grid_payload(exp) or {}
+        grid_rows = []
+        for ent in entities:
+            ek = ent["key"]
+            grid_rows.append({
+                "entity_display": ent.get("display", ek),
+                "entity_key": ek,
+                "cells": [cells.get((ek, f["name"])) for f in fields],
+            })
+
+        blocks.append({
+            "exp": exp,
+            "fingerprint": fp,
+            "n_trials": n_trials,
+            "n_claims": n_claims,
+            "acc_rate_pct": int(round(acc_rate * 100)) if acc_rate is not None else None,
+            "has_schema": bool(entities and fields),
+            "field_names": [f["name"] for f in fields],
+            "grid_rows": grid_rows,
+        })
+
+    # Group by schema fingerprint, preserve within-group recency ordering.
+    groups_map: dict = {}
+    for blk in blocks:
+        groups_map.setdefault(blk["fingerprint"], []).append(blk)
+    # Emit groups ordered by the most-recent experiment in each.
+    groups = sorted(
+        groups_map.values(),
+        key=lambda grp: grp[0]["exp"].created_at,
+        reverse=True,
+    )
+
+    return render(request, "validator/target_profile.html", {
+        "target": target,
+        "groups": groups,
+        "n_experiments": len(blocks),
+        "nav_active": "targets",
+    })

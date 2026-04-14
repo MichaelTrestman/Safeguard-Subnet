@@ -64,6 +64,8 @@
 <div class="link-row">
   <a href="{% url 'runs_browser' %}?target={{ target.name }}">View all runs for this target &rarr;</a>
   &middot;
+  <a href="{% url 'target_consistency_profile' name=target.name %}">Consistency profile (experiments) &rarr;</a>
+  &middot;
   <a href="{% url 'targets_compare' %}">Compare all targets &rarr;</a>
 </div>
 

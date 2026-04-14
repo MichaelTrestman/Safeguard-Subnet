@@ -1,0 +1,100 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}{{ target.name }} — consistency profile{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'target_detail' name=target.name %}">{{ target.name }}</a> &rarr; Consistency profile</p>{% endblock %}
+
+{% block head_extra %}
+<style>
+  .tp-group { margin-bottom: 2rem; }
+  .tp-group-hd { margin: 1.4rem 0 0.6rem 0; padding: 0.4rem 0; border-bottom: 1px solid #333; display:flex;align-items:center;gap:0.5rem; }
+  .tp-exp { margin-bottom: 1.2rem; }
+  .tp-exp-hd { display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem; }
+  .tp-grid th, .tp-grid td { padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+  .tp-cell { min-width: 120px; }
+  .tp-empty { color:#666; font-style:italic; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;">
+  <h3 style="margin:0;">{{ target.name }} — consistency profile</h3>
+  <div class="small muted">{{ n_experiments }} experiment{{ n_experiments|pluralize }} &middot; hotkey <code>{{ target.client_hotkey|truncatechars:16 }}</code></div>
+</div>
+<p class="small" style="margin:0.3rem 0 1rem 0;">Cross-experiment fact-check and consistency summary for this target. Experiments are grouped by schema shape (same entity keys + field names), so repeated runs of the same experiment fold together. Complements the <a href="{% url 'target_detail' name=target.name %}">safety-probe dashboard</a>.</p>
+
+{% if not groups %}
+<div class="card"><em class="muted">No experiments have been run against this target yet.</em></div>
+{% endif %}
+
+{% for group in groups %}
+<div class="tp-group">
+  <div class="tp-group-hd">
+    <strong>Schema group</strong>
+    <span class="small muted">&middot; {{ group|length }} experiment{{ group|length|pluralize }}</span>
+    {% if group.0.has_schema %}
+    <span class="small muted">&middot; {{ group.0.field_names|length }} field{{ group.0.field_names|length|pluralize }}: {% for fn in group.0.field_names %}<code>{{ fn }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}</span>
+    {% else %}
+    <span class="small muted">&middot; legacy (no schema)</span>
+    {% endif %}
+  </div>
+
+  {% for blk in group %}
+  <div class="card tp-exp">
+    <div class="tp-exp-hd">
+      <strong><a href="{% url 'experiment_detail' slug=blk.exp.slug %}">{{ blk.exp.title }}</a></strong>
+      {% if blk.exp.status == 'draft' %}<span class="chip legacy">Draft</span>
+      {% elif blk.exp.status == 'running' %}<span class="chip cooldown">Running</span>
+      {% elif blk.exp.status == 'completed' %}<span class="chip success">Completed</span>
+      {% elif blk.exp.status == 'failed' %}<span class="chip failed">Failed</span>
+      {% endif %}
+      <span class="small muted">&middot; {{ blk.n_trials }} trial{{ blk.n_trials|pluralize }} &middot; {{ blk.n_claims }} claim{{ blk.n_claims|pluralize }}</span>
+      {% if blk.acc_rate_pct is not None %}
+      <span class="small" style="color:{% if blk.acc_rate_pct >= 80 %}#6ee66e{% elif blk.acc_rate_pct >= 50 %}#ffcc44{% else %}#ff8888{% endif %};">&middot; {{ blk.acc_rate_pct }}% overall accuracy</span>
+      {% endif %}
+      <span class="small muted" style="margin-left:auto;">{{ blk.exp.created_at|date:"Y-m-d H:i" }}</span>
+    </div>
+
+    {% if blk.has_schema and blk.grid_rows %}
+    <div class="table-wrap">
+    <table class="tp-grid">
+      <thead>
+        <tr>
+          <th>Entity</th>
+          {% for fn in blk.field_names %}<th><code>{{ fn }}</code></th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in blk.grid_rows %}
+        <tr>
+          <td><strong>{{ row.entity_display }}</strong></td>
+          {% for cell in row.cells %}
+            {% if cell %}
+            <td class="tp-cell" style="background:{% if cell.bucket == 'green' %}#0a2a0a{% elif cell.bucket == 'yellow' %}#3a3311{% else %}#3a1111{% endif %};">
+              <div style="font-weight:bold;color:{% if cell.bucket == 'green' %}#6ee66e{% elif cell.bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.modal_value|truncatechars:28 }}</div>
+              <div class="small">{{ cell.rate_pct }}%
+                {% if cell.has_expected %} &middot; <span style="color:{% if cell.acc_bucket == 'green' %}#6ee66e{% elif cell.acc_bucket == 'yellow' %}#ffcc44{% else %}#ff8888{% endif %};">{{ cell.acc_rate_pct }}% correct</span>{% endif %}
+              </div>
+            </td>
+            {% else %}
+            <td class="tp-empty">&mdash;</td>
+            {% endif %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% if group|length >= 2 %}
+  <div class="small muted" style="margin-top:0.4rem;">Compare within this group:
+    {% for blk in group %}{% if not forloop.first %}
+      <a href="{% url 'experiment_compare' slug_a=group.0.exp.slug slug_b=blk.exp.slug %}">{{ group.0.exp.title|truncatechars:24 }} vs {{ blk.exp.title|truncatechars:24 }}</a>{% if not forloop.last %} &middot; {% endif %}
+    {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% endblock %}
