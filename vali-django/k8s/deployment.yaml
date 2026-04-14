@@ -87,6 +87,11 @@ spec:
             # miners exceeds 8 so the semaphore isn't the bottleneck.
             - name: MAX_PROBE_CONCURRENCY
               value: "16"
+            # DB connection pooling. Default 0 opens+closes per request;
+            # under async load that saturates Cloud SQL's connection ceiling.
+            # See dev-blog-012 and safeguard-ops Operational Notes.
+            - name: DB_CONN_MAX_AGE
+              value: "60"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
@@ -113,8 +118,8 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
-            requests: { cpu: "250m", memory: "512Mi" }
-            limits:   { cpu: "1000m", memory: "1Gi" }
+            requests: { cpu: "250m", memory: "1Gi" }
+            limits:   { cpu: "1000m", memory: "2Gi" }
       volumes:
         - name: wallets
           secret:
