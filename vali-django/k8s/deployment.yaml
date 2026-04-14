@@ -87,11 +87,15 @@ spec:
             # miners exceeds 8 so the semaphore isn't the bottleneck.
             - name: MAX_PROBE_CONCURRENCY
               value: "16"
-            # DB connection pooling. Default 0 opens+closes per request;
-            # under async load that saturates Cloud SQL's connection ceiling.
-            # See dev-blog-012 and safeguard-ops Operational Notes.
+            # DB connection pooling. Enabled on test (CONN_MAX_AGE=60) but
+            # reverted to 0 on prod 2026-04-13 after /healthz began returning
+            # 500s — sync view's `ValidatorStatus.get()` query was getting
+            # stale connections that CONN_HEALTH_CHECKS didn't catch on this
+            # Django 5 + psycopg2 combo. Liveness probe kept restarting the
+            # pod. Investigate properly on test stack before re-enabling on
+            # prod. See safeguard-ops Operational Notes.
             - name: DB_CONN_MAX_AGE
-              value: "60"
+              value: "0"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default
