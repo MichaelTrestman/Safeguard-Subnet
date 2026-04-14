@@ -36,6 +36,47 @@ spec:
           resources:
             requests: { cpu: "50m", memory: "64Mi" }
             limits:   { cpu: "200m", memory: "128Mi" }
+        # PgBouncer sidecar. Multiplexes Django's per-request/per-task
+        # connections onto a small upstream pool. Fire-and-forget
+        # dispatch threads + sync_to_async each open a fresh connection;
+        # under burst load that saturated Cloud SQL's tier ceiling
+        # (~100 connections on db-g1-small). PgBouncer caps that at
+        # DEFAULT_POOL_SIZE to upstream regardless of how many clients
+        # connect locally. auth_type=trust is safe because pgbouncer
+        # only listens on 127.0.0.1 inside the pod; Cloud SQL still
+        # validates the forwarded password at the Auth Proxy/Cloud SQL
+        # boundary. Stability sweep 2.x-4.
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.23.1
+          env:
+            - name: DB_HOST
+              value: "127.0.0.1"
+            - name: DB_PORT
+              value: "5432"
+            - name: AUTH_TYPE
+              value: "trust"
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "200"
+            - name: DEFAULT_POOL_SIZE
+              value: "20"
+            - name: MIN_POOL_SIZE
+              value: "2"
+            - name: RESERVE_POOL_SIZE
+              value: "5"
+            - name: IGNORE_STARTUP_PARAMETERS
+              value: "extra_float_digits,application_name"
+            - name: LISTEN_ADDR
+              value: "127.0.0.1"
+            - name: LISTEN_PORT
+              value: "6432"
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests: { cpu: "50m", memory: "32Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
         - name: vali
           image: us-central1-docker.pkg.dev/safeguard-testnet/safeguard/vali-django:latest
           imagePullPolicy: Always
@@ -114,6 +155,12 @@ spec:
             # prod. See safeguard-ops Operational Notes.
             - name: DB_CONN_MAX_AGE
               value: "0"
+            # Route Django through the in-pod pgbouncer sidecar. Takes
+            # precedence over whatever HOST:PORT is in the database-url
+            # secret, so we can enable/disable pooling without rotating
+            # the secret. See settings.py USE_PGBOUNCER block.
+            - name: USE_PGBOUNCER
+              value: "1"
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default

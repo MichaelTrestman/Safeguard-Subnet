@@ -89,6 +89,17 @@ else:
         }
     }
 
+# PgBouncer hop. When USE_PGBOUNCER=1 is set in the pod env, rewrite the
+# DATABASE_URL's host:port to the in-pod pgbouncer sidecar. Keeps the
+# user/pass from the secret intact — pgbouncer runs auth_type=trust and
+# forwards creds upstream to the Cloud SQL Auth Proxy, which still
+# validates against Cloud SQL. Decouples the "turn pooling on" decision
+# from the database-url secret rotation. Stability sweep 2.x-4.
+if os.environ.get("USE_PGBOUNCER", "").lower() in ("1", "true", "yes"):
+    for _db in DATABASES.values():
+        _db["HOST"] = "127.0.0.1"
+        _db["PORT"] = os.environ.get("PGBOUNCER_PORT", "6432")
+
 # Persistent connection pooling. Default 0 means every request opens+closes
 # a fresh Postgres connection — under async load with sync_to_async hops,
 # 20 concurrent experiment dispatches saturated Cloud SQL's ~25-connection
