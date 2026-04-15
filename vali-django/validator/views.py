@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from datetime import timedelta
 
 from django.conf import settings
@@ -553,6 +555,44 @@ def app_root(request: HttpRequest) -> HttpResponse:
 # --- Operator UI (staff only) -------------------------------------------
 
 
+# A Finding row is a display artifact when its source Evaluation either
+# failed provenance or carries the stub fingerprint left by a Chutes
+# outage (audit_score=0.5 exactly AND confidence_in_claim=0.0 exactly —
+# the judge's `_call_chutes` fallback). Treat both as "didn't happen"
+# for rollup/browser views so outage windows don't inflate finding
+# rates in the concern×target heatmap, per-target stats, and the
+# findings browser. The Finding rows themselves stay in the DB; only
+# their visibility in aggregate views is suppressed.
+
+
+def _stub_audit_q(prefix: str = "") -> Q:
+    """Q matching the Chutes-stub fingerprint on an Evaluation.
+    prefix='' for Evaluation queries; 'evaluation__' for Finding queries;
+    'evaluations__' for RegisteredTarget annotations via the reverse FK."""
+    return Q(**{
+        f"{prefix}audit_score": 0.5,
+        f"{prefix}confidence_in_claim": 0.0,
+    })
+
+
+def _real_findings_qs(base_qs=None):
+    from .models import Finding
+    qs = base_qs if base_qs is not None else Finding.objects.all()
+    return qs.filter(evaluation__provenance_verified=True).exclude(
+        _stub_audit_q("evaluation__")
+    )
+
+
+def _real_evals_qs(base_qs=None):
+    """Probe-denominator twin of _real_findings_qs — evaluations that
+    made it through provenance AND had a non-stub audit. Drives the
+    denominator in finding-rate calculations so numerator/denominator
+    move together."""
+    from .models import Evaluation
+    qs = base_qs if base_qs is not None else Evaluation.objects.all()
+    return qs.filter(provenance_verified=True).exclude(_stub_audit_q())
+
+
 @staff_required
 def operator_dashboard(request: HttpRequest) -> HttpResponse:
     """Phase 3: full operator console for vali-django.
@@ -572,12 +612,17 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     targets = RegisteredTarget.objects.annotate(
         n_evals=Count("evaluations"),
         n_verified=Count("evaluations", filter=Q(evaluations__provenance_verified=True)),
+        # Non-stub verified count — denominator that moves together with
+        # _real_findings_qs on the numerator side.
+        n_scored=Count(
+            "evaluations",
+            filter=Q(evaluations__provenance_verified=True) & ~_stub_audit_q("evaluations__"),
+        ),
     ).order_by("-registered_at")
     # Per-target finding counts (need Finding traversal)
-    from .models import Finding as _Finding
     for t in targets:
-        t.n_findings = _Finding.objects.filter(evaluation__target=t).count()
-        t.finding_rate = (t.n_findings / t.n_verified * 100) if t.n_verified else 0
+        t.n_findings = _real_findings_qs().filter(evaluation__target=t).count()
+        t.finding_rate = (t.n_findings / t.n_scored * 100) if t.n_scored else 0
 
     now = djtz.now()
     weight_age = None
@@ -618,7 +663,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
                     m.cooldown_active = True
                     m.cooldown_remaining_s = int(backoff - elapsed)
 
-    recent_findings = Finding.objects.select_related(
+    recent_findings = _real_findings_qs().select_related(
         "evaluation", "evaluation__target"
     ).prefetch_related("matched_cues").order_by("-id")[:10]
 
@@ -630,7 +675,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
     n_evaluations_audited = Evaluation.objects.filter(
         audit_score__isnull=False
     ).count()
-    n_findings_total = Finding.objects.count()
+    n_findings_total = _real_findings_qs().count()
     n_hitl_pending = HitlCase.objects.filter(
         status=HitlCase.STATUS_PENDING
     ).count()
@@ -698,12 +743,56 @@ def _get_system_health() -> dict:
     health = {}
     # Relay endpoint config
     health["relay_endpoint"] = getattr(settings, "SAFEGUARD_RELAY_ENDPOINT", "not set")
-    # LLM judge status
+    # LLM judge status — three layers:
+    # 1. Module import / lazy-loader state (are the real functions bound?)
+    # 2. CHUTES_API_KEY env var (does the judge have credentials to call?)
+    # 3. Rolling success stats from llm_judge_impl._call_log (are calls actually working?)
+    # llm_judge_status is 'ok' | 'warn' | 'err' — drives the dashboard's pill color
+    # independently of substring-matching on llm_judge.
     from .audit import _llm_judge_loaded, classify_transcript
     if _llm_judge_loaded and classify_transcript is not None:
-        health["llm_judge"] = f"loaded ({classify_transcript.__module__})"
+        mod = classify_transcript.__module__
+        if not os.getenv("CHUTES_API_KEY"):
+            health["llm_judge"] = f"loaded ({mod}) — CHUTES_API_KEY MISSING, calls stub"
+            health["llm_judge_status"] = "err"
+        else:
+            try:
+                from .llm_judge_impl import (
+                    get_judge_stats,
+                    get_last_success_ts,
+                    get_uptime_seconds,
+                )
+                last_ok = get_last_success_ts()
+                uptime = get_uptime_seconds()
+                s1h = get_judge_stats(3600)
+                s24h = get_judge_stats(86400)
+                parts = [f"loaded ({mod})"]
+                if last_ok is None:
+                    parts.append("no successful call yet this process")
+                else:
+                    parts.append(f"last ok {int(time.time() - last_ok)}s ago")
+                for label, window, s in (("1h", 3600, s1h), ("24h", 86400, s24h)):
+                    if s["count"] == 0:
+                        parts.append(f"{label} —")
+                    else:
+                        rate = f"{s['success_rate'] * 100:.0f}%"
+                        suffix = ""
+                        if uptime < window:
+                            suffix = f", partial — pod uptime {int(uptime / 3600)}h{int((uptime % 3600) / 60)}m"
+                        parts.append(f"{label} {rate} (N={s['count']}{suffix})")
+                health["llm_judge"] = " · ".join(parts)
+                # Degrade to warn if 1h success rate is below 90% over >= 5 calls.
+                # A fresh pod with no calls yet stays "ok" — absence is not failure.
+                if s1h["count"] >= 5 and (s1h["success_rate"] or 0.0) < 0.9:
+                    health["llm_judge_status"] = "warn"
+                else:
+                    health["llm_judge_status"] = "ok"
+            except ImportError:
+                health["llm_judge"] = f"loaded ({mod}) — stats helpers unavailable"
+                health["llm_judge_status"] = "warn"
     else:
         health["llm_judge"] = "NOT LOADED — using stubs (0.5, 0.0)"
+        health["llm_judge_status"] = "err"
     # DB connectivity
     try:
         from django.db import connection
@@ -726,26 +815,33 @@ def target_detail(request: HttpRequest, name: str) -> HttpResponse:
 
     target = get_object_or_404(RegisteredTarget, name=name)
 
+    # Scored = verified AND non-stub audit. Drives the finding-rate
+    # denominator so stubbed rows don't dilute the ratio in either
+    # direction.
+    scored_q = Q(provenance_verified=True) & ~_stub_audit_q()
     stats = Evaluation.objects.filter(target=target).aggregate(
         n_evals=Count("id"),
         n_verified=Count("id", filter=Q(provenance_verified=True)),
+        n_scored=Count("id", filter=scored_q),
         n_legacy=Count("id", filter=Q(provenance_verified__isnull=True)),
-        avg_severity=Avg("accepted_severity", filter=Q(provenance_verified=True)),
-        max_severity=Max("accepted_severity", filter=Q(provenance_verified=True)),
-        avg_audit=Avg("audit_score", filter=Q(provenance_verified=True)),
+        avg_severity=Avg("accepted_severity", filter=scored_q),
+        max_severity=Max("accepted_severity", filter=scored_q),
+        avg_audit=Avg("audit_score", filter=scored_q),
     )
 
-    findings_qs = Finding.objects.filter(evaluation__target=target)
+    findings_qs = _real_findings_qs().filter(evaluation__target=target)
     stats["n_findings"] = findings_qs.count()
     stats["n_critical"] = findings_qs.filter(critical=True).count()
     stats["finding_rate"] = (
-        stats["n_findings"] / stats["n_verified"] * 100
-        if stats["n_verified"] else 0
+        stats["n_findings"] / stats["n_scored"] * 100
+        if stats["n_scored"] else 0
     )
 
-    # Per-concern breakdown — "where does this target fail?"
+    # Per-concern breakdown — "where does this target fail?" Filters
+    # out the Chutes-stub fingerprint so outage-era rows don't distort
+    # per-concern rates.
     concern_breakdown = list(
-        Evaluation.objects.filter(target=target, provenance_verified=True)
+        _real_evals_qs(Evaluation.objects.filter(target=target))
         .exclude(concern_id_slug="")
         .values("concern_id_slug")
         .annotate(
@@ -795,6 +891,10 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
     personas, compare the safety-metric deltas."""
     from .models import Evaluation, Finding, RegisteredTarget
 
+    # "Scored" = verified AND non-stub audit. Every rate below uses
+    # n_scored as denominator; _real_findings_qs on the numerator side
+    # so Chutes-outage rows don't inflate either column.
+    scored_q = Q(evaluations__provenance_verified=True) & ~_stub_audit_q("evaluations__")
     targets = list(
         RegisteredTarget.objects.annotate(
             n_evals=Count("evaluations"),
@@ -802,31 +902,23 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
                 "evaluations",
                 filter=Q(evaluations__provenance_verified=True),
             ),
+            n_scored=Count("evaluations", filter=scored_q),
             n_legacy=Count(
                 "evaluations",
                 filter=Q(evaluations__provenance_verified__isnull=True),
             ),
-            avg_severity=Avg(
-                "evaluations__accepted_severity",
-                filter=Q(evaluations__provenance_verified=True),
-            ),
-            max_severity=Max(
-                "evaluations__accepted_severity",
-                filter=Q(evaluations__provenance_verified=True),
-            ),
-            avg_audit=Avg(
-                "evaluations__audit_score",
-                filter=Q(evaluations__provenance_verified=True),
-            ),
+            avg_severity=Avg("evaluations__accepted_severity", filter=scored_q),
+            max_severity=Max("evaluations__accepted_severity", filter=scored_q),
+            avg_audit=Avg("evaluations__audit_score", filter=scored_q),
         ).order_by("name")
     )
 
     for t in targets:
-        findings_qs = Finding.objects.filter(evaluation__target=t)
+        findings_qs = _real_findings_qs().filter(evaluation__target=t)
         t.n_findings = findings_qs.count()
         t.n_critical = findings_qs.filter(critical=True).count()
         t.finding_rate = (
-            t.n_findings / t.n_verified * 100 if t.n_verified else 0
+            t.n_findings / t.n_scored * 100 if t.n_scored else 0
         )
         with_cues = (
             findings_qs.filter(matched_cues__isnull=False).distinct().count()
@@ -844,7 +936,8 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
 
     # Concern×target heatmap: finding rate per (concern, target) pair.
     all_concern_slugs = sorted(set(
-        Finding.objects.filter(evaluation__target__in=targets)
+        _real_findings_qs()
+        .filter(evaluation__target__in=targets)
         .exclude(evaluation__concern_id_slug="")
         .values_list("evaluation__concern_id_slug", flat=True)
         .distinct()
@@ -853,10 +946,10 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
     for slug in all_concern_slugs:
         row = {"concern": slug, "cells": []}
         for t in targets:
-            n_probes = Evaluation.objects.filter(
-                target=t, concern_id_slug=slug, provenance_verified=True,
+            n_probes = _real_evals_qs(
+                Evaluation.objects.filter(target=t, concern_id_slug=slug)
             ).count()
-            n_findings = Finding.objects.filter(
+            n_findings = _real_findings_qs().filter(
                 evaluation__target=t, evaluation__concern_id_slug=slug,
             ).count()
             rate = (n_findings / n_probes * 100) if n_probes else None
@@ -1119,8 +1212,12 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
     view for inspecting what the audit pipeline actually surfaced."""
     from .models import Finding
 
+    # Hide Chutes-stub and provenance-failed findings by default. Operators
+    # who want to see them explicitly can pass ?include_stubbed=1.
+    include_stubbed = request.GET.get("include_stubbed") == "1"
+    findings_base = Finding.objects.all() if include_stubbed else _real_findings_qs()
     qs = (
-        Finding.objects
+        findings_base
         .select_related("evaluation", "evaluation__target")
         .prefetch_related("matched_cues")
         .order_by("-severity")
@@ -1280,14 +1377,16 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
         return qs
 
     # --- Pending / curated finding queues -------------------------------
+    # Exclude Chutes-stub / provenance-failed rows so operators don't get
+    # asked to curate a finding that was never really audited.
     pending = (
-        _apply_category(Finding.objects.filter(critical=True, curated=False))
+        _apply_category(_real_findings_qs().filter(critical=True, curated=False))
         .select_related("evaluation", "evaluation__target")
         .prefetch_related("matched_cues")
         .order_by("-severity")
     )
     curated = (
-        _apply_category(Finding.objects.filter(curated=True))
+        _apply_category(_real_findings_qs().filter(curated=True))
         .select_related("evaluation", "evaluation__target")
         .order_by("-curated_at")[:20]
     )
@@ -1396,7 +1495,7 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
     # --- Available categories for the filter chips ----------------------
     available_categories = sorted(
         set(
-            Finding.objects.filter(critical=True, curated=False)
+            _real_findings_qs().filter(critical=True, curated=False)
             .values_list("category", flat=True).distinct()
         )
         | set(
@@ -1408,7 +1507,7 @@ def curation_queue(request: HttpRequest) -> HttpResponse:
 
     summary = {
         "hitl_pending_count": hitl_counts["pending"],
-        "findings_pending_count": Finding.objects.filter(
+        "findings_pending_count": _real_findings_qs().filter(
             critical=True, curated=False,
         ).count(),
         "actions_today": actions_today,

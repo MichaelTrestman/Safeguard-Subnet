@@ -181,7 +181,7 @@
   <tr><th>Component</th><th>Status</th></tr>
   <tr>
     <td>LLM Judge</td>
-    <td>{% if 'loaded' in system_health.llm_judge %}<span class="ok">{{ system_health.llm_judge }}</span>{% else %}<span class="err">{{ system_health.llm_judge }}</span>{% endif %}</td>
+    <td><span class="{{ system_health.llm_judge_status|default:'err' }}">{{ system_health.llm_judge }}</span></td>
   </tr>
   <tr>
     <td>Database</td>

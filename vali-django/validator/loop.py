@@ -2295,6 +2295,13 @@ async def acquire_resources():
         last_chain_error="",
         last_chain_error_at=None,
     )
+
+    # Preload the LLM judge so the operator dashboard reflects real state
+    # from the first request after boot, instead of showing "NOT LOADED"
+    # until the first audit fires and triggers the lazy loader in audit.py.
+    from . import audit
+    audit._ensure_llm_judge()
+
     return wallet, subtensor, metagraph, owner_uid, tempo
 
 

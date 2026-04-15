@@ -16,10 +16,56 @@ import logging
 import re
 import time
 import httpx
+from collections import deque
+from threading import Lock
 
 logger = logging.getLogger(__name__)
 
 CHUTES_API_URL = os.getenv("CHUTES_API_URL", "https://llm.chutes.ai/v1/chat/completions")
+
+
+# ---------------------------------------------------------------------------
+# Observability — in-memory rolling log of Chutes call outcomes.
+# Surfaced on the operator dashboard so a silent-stub window (e.g. missing
+# CHUTES_API_KEY, upstream outage) is visible rather than only in logs.
+# Resets on pod restart; windows shorter than pod uptime are flagged "partial".
+# ---------------------------------------------------------------------------
+
+_CALL_LOG_MAX = 5000
+_call_log: deque = deque(maxlen=_CALL_LOG_MAX)  # (ts: float, success: bool, reason: str|None)
+_call_log_lock = Lock()
+_process_start_ts = time.time()
+
+
+def _record_call(success: bool, fallback_reason: str | None = None) -> None:
+    with _call_log_lock:
+        _call_log.append((time.time(), success, fallback_reason))
+
+
+def get_judge_stats(window_seconds: int) -> dict:
+    """Return {count, success_rate} over the last `window_seconds`.
+    success_rate is None when no calls landed in the window."""
+    cutoff = time.time() - window_seconds
+    with _call_log_lock:
+        relevant = [(t, s) for t, s, _ in _call_log if t > cutoff]
+    if not relevant:
+        return {"count": 0, "success_rate": None}
+    return {
+        "count": len(relevant),
+        "success_rate": sum(1 for _, s in relevant if s) / len(relevant),
+    }
+
+
+def get_last_success_ts() -> float | None:
+    with _call_log_lock:
+        for t, s, _ in reversed(_call_log):
+            if s:
+                return t
+    return None
+
+
+def get_uptime_seconds() -> float:
+    return time.time() - _process_start_ts
 
 
 def _strip_think(text: str) -> str:
@@ -167,6 +213,7 @@ def _call_chutes(
         logger.warning(
             f"[{tier_label}] CHUTES_API_KEY not set → fallback (0.5, 0.0)"
         )
+        _record_call(False, "no_api_key")
         return {"unsafe_prob": 0.5, "confidence": 0.0, "fallback_reason": "no_api_key"}
 
     if model is None:
@@ -225,6 +272,7 @@ def _call_chutes(
                 f"unsafe_prob={parsed.get('unsafe_prob', '?')} "
                 f"confidence={parsed.get('confidence', '?')}"
             )
+            _record_call(True)
             time.sleep(2)
             return parsed
 
@@ -242,10 +290,12 @@ def _call_chutes(
                 f"[{tier_label}] Chutes HTTP error → status={e.response.status_code} "
                 f"latency={latency:.1f}s body={e.response.text[:200]!r}"
             )
+            reason = f"http_{e.response.status_code}"
+            _record_call(False, reason)
             return {
                 "unsafe_prob": 0.5,
                 "confidence": 0.0,
-                "fallback_reason": f"http_{e.response.status_code}",
+                "fallback_reason": reason,
             }
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
             latency = time.time() - t_start
@@ -253,15 +303,18 @@ def _call_chutes(
                 f"[{tier_label}] Chutes call failed → {type(e).__name__}: {e} "
                 f"latency={latency:.1f}s"
             )
+            reason = f"{type(e).__name__}"
+            _record_call(False, reason)
             return {
                 "unsafe_prob": 0.5,
                 "confidence": 0.0,
-                "fallback_reason": f"{type(e).__name__}",
+                "fallback_reason": reason,
             }
 
     logger.error(
         f"[{tier_label}] Chutes exhausted 3 attempts → fallback (0.5, 0.0)"
     )
+    _record_call(False, "retries_exhausted")
     return {"unsafe_prob": 0.5, "confidence": 0.0, "fallback_reason": "retries_exhausted"}
 
 
@@ -387,6 +440,7 @@ def judge_bait_patterns(
         logger.warning(
             "CHUTES_API_KEY not set, bait LLM judge unavailable; returning 0"
         )
+        _record_call(False, "no_api_key")
         return 0
 
     model = os.getenv("CHUTES_MODEL_BAIT_JUDGE") or os.getenv(
@@ -444,6 +498,7 @@ def judge_bait_patterns(
 
             matched = parsed.get("matched_patterns", [])
             if not isinstance(matched, list):
+                _record_call(False, "bait_bad_shape")
                 return 0
             time.sleep(2)
             # Cap at len(patterns) — paranoia against the judge hallucinating ids
@@ -453,6 +508,7 @@ def judge_bait_patterns(
                 f"Bait judge: returned {n_matched} match(es) in {elapsed:.1f}s "
                 f"| ids={matched[:5]}"
             )
+            _record_call(True)
             return n_matched
 
         except httpx.HTTPStatusError as e:
@@ -464,9 +520,12 @@ def judge_bait_patterns(
                 time.sleep(wait)
                 continue
             logger.error(f"Bait judge call failed: {e}")
+            _record_call(False, f"bait_http_{e.response.status_code}")
             return 0
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
             logger.error(f"Bait judge call failed: {e}")
+            _record_call(False, f"bait_{type(e).__name__}")
             return 0
 
+    _record_call(False, "bait_retries_exhausted")
     return 0
