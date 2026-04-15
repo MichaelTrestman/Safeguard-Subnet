@@ -1,0 +1,171 @@
+{% extends "public/base_public.html" %}
+
+{% block title %}{{ experiment.title }} &mdash; Fact &amp; Consistency Checking &mdash; Safeguard{% endblock %}
+{% block nav_experiments %}active{% endblock %}
+
+{% block content %}
+
+<style>
+  .exp-grid-wrap { overflow-x: auto; margin: 1.5rem 0 2rem 0; }
+  table.exp-grid { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
+  table.exp-grid th, table.exp-grid td {
+      padding: 0.6rem 0.75rem; border-bottom: 1px solid #222;
+      vertical-align: top;
+  }
+  table.exp-grid th { color: #888; font-weight: normal; text-align: left;
+                      font-size: 0.75rem; text-transform: uppercase;
+                      letter-spacing: 0.05em; border-bottom: 2px solid #333; }
+  table.exp-grid td.entity-label {
+      color: #ccc; font-weight: 600; white-space: nowrap; min-width: 140px;
+  }
+  table.exp-grid td.field-label {
+      color: #aaa; white-space: nowrap; min-width: 160px;
+  }
+  .modal-value {
+      font-family: 'Courier New', monospace; color: #eee;
+      font-size: 0.95rem; font-weight: 600;
+  }
+  .cell-rates { font-size: 0.75rem; margin-top: 0.2rem; color: #888; }
+  .rate-high { color: #ff7a7a; font-weight: 600; }
+  .rate-mid { color: #ffcc44; font-weight: 600; }
+  .rate-low { color: #7acb7a; font-weight: 600; }
+  .acc-high { color: #7acb7a; }
+  .acc-low { color: #ff7a7a; }
+  .evidence {
+      color: #999; font-size: 0.75rem; margin-top: 0.35rem;
+      font-style: italic; max-width: 44ch; line-height: 1.4;
+  }
+  .summary-cards {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.8rem; margin: 1.5rem 0;
+  }
+  .summary-card {
+      background: #111; border: 1px solid #222; border-radius: 6px;
+      padding: 0.8rem 1rem;
+  }
+  .summary-card .label {
+      color: #888; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.05em;
+  }
+  .summary-card .value {
+      color: #eee; font-size: 1.3rem; font-weight: 600; margin-top: 0.2rem;
+  }
+  .claim-block {
+      background: #111; border-left: 3px solid var(--solution-color);
+      padding: 0.75rem 1rem; margin: 1rem 0; color: #ccc;
+      white-space: pre-wrap; font-size: 0.9rem;
+  }
+</style>
+
+<section class="fade-in">
+    <p style="margin-bottom: 0.5rem;">
+        <a href="{% url 'public:experiments' %}" style="color: var(--solution-color); font-size: 0.85rem;">&larr; Fact &amp; Consistency Checking</a>
+    </p>
+
+    <div class="catalog-detail-header">
+        <span class="catalog-entry-category">{{ experiment.target_name }}</span>
+        {% if experiment.completed_at %}
+            <span class="catalog-entry-version">completed {{ experiment.completed_at|date:"Y-m-d" }}</span>
+        {% endif %}
+    </div>
+    <h2 class="section-header solution">{{ experiment.title }}</h2>
+
+    <div class="summary-cards">
+        <div class="summary-card">
+            <div class="label">Trials</div>
+            <div class="value">{{ experiment.completed_trials }}</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Sessions / trial</div>
+            <div class="value">{{ experiment.runs_per_trial }}</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Entities</div>
+            <div class="value">{{ experiment.entities|length }}</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Fields</div>
+            <div class="value">{{ experiment.fields|length }}</div>
+        </div>
+    </div>
+
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 1.5rem; margin-bottom: 0.5rem;">Challenge</h3>
+    <div class="claim-block">{{ experiment.challenge_claim }}</div>
+    {% if experiment.consistency_check_claim %}
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 1.2rem; margin-bottom: 0.5rem;">Consistency check</h3>
+    <div class="claim-block">{{ experiment.consistency_check_claim }}</div>
+    {% endif %}
+
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 2rem; margin-bottom: 0.5rem;">Consistency grid</h3>
+    <p style="color: #888; font-size: 0.85rem; margin-bottom: 0.8rem;">
+        For each (entity, field), the value the target gave most often, how often it gave that value across all extracted claims, and &mdash; where the operator has defined the canonical answer &mdash; how often the target was correct. Red = high disagreement across sessions; green = high agreement. Accuracy is independent of consistency: the target can be consistent but wrong, or inconsistent but sometimes right.
+    </p>
+
+    {% if experiment.cells %}
+    <div class="exp-grid-wrap" style="overflow-x:auto;">
+        <table class="exp-grid" style="border-collapse:collapse;width:100%;">
+            <thead>
+                <tr>
+                    <th style="text-align:left;vertical-align:bottom;padding:0.5rem 0.6rem;border-bottom:1px solid #333;">Entity</th>
+                    {% for f in experiment.fields %}
+                    <th style="text-align:left;vertical-align:bottom;padding:0.5rem 0.6rem;border-bottom:1px solid #333;">
+                        <div style="font-weight:bold;">{{ f.name }}</div>
+                        {% if f.description %}<div class="small" style="color:#666;font-size:0.7rem;font-weight:normal;margin-top:0.15rem;">{{ f.description }}</div>{% endif %}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in experiment.grid_rows %}
+                <tr>
+                    <td class="entity-label" style="vertical-align:top;padding:0.6rem;border-bottom:1px solid #222;font-weight:bold;">{{ row.entity.display }}</td>
+                    {% for cell in row.cells %}
+                    <td style="vertical-align:top;padding:0.6rem;border-bottom:1px solid #222;border-left:1px solid #222;min-width:180px;">
+                        {% if cell %}
+                        <div class="modal-value" style="font-weight:bold;">{{ cell.modal_value }}</div>
+                        <div class="cell-rates" style="margin-top:0.2rem;font-size:0.78rem;">
+                            <span class="{% if cell.consistency_pct >= 80 %}rate-low{% elif cell.consistency_pct >= 50 %}rate-mid{% else %}rate-high{% endif %}">
+                                {{ cell.consistency_pct|floatformat:0 }}%
+                            </span>
+                            <span style="color:#555;">&middot;</span>
+                            <span style="color:#888;">{{ cell.n_modal }}/{{ cell.n_total }}</span>
+                            {% if cell.accuracy_pct is not None %}
+                                <span style="color:#555;">&middot;</span>
+                                <span class="{% if cell.accuracy_pct >= 80 %}acc-high{% else %}acc-low{% endif %}">
+                                    {{ cell.accuracy_pct|floatformat:0 }}% acc
+                                </span>
+                            {% endif %}
+                        </div>
+                        {% if cell.representative_span %}
+                        <div class="evidence" style="margin-top:0.4rem;font-style:italic;color:#aaa;font-size:0.78rem;">&ldquo;{{ cell.representative_span }}&rdquo;</div>
+                        {% endif %}
+                        {% if cell.alternates %}
+                        <div class="alternates" style="margin-top:0.4rem;font-size:0.75rem;color:#888;">
+                            <span style="color:#666;">also said:</span>
+                            {% for alt_value, alt_count in cell.alternates %}
+                                <div style="margin-top:0.15rem;background:#1a1a1a;border:1px solid #333;border-radius:3px;padding:0.1rem 0.4rem;display:inline-block;margin-right:0.2rem;">
+                                    {{ alt_value }} <span style="color:#555;">&times;{{ alt_count }}</span>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% else %}
+                        <span class="muted" style="color:#555;font-size:0.8rem;">&mdash;</span>
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="activity-empty">No extracted claims yet for this experiment.</p>
+    {% endif %}
+
+    <p style="color: #666; font-size: 0.8rem; margin-top: 2.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+        Full transcripts, miner attribution, and per-trial evaluation data are operator-only. The grid above is the summary the operator has chosen to publish.
+    </p>
+</section>
+
+{% endblock %}

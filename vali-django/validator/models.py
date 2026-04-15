@@ -939,6 +939,13 @@ class Experiment(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
+    # Operator-curated visibility flag for the logged-out /experiments/
+    # showcase. Default private; flipped via the operator detail page.
+    # Only experiments where is_public=True AND status='completed' appear
+    # on the public site. Per-trial transcripts and miner attribution are
+    # never exposed even when public — see public/queries.py allowlist.
+    is_public = models.BooleanField(default=False, db_index=True)
+
     class Meta:
         ordering = ["-created_at"]
 

@@ -53,16 +53,20 @@ urlpatterns = [
     path("concerns/<str:slug>/activate/", views.concern_activate, name="concern_activate"),
 
     # Experiments (staff only) — DESIGN.md §10
-    path("experiments/", views.experiment_list, name="experiment_list"),
-    path("experiments/create/", views.experiment_create, name="experiment_create"),
-    path("experiments/propose_schema/", views.experiment_propose_schema, name="experiment_propose_schema"),
-    path("experiments/<str:slug>/", views.experiment_detail, name="experiment_detail"),
-    path("experiments/<str:slug>/run/", views.experiment_run, name="experiment_run"),
-    path("experiments/<str:slug>/schema/", views.experiment_edit_schema, name="experiment_edit_schema"),
-    path("experiments/<str:slug>/reextract/", views.experiment_reextract, name="experiment_reextract"),
-    path("experiments/<str:slug>/clone/", views.experiment_clone, name="experiment_clone"),
-    path("experiments/compare/<str:slug_a>/vs/<str:slug_b>/", views.experiment_compare, name="experiment_compare"),
-    path("experiments/<str:slug>/visibility/", views.experiment_toggle_public, name="experiment_toggle_public"),
+    # Mounted under /operator/ because bare /experiments/ is the public
+    # anon-visible showcase (see public/urls.py).
+    path("operator/experiments/", views.experiment_list, name="experiment_list"),
+    path("operator/experiments/create/", views.experiment_create, name="experiment_create"),
+    path("operator/experiments/propose_schema/", views.experiment_propose_schema, name="experiment_propose_schema"),
+    path("operator/experiments/<str:slug>/", views.experiment_detail, name="experiment_detail"),
+    path("operator/experiments/<str:slug>/run/", views.experiment_run, name="experiment_run"),
+    path("operator/experiments/<str:slug>/schema/", views.experiment_edit_schema, name="experiment_edit_schema"),
+    path("operator/experiments/<str:slug>/reextract/", views.experiment_reextract, name="experiment_reextract"),
+    path("operator/experiments/<str:slug>/clone/", views.experiment_clone, name="experiment_clone"),
+    path("operator/experiments/compare/<str:slug_a>/vs/<str:slug_b>/", views.experiment_compare, name="experiment_compare"),
+    path("operator/experiments/<str:slug>/visibility/", views.experiment_toggle_public, name="experiment_toggle_public"),
+    path("operator/experiments/<str:slug>/reset/", views.experiment_reset, name="experiment_reset"),
+    path("operator/experiments/<str:slug>/timeline/", views.experiment_timeline, name="experiment_timeline"),
 
     # Concern catalog distribution (Epistula API).
     # Mounted under /api/ so the bare /concerns URL can redirect to

@@ -117,7 +117,12 @@
         <div class="report-card">
             <div class="report-status">Live</div>
             <h3>Multi-Persona Fuzz Testing</h3>
-            <p>The same concern catalog is currently being tested against minimally prompt engineered  target personas to allow us to test our system by revealing the differences even subtle prompt context differences can cause downstream.</p>
+            <p>The same concern catalog run against minimally prompt-engineered target personas, side by side &mdash; revealing how even subtle prompt-context differences shift downstream safety posture. <a href="{% url 'public:targets' %}" style="color: var(--solution-color);">See the concern &times; target heatmap &rarr;</a></p>
+        </div>
+        <div class="report-card">
+            <div class="report-status">Live</div>
+            <h3>Fact &amp; Consistency Checking</h3>
+            <p>Define a fact schema, run it against a target many independent times, and catch the target contradicting itself across sessions &mdash; or disagreeing with the canonical answer. Asymmetric verification: the miner does the expensive extraction; the validator cheaply checks the math. <a href="{% url 'public:experiments' %}" style="color: var(--solution-color);">Browse published experiments &rarr;</a></p>
         </div>
     </div>
 </section>

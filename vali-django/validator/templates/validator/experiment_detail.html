@@ -1,6 +1,6 @@
 {% extends "validator/base.html" %}
 {% block subtitle %}Experiment: {{ experiment.title }}{% endblock %}
-{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; {{ experiment.title }}</p>{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; {{ experiment.title }} &middot; <a href="{% url 'experiment_timeline' slug=experiment.slug %}">Timeline</a></p>{% endblock %}
 
 {% block head_extra %}
 <style>
@@ -46,6 +46,16 @@
                 style="background:#222;color:#888;border:1px solid #444;cursor:pointer;"
                 title="Private — not shown on public /experiments/. Click to publish.">Private</button>
       {% endif %}
+    </form>
+    {% endif %}
+    {# --- Reset to Draft (running or failed only) --- #}
+    {% if experiment.status == 'running' or experiment.status == 'failed' %}
+    <form method="post" action="{% url 'experiment_reset' slug=experiment.slug %}" style="display:inline;margin:0;"
+          onsubmit="return confirm('Reset to Draft? Existing trials stay linked; status flips so you can re-dispatch.');">
+      {% csrf_token %}
+      <button type="submit" class="chip"
+              style="background:#222;color:#fc8;border:1px solid #a84;cursor:pointer;"
+              title="Flip status back to Draft — existing trials stay linked; unlocks re-dispatch.">Reset to Draft</button>
     </form>
     {% endif %}
   </div>

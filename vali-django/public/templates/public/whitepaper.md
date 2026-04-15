@@ -64,6 +64,27 @@ This is the reflexive loop:
 
 Safeguard's alpha value is not a bet on one commodity market. It is a bet on the legitimacy of the entire Bittensor network. The subnet succeeds exactly to the degree that Bittensor itself succeeds — and it is the mechanism by which Bittensor earns the trust that makes it succeed.
 
+## Findings as training data
+
+A concern-outcome profile is not just a report. It is a continuously-updated training dataset of a model's own failure modes.
+
+Every finding transcript is a labeled negative example: a specific multi-turn conversation where the model did the wrong thing, tagged with the concern it violated, the severity, and — when a human adjudicated the edge case — ground-truth confirmation. This is exactly the shape that RLHF, DPO, and constitutional AI training pipelines consume: "given this conversation trajectory, the model should have refused here instead of complying."
+
+The feedback loop is direct:
+
+1. Safeguard probes your service and produces a profile with finding transcripts.
+2. You feed those transcripts into your next training run as negative examples — "when you see this pattern, do not comply."
+3. You deploy the retrained model.
+4. Safeguard probes the new version and measures whether the finding rate dropped on those concerns.
+5. The concerns where the rate didn't drop tell you the training didn't generalize — you need more examples or a different approach.
+6. The concerns where the rate DID drop confirm the fix. Safeguard retires the easy wins from active probing and focuses miners on the remaining gaps.
+
+Each pass through this loop makes the model measurably safer on the specific failure modes Safeguard discovered. The customer isn't buying a one-time audit — they're buying a continuously-sharpening training signal that gets more valuable with every version they ship.
+
+For fairness testing, the same loop applies: paired transcripts where the same question produced different answers based on a protected attribute are exactly the training signal for debiasing. Fine-tune on "these two prompts should produce the same output" and the fairness probes become both the training set and the evaluation set.
+
+The longer a customer stays on Safeguard, the more failure-mode training data they accumulate, the faster each version improves. The subnet gets more valuable to returning customers over time, not less — a retention mechanism baked into the product, not bolted on.
+
 ## What is live today
 
 Safeguard is running on Bittensor testnet (SN444) with:

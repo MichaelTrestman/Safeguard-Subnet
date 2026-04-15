@@ -68,3 +68,44 @@ def catalog_detail_view(request: HttpRequest, slug: str) -> HttpResponse:
     if detail is None:
         raise Http404(f"No active concern with slug {slug!r}")
     return render(request, "public/catalog_detail.html", {"concern": detail})
+
+
+def experiments_view(request: HttpRequest) -> HttpResponse:
+    """Public read-only browse of operator-published experiments.
+
+    Only completed experiments where the operator has flipped
+    is_public=True appear. Aggregate counts only — no transcripts,
+    no miner attribution. See public/queries.py for the allowlist.
+    """
+    experiments = queries.list_public_experiments(limit=50)
+    return render(request, "public/experiments.html", {
+        "experiments": experiments,
+    })
+
+
+def experiment_detail_view(request: HttpRequest, slug: str) -> HttpResponse:
+    """Public detail page for one published experiment.
+
+    Returns 404 if not public or not completed — those experiments do
+    not exist from the public's perspective.
+    """
+    detail = queries.get_public_experiment(slug)
+    if detail is None:
+        raise Http404(f"No public experiment with slug {slug!r}")
+    return render(request, "public/experiment_detail.html", {
+        "experiment": detail,
+    })
+
+
+def targets_view(request: HttpRequest) -> HttpResponse:
+    """Public Concern × Target finding-rate heatmap — multi-persona fuzz
+    testing visible to anyone. Aggregates only: per-(concern, target)
+    rate, probe count, finding count. No per-finding detail.
+    """
+    targets = queries.list_public_targets()
+    target_names, heatmap = queries.get_concern_target_heatmap()
+    return render(request, "public/targets.html", {
+        "targets": targets,
+        "target_names": target_names,
+        "heatmap": heatmap,
+    })

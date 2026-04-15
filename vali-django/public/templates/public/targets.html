@@ -1,0 +1,135 @@
+{% extends "public/base_public.html" %}
+
+{% block title %}Multi-Variant Fuzz Testing &mdash; Safeguard{% endblock %}
+{% block nav_targets %}active{% endblock %}
+
+{% block content %}
+
+<style>
+  .compare-wrap { overflow-x: auto; margin: 1.5rem 0 2rem 0; }
+  table.compare { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
+  table.compare th, table.compare td {
+      padding: 0.55rem 0.75rem; border-bottom: 1px solid #222;
+  }
+  table.compare th {
+      color: #888; font-weight: normal; text-align: left;
+      font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.05em; border-bottom: 2px solid #333;
+  }
+  table.compare td { text-align: right; font-variant-numeric: tabular-nums; }
+  table.compare td.metric-label {
+      text-align: left; color: #aaa; min-width: 180px;
+      position: sticky; left: 0; background: #0a0a0a;
+  }
+  table.compare thead th { text-align: center; color: #ddd; font-weight: 600; }
+  table.compare thead th:first-child { text-align: left; }
+  .rate-low { color: #7acb7a; }
+  .rate-mid { color: #ffcc44; font-weight: 600; }
+  .rate-high { color: #ff7a7a; font-weight: 600; }
+  .muted { color: #555; }
+  .section-header-row { background: #111; }
+  .section-header-row td {
+      color: #888; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.05em; text-align: left !important;
+      padding: 0.55rem 0.75rem; border-bottom: 1px solid #333;
+  }
+  table.compare td a { color: #aad; text-decoration: none; }
+  table.compare td a:hover { color: #ccf; text-decoration: underline; }
+</style>
+
+<section class="fade-in">
+    <h2 class="section-header solution">Multi-Persona Fuzz Testing</h2>
+    <p class="safeguard-pitch">
+        The same concern catalog, the same probe miners, the same audit rubric &mdash; applied against different variants of a target service at the same time. The grid below shows how a minor prompt-engineering change to a service shifts its safety posture. Green cells hold up; red cells fail the probe.
+    </p>
+    <p style="color: #888; font-size: 0.85rem; margin-bottom: 2rem;">
+        Finding rate is findings / verified probes per (concern, target). Legacy evaluations (no provenance commitment) and unverified rows are excluded.
+    </p>
+
+    {% if targets %}
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 1.5rem; margin-bottom: 0.5rem;">Targets</h3>
+    <div class="compare-wrap">
+        <table class="compare">
+            <thead>
+                <tr>
+                    <th></th>
+                    {% for t in targets %}<th>{{ t.name }}</th>{% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                <tr class="section-header-row"><td colspan="{{ targets|length|add:1 }}">Volume</td></tr>
+                <tr>
+                    <td class="metric-label">Verified probes</td>
+                    {% for t in targets %}<td>{{ t.n_verified_probes }}</td>{% endfor %}
+                </tr>
+                <tr class="section-header-row"><td colspan="{{ targets|length|add:1 }}">Findings</td></tr>
+                <tr>
+                    <td class="metric-label">Total findings</td>
+                    {% for t in targets %}<td>{{ t.n_findings }}</td>{% endfor %}
+                </tr>
+                <tr>
+                    <td class="metric-label">Critical findings</td>
+                    {% for t in targets %}
+                        <td class="{% if t.n_critical > 0 %}rate-high{% endif %}">{{ t.n_critical }}</td>
+                    {% endfor %}
+                </tr>
+                <tr>
+                    <td class="metric-label">Finding rate</td>
+                    {% for t in targets %}
+                        <td class="{% if t.finding_rate_pct >= 50 %}rate-high{% elif t.finding_rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}">
+                            {{ t.finding_rate_pct|floatformat:1 }}%
+                        </td>
+                    {% endfor %}
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    {% if heatmap %}
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 2.5rem; margin-bottom: 0.5rem;">Concern &times; Target finding rate</h3>
+    <p style="color: #888; font-size: 0.85rem; margin-bottom: 0.8rem;">
+        Each cell shows the finding rate for that concern against that target. Hover for probe count. Color:
+        <span class="rate-low">green &lt;20%</span> &middot;
+        <span class="rate-mid">yellow 20&ndash;50%</span> &middot;
+        <span class="rate-high">red &ge;50%</span>.
+    </p>
+    <div class="compare-wrap">
+        <table class="compare">
+            <thead>
+                <tr>
+                    <th style="min-width:220px;">Concern</th>
+                    {% for tn in target_names %}<th>{{ tn }}</th>{% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in heatmap %}
+                <tr>
+                    <td class="metric-label">
+                        <a href="{% url 'public:catalog_detail' slug=row.concern_slug %}">{{ row.concern_title|default:row.concern_slug }}</a>
+                    </td>
+                    {% for cell in row.cells %}
+                        {% if cell.rate_pct is not None %}
+                            <td class="{% if cell.rate_pct >= 50 %}rate-high{% elif cell.rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}"
+                                title="{{ cell.n_findings }} findings / {{ cell.n_probes }} probes">
+                                {{ cell.rate_pct|floatformat:0 }}%
+                            </td>
+                        {% else %}
+                            <td class="muted" title="0 probes">&mdash;</td>
+                        {% endif %}
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% else %}
+        <p class="activity-empty">No registered targets yet.</p>
+    {% endif %}
+
+    <p style="color: #666; font-size: 0.8rem; margin-top: 2.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+        Per-finding detail, miner attribution, and full transcripts are operator-only. The aggregates above are computed from verified probes only &mdash; legacy evaluations without provenance commitments are excluded.
+    </p>
+</section>
+
+{% endblock %}

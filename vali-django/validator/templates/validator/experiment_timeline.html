@@ -1,0 +1,47 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Timeline: {{ experiment.title }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'experiment_list' %}">Experiments</a> &rarr; <a href="{% url 'experiment_detail' slug=experiment.slug %}">{{ experiment.title }}</a> &rarr; Timeline</p>{% endblock %}
+
+{% block head_extra %}
+<style>
+  .tl { list-style: none; padding: 0; margin: 1rem 0; border-left: 2px solid #333; }
+  .tl li { position: relative; padding: 0.5rem 0 0.5rem 1.4rem; margin: 0; }
+  .tl li::before { content: ''; position: absolute; left: -7px; top: 0.85rem; width: 12px; height: 12px; border-radius: 50%; background: #555; border: 2px solid #1a1a1a; }
+  .tl li.kind-created::before { background: #88f; }
+  .tl li.kind-dispatched::before { background: #fc8; }
+  .tl li.kind-trial::before { background: #8c8; }
+  .tl li.kind-completed::before { background: #2a2; }
+  .tl-time { color: #666; font-size: 0.8rem; font-family: monospace; }
+  .tl-label { color: #ddd; font-weight: bold; margin-left: 0.5rem; }
+  .tl-detail { color: #888; font-size: 0.85rem; margin-top: 0.2rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+  <h3 style="margin:0;">Timeline &mdash; {{ experiment.title }}</h3>
+  <a href="{% url 'experiment_detail' slug=experiment.slug %}" class="chip" style="background:#333;color:#cde;border:1px solid #555;text-decoration:none;">&larr; Back to detail</a>
+</div>
+
+<p class="muted small">Read-only event log derived from DB state. Times are UTC. No raw container logs are exposed.</p>
+
+{% if is_stuck %}
+<div class="card" style="background:#3a2a1a;border:1px solid #a84;color:#fc8;padding:0.8rem 1rem;margin-bottom:1rem;">
+  <strong>Stuck.</strong> Experiment is in status=Running but no trial has landed in &gt;{{ stuck_idle_minutes }} minutes. Likely caused by a pod restart mid-dispatch or an unreachable miner. Use the <strong>Reset to Draft</strong> button on the detail page to unblock and re-dispatch.
+</div>
+{% endif %}
+
+{% if events %}
+<ul class="tl">
+  {% for ev in events %}
+  <li class="kind-{{ ev.kind }}">
+    <span class="tl-time">{{ ev.ts|date:"Y-m-d H:i:s" }}</span>
+    <span class="tl-label">{{ ev.label }}</span>
+    {% if ev.detail %}<div class="tl-detail">{{ ev.detail }}</div>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="card" style="text-align:center;color:#666;padding:2rem;">No events yet.</div>
+{% endif %}
+{% endblock %}

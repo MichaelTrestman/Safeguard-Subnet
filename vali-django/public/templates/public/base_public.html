@@ -15,6 +15,8 @@
         <ul class="site-nav-tabs">
             <li><a href="{% url 'public:landing' %}" class="nav-tab {% block nav_about %}{% endblock %}">About</a></li>
             <li><a href="{% url 'public:catalog' %}" class="nav-tab {% block nav_catalog %}{% endblock %}">Catalog</a></li>
+            <li><a href="{% url 'public:targets' %}" class="nav-tab {% block nav_targets %}{% endblock %}">Targets</a></li>
+            <li><a href="{% url 'public:experiments' %}" class="nav-tab {% block nav_experiments %}{% endblock %}">Experiments</a></li>
             <li><a href="{% url 'public:activity' %}" class="nav-tab {% block nav_activity %}{% endblock %}">Activity</a></li>
         </ul>
         <ul class="site-nav-right">
@@ -41,6 +43,8 @@
     <div class="footer-links">
         <a href="{% url 'public:landing' %}">About</a>
         <a href="{% url 'public:catalog' %}">Catalog</a>
+        <a href="{% url 'public:targets' %}">Targets</a>
+        <a href="{% url 'public:experiments' %}">Experiments</a>
         <a href="{% url 'public:activity' %}">Activity</a>
         <a href="https://github.com/MichaelTrestman/Safeguard-Subnet" target="_blank" rel="noopener">GitHub</a>
         <a href="https://discord.gg/bittensor" target="_blank" rel="noopener">Discord</a>

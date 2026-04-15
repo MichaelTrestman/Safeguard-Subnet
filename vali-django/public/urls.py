@@ -17,4 +17,7 @@ urlpatterns = [
     path("catalog/<slug:slug>/", views.catalog_detail_view, name="catalog_detail"),
     path("activity/", views.activity_view, name="activity"),
     path("activity/feed.json", views.activity_feed_json, name="activity_feed"),
+    path("experiments/", views.experiments_view, name="experiments"),
+    path("experiments/<slug:slug>/", views.experiment_detail_view, name="experiment_detail"),
+    path("targets/", views.targets_view, name="targets"),
 ]

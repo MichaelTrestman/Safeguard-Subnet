@@ -295,14 +295,22 @@ provenance and confirms the cited text spans.
 field (`draft` / `running` / `completed` / `failed`), an `experiment_report`
 JSON column on each trial, and a reverse FK from `Evaluation`.
 
-**Operator UI.** `/experiments/` — list, create form, per-miner trial
+**Operator UI.** `/operator/experiments/` — list, create form, per-miner trial
 results with expandable consistency reports and session transcripts. An
 **Inconsistencies** column on the list page is aggregated in Python from
 each trial's `experiment_report` JSON (not SQL-annotatable) and highlights
-any experiment with a nonzero count.
+any experiment with a nonzero count. A **Stuck** badge flags running
+experiments with no trial activity for >10 min, and a **Reset to Draft**
+button (also on the detail page) flips stuck/failed rows back to draft so
+the operator can re-dispatch. A per-experiment `/operator/experiments/<slug>/timeline/`
+page renders a read-only event log derived from DB state (creation,
+dispatch start, per-trial landings, completion). The bare `/experiments/`,
+`/experiments/<slug>/`, and `/targets/` paths are public anon-visible
+showcase pages under `public/` — operator routes live under `/operator/*`
+to avoid collision.
 
 **Dispatch path.** `dispatch_experiment()` is called from the
-`/experiments/<id>/run/` view, **not** from the background validator loop.
+`/operator/experiments/<id>/run/` view, **not** from the background validator loop.
 The view is async — it awaits each miner's `/experiment` endpoint — and
 blocks for the full duration of the dispatch. The main loop
 (`validator/loop.py`) is untouched by this path. Async view gotchas (sync

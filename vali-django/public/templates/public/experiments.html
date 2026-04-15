@@ -1,0 +1,44 @@
+{% extends "public/base_public.html" %}
+
+{% block title %}Fact &amp; Consistency Checking &mdash; Safeguard{% endblock %}
+{% block nav_experiments %}active{% endblock %}
+
+{% block content %}
+
+<section class="fade-in">
+    <h2 class="section-header solution">Fact &amp; Consistency Checking <span style="font-size:0.6em; color:var(--solution-color); font-weight:normal; opacity:0.8;">({{ experiments|length }} published experiment{{ experiments|length|pluralize }})</span></h2>
+    <p class="safeguard-pitch">
+        An <em>experiment</em> runs a challenge against a target service multiple times to analyze patterns of success and failure.
+    </p>
+    <p style="color: #888; font-size: 0.85rem; margin-bottom: 2rem;">
+        Public read-only view of operator-published experiments. Per-trial transcripts are not shown.
+    </p>
+
+    <div class="catalog-list">
+        {% for exp in experiments %}
+            <a href="{% url 'public:experiment_detail' slug=exp.slug %}" class="catalog-entry">
+                <div class="catalog-entry-header">
+                    <span class="catalog-entry-category">{{ exp.target_name }}</span>
+                    {% if exp.n_inconsistencies > 0 %}
+                        <span class="catalog-entry-version" style="color:#ff7a7a;">{{ exp.n_inconsistencies }} inconsistenc{{ exp.n_inconsistencies|pluralize:"y,ies" }}</span>
+                    {% else %}
+                        <span class="catalog-entry-version" style="color:#7acb7a;">Consistent</span>
+                    {% endif %}
+                </div>
+                <h3 class="catalog-entry-title">{{ exp.title }}</h3>
+                <p class="catalog-entry-text">
+                    {{ exp.completed_trials }} trial{{ exp.completed_trials|pluralize }} &times; {{ exp.runs_per_trial }} session{{ exp.runs_per_trial|pluralize }} per trial
+                </p>
+                <div class="catalog-entry-meta">
+                    {% if exp.completed_at %}completed {{ exp.completed_at|date:"Y-m-d" }}{% endif %}
+                </div>
+            </a>
+        {% empty %}
+            <p class="activity-empty">
+                No published experiments yet. The operator has not yet marked any experiment public.
+            </p>
+        {% endfor %}
+    </div>
+</section>
+
+{% endblock %}

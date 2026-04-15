@@ -7,6 +7,12 @@
   <a href="{% url 'experiment_create' %}" style="background:#336;color:#fff;padding:0.5rem 1.2rem;border-radius:4px;font-size:0.9rem;">+ New Experiment</a>
 </div>
 
+{% if n_stuck %}
+<div class="card" style="background:#3a2a1a;border:1px solid #a84;color:#fc8;padding:0.7rem 1rem;margin-bottom:1rem;font-size:0.85rem;">
+  <strong>{{ n_stuck }} experiment{{ n_stuck|pluralize }} stuck</strong> — status=Running with no trial activity for &gt;{{ stuck_idle_minutes }} minutes. Use the Reset button on each to flip back to Draft and re-dispatch.
+</div>
+{% endif %}
+
 <div style="margin-bottom:1rem;font-size:0.85rem;">
   Filter:
   <a href="{% url 'experiment_list' %}"{% if not status_filter %} style="color:#fff;font-weight:bold;"{% endif %}>All</a>
@@ -28,6 +34,7 @@
       <th class="num">Runs/Trial</th>
       <th class="num">Trials</th>
       <th class="num">Inconsistencies</th>
+      <th>Visibility</th>
       <th>Created</th>
     </tr>
   </thead>
@@ -43,6 +50,17 @@
         {% elif row.exp.status == 'completed' %}<span class="chip success">Completed</span>
         {% elif row.exp.status == 'failed' %}<span class="chip failed">Failed</span>
         {% endif %}
+        {% if row.is_stuck %}
+        <span class="chip" style="background:#3a2a1a;color:#fc8;border:1px solid #a84;"
+              title="No trial activity for &gt;{{ stuck_idle_minutes }} minutes">Stuck</span>
+        <form method="post" action="{% url 'experiment_reset' slug=row.exp.slug %}" style="display:inline;margin:0 0 0 0.3rem;"
+              onsubmit="return confirm('Reset {{ row.exp.title|escapejs }} to Draft? Existing trials stay linked; this just unblocks the status so you can re-dispatch.');">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <button type="submit" class="chip"
+                  style="background:#222;color:#fc8;border:1px solid #a84;cursor:pointer;">Reset</button>
+        </form>
+        {% endif %}
       </td>
       <td class="num">{{ row.exp.runs_per_trial }}</td>
       <td class="num">{{ row.n_trials }}</td>
@@ -51,6 +69,25 @@
           <span class="err">{{ row.n_inconsistencies }}</span>
         {% else %}
           <span class="muted">{{ row.n_inconsistencies }}</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.exp.status == 'completed' or row.exp.is_public %}
+        <form method="post" action="{% url 'experiment_toggle_public' slug=row.exp.slug %}" style="display:inline;margin:0;">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          {% if row.exp.is_public %}
+            <button type="submit" class="chip"
+                    style="background:#1a3a1a;color:#8c8;border:1px solid #484;cursor:pointer;"
+                    title="Visible on public /experiments/. Click to unpublish.">Public</button>
+          {% else %}
+            <button type="submit" class="chip"
+                    style="background:#222;color:#888;border:1px solid #444;cursor:pointer;"
+                    title="Private — not shown on public /experiments/. Click to publish.">Private</button>
+          {% endif %}
+        </form>
+        {% else %}
+          <span class="muted">—</span>
         {% endif %}
       </td>
       <td class="small">{{ row.exp.created_at|date:"Y-m-d H:i" }}</td>
