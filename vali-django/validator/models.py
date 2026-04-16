@@ -43,6 +43,11 @@ class RegisteredTarget(models.Model):
     concerns = models.ManyToManyField(
         "Concern", blank=True, related_name="targets",
     )
+    active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Inactive targets receive no new probes and are hidden from public views. Historical data is preserved.",
+    )
     registered_at = models.DateTimeField(auto_now_add=True)
     last_probed_at = models.DateTimeField(null=True, blank=True)
     evaluations_completed = models.PositiveIntegerField(default=0)
@@ -753,7 +758,7 @@ class BehaviorClassification(models.Model):
         db_index=True,
     )
     classifier_version = models.CharField(
-        max_length=64,
+        max_length=200,
         blank=True,
         help_text="e.g. 'harmbench-mistral-7b-val-cls@<endpoint-id>'. Lets a future classifier swap coexist with HarmBench rows.",
     )

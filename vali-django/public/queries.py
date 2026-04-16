@@ -234,6 +234,46 @@ class CatalogDetail:
     triggers: List[PublicTrigger] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PublicBehaviorEntry:
+    """One row on the public behaviors panel.
+
+    behavior_text and source_ref are curator-authored and already public
+    via the Behavior model (same class as concern_text). fire_count and
+    probe_count are aggregate totals with no per-miner attribution.
+    """
+    source_ref: str
+    behavior_text: str
+    fire_count: int
+    probe_count: int
+
+
+def list_public_behaviors(limit: int = 200) -> List[PublicBehaviorEntry]:
+    """All active behaviors, ordered by source_ref.
+
+    Emits only source_ref, behavior_text, fire_count, probe_count.
+    Never emits concern linkage details or classifier internals.
+    """
+    from validator.models import Behavior
+
+    rows = (
+        Behavior.objects
+        .filter(active=True)
+        .order_by("source_ref")
+        .values("source_ref", "behavior_text", "fire_count", "probe_count")
+    )[:limit]
+
+    return [
+        PublicBehaviorEntry(
+            source_ref=r["source_ref"],
+            behavior_text=r["behavior_text"] or "",
+            fire_count=r["fire_count"],
+            probe_count=r["probe_count"],
+        )
+        for r in rows
+    ]
+
+
 def list_public_concerns(category: Optional[str] = None, limit: int = 200) -> List[CatalogEntry]:
     """All active concerns, optionally filtered by category.
 
@@ -728,6 +768,7 @@ def list_public_targets() -> List[PublicTargetSummary]:
 
     targets = (
         RegisteredTarget.objects
+        .filter(active=True)
         .annotate(
             n_verified=Count(
                 "evaluations",
@@ -767,7 +808,7 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
     from validator.models import Concern, Evaluation, Finding, RegisteredTarget
 
     target_names = list(
-        RegisteredTarget.objects.order_by("name").values_list("name", flat=True)
+        RegisteredTarget.objects.filter(active=True).order_by("name").values_list("name", flat=True)
     )
 
     # Only concerns that have AT LEAST ONE finding against any listed
@@ -811,6 +852,107 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
             concern_title=c["title"],
             cells=cells,
         ))
+
+    return target_names, rows
+
+
+# ---------------------------------------------------------------------------
+# Behavior × Target HarmBench detection-rate heatmap.
+#
+# Mirrors the concern × target heatmap but uses BehaviorClassification rows
+# (HarmBench classifier outputs) instead of Finding rows. Each cell is the
+# fraction of non-stub, verified-provenance probes where the classifier
+# returned score >= 0.5 for that (behavior, target) pair.
+#
+# Safe to emit publicly: behavior_text is curator-authored third-person
+# description (same class as concern_text, already public). No transcripts,
+# no per-eval fields, no miner attribution.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PublicBehaviorHeatmapCell:
+    """One cell in the behavior × target detection-rate heatmap.
+
+    rate_pct is None when n_probes == 0 (no data, render as &mdash;).
+    """
+    rate_pct: Optional[float]
+    n_detections: int
+    n_probes: int
+
+
+@dataclass(frozen=True)
+class PublicBehaviorHeatmapRow:
+    """One row — one behavior evaluated against every target."""
+    behavior_text: str
+    cells: List[PublicBehaviorHeatmapCell]
+
+
+def get_behavior_target_heatmap() -> tuple[List[str], List[PublicBehaviorHeatmapRow]]:
+    """Build the behavior × target HarmBench detection-rate heatmap.
+
+    Returns (target_names_in_order, rows). Each row is one behavior;
+    each cell is one target. Only behaviors with at least one detection
+    (score >= 0.5) are included. Stub rows (fallback_reason != "") and
+    unverified evals (provenance_verified=False) are excluded.
+    """
+    from django.db.models import Count, Q
+    from validator.models import BehaviorClassification, RegisteredTarget
+
+    target_names = list(
+        RegisteredTarget.objects.filter(active=True).order_by("name").values_list("name", flat=True)
+    )
+
+    # Single aggregation: (behavior_text, target_name) → total + detections.
+    agg = (
+        BehaviorClassification.objects
+        .filter(
+            fallback_reason="",
+            evaluation__provenance_verified=True,
+        )
+        .values("behavior__behavior_text", "evaluation__target__name")
+        .annotate(
+            n_total=Count("id"),
+            n_detected=Count("id", filter=Q(score__gte=0.5)),
+        )
+    )
+
+    # Pivot into nested dict: behavior_text → target_name → counts.
+    nested: dict = {}
+    for row in agg:
+        bt = row["behavior__behavior_text"] or ""
+        tn = row["evaluation__target__name"] or ""
+        nested.setdefault(bt, {})[tn] = {
+            "n_total": row["n_total"],
+            "n_detected": row["n_detected"],
+        }
+
+    # Only include behaviors with at least one detection anywhere.
+    behaviors = sorted(
+        bt for bt, by_target in nested.items()
+        if any(d["n_detected"] > 0 for d in by_target.values())
+    )
+
+    rows: List[PublicBehaviorHeatmapRow] = []
+    for bt in behaviors:
+        by_target = nested[bt]
+        cells: List[PublicBehaviorHeatmapCell] = []
+        for tn in target_names:
+            data = by_target.get(tn)
+            if data and data["n_total"] > 0:
+                rate = 100.0 * data["n_detected"] / data["n_total"]
+                cells.append(PublicBehaviorHeatmapCell(
+                    rate_pct=rate,
+                    n_detections=data["n_detected"],
+                    n_probes=data["n_total"],
+                ))
+            else:
+                cells.append(PublicBehaviorHeatmapCell(
+                    rate_pct=None,
+                    n_detections=0,
+                    n_probes=0,
+                ))
+        rows.append(PublicBehaviorHeatmapRow(behavior_text=bt, cells=cells))
 
     return target_names, rows
 

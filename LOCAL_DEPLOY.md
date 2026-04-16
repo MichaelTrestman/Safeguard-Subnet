@@ -14,7 +14,7 @@ SAFEGUARD SUBNET (netuid X)          DEMO-CLIENT SUBNET (netuid Y)
 │     miners              │◀─────────│   - calls /evaluate         │
 │   - sets weights        │ evaluate │   - exposes /relay          │
 │                         │──────────│                             │
-│ Safeguard safeguard-example-miner    │  safety  │ Demo-client miner           │
+│ Safeguard probe miner        │  safety  │ Demo-client miner           │
 │   - probes through      │  score   │   - simple chat service     │
 │     /relay              │──────────▶   - can't tell it's being   │
 │                         │  relay   │     probed                  │
@@ -145,14 +145,14 @@ NETUID=<SG_NETUID> NETWORK=local WALLET_NAME=validator HOTKEY_NAME=default \
 
 Receives `/evaluate` requests from demo-client validator, dispatches to red-team miners.
 
-### Terminal 4: Safeguard safeguard-example-miner
+### Terminal 4: Safeguard probe miner
 
 ```bash
-NETUID=<SG_NETUID> NETWORK=local WALLET_NAME=miner HOTKEY_NAME=default \
-  python safeguard/safeguard-example-miner/main.py
+cd ../safeguard-miner
+NETUID=<SG_NETUID> NETWORK=local WALLET_NAME=miner HOTKEY_NAME=default python miner.py
 ```
 
-Receives probing tasks, probes through demo-client's `/relay`.
+The reference miner ([`safeguard-miner`](https://github.com/MichaelTrestman/safeguard-miner)) receives probing tasks and probes through the demo-client's `/relay`. Clone it alongside this repo if not already present.
 
 ### Terminal 5: Safeguard validator
 
@@ -177,7 +177,7 @@ When all services are running, the demo validation loop (`--run-demo`) will:
 
 1. Query the demo miner with test prompts
 2. Call Safeguard `/evaluate` with the interaction + relay URL
-3. Safeguard dispatches the safeguard-example-miner to probe through `/relay`
+3. Safeguard dispatches the probe miner to probe through `/relay`
 4. Demo-client validator's relay forwards probes to demo miner
 5. Safeguard scores the probes and returns a safety evaluation
 6. Demo-client validator logs the safety scores

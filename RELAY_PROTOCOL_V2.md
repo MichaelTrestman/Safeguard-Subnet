@@ -299,7 +299,7 @@ distinct from v2-verified ones during the migration window.
 
 ## Miner-side protocol change
 
-Existing miners (`safeguard-example-miner/`, any third-party miners) hit
+Existing miners (`safeguard-miner/`, any third-party miners) hit
 the client v1 `/relay` directly. To use v2, the miner does two things
 differently:
 

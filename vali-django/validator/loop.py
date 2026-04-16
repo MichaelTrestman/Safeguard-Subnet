@@ -839,7 +839,7 @@ def _list_targets() -> list:
     queryset is awkward. Returns a list ordered by id (deterministic
     rotation order)."""
     from .models import RegisteredTarget
-    return list(RegisteredTarget.objects.all().order_by("id"))
+    return list(RegisteredTarget.objects.filter(active=True).order_by("id"))
 
 
 # ---------------------------------------------------------------------------

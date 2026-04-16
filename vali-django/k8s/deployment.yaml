@@ -183,6 +183,21 @@ spec:
             # block + safeguard-security-review-2026-04-14.md Critical #2.
             - name: BEHIND_CLOUDFLARE
               value: "1"
+            - name: HARMBENCH_TIER0_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: HARMBENCH_TIER0_ENABLED
+            - name: HARMBENCH_HF_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: HARMBENCH_HF_ENDPOINT
+            - name: HARMBENCH_HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: safeguard-secrets
+                  key: HARMBENCH_HF_TOKEN
           volumeMounts:
             - name: wallets
               mountPath: /root/.bittensor/wallets/SuperPractice/hotkeys/default

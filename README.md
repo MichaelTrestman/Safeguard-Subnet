@@ -138,69 +138,24 @@ TARGET_REGISTRY_FILE=target_registry.json \
 
 ## Mining on Safeguard
 
-Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task includes a target validator's relay endpoint and a scenario category. The miner sends prompts one at a time through the relay, adapting its adversarial strategy based on each response. It returns the full transcript with safety evaluations.
+The reference miner implementation lives in the [`safeguard-miner`](https://github.com/MichaelTrestman/safeguard-miner) repo. Miners run adversarial AI agents that accept probing tasks via HTTP + Epistula signing. Each task specifies a focal concern from the validator's concern catalog and a target relay endpoint. The miner conducts a multi-turn adversarial conversation through the relay, routing each turn through Safeguard's `/probe/relay` for cryptographic provenance, and returns the full transcript with per-turn commitment blocks and a miner-side self-scored severity estimate.
 
-### Running the probe miner
-
-```bash
-bash run_miner.sh
-```
-
-Defaults: `--network test --netuid 444 --wallet miner --port 8080`. Override as needed:
-
-```bash
-bash run_miner.sh --network local --netuid 2 --wallet miner --port 8080
-```
-
-Or start manually:
-
-```bash
-NETUID=444 NETWORK=test WALLET_NAME=miner python safeguard-example-miner/main.py
-```
-
-The miner registers its endpoint on chain at startup. The validator discovers it and begins dispatching tasks. See `safeguard-example-miner/README.md` for details.
+See the [safeguard-miner README](https://github.com/MichaelTrestman/safeguard-miner) for setup, environment variables, and deployment.
 
 ### Building your own miner
 
-Your miner must expose `POST /probe` with Epistula authentication. It receives a `ProbingTask` (target relay endpoint + scenario category), conducts an adversarial conversation through the relay, and returns a `ProbeResult` (transcript + safety score + categories). See [DESIGN.md](DESIGN.md) for the scoring rubric and what makes a good miner.
+Your miner must expose `POST /probe` with Epistula authentication. It receives a `ProbingTask` (target relay endpoint + `concern_id_slug`), conducts an adversarial conversation routed through `/probe/relay`, and returns a `ProbeResult` (transcript with per-turn commitment blocks + self-score + concern attribution). Provenance is enforced: transcripts without valid RELAY_PROTOCOL_V2 commitment blocks earn `contribution = 0` regardless of content. See [DESIGN.md](DESIGN.md) for the scoring rubric.
 
 ### HITL Mining
 
-Human miners label hard cases that the automated tiers can't resolve. The HITL miner runs on a separate mechanism (mech 1) with its own emission allocation.
-
-**Register your HITL miner:**
-
-```bash
-btcli subnet register --netuid 444 --wallet.name hitl-miner --wallet.hotkey default --network test
-```
-
-**Run the HITL miner:**
-
-```bash
-NETUID=444 NETWORK=test WALLET_NAME=hitl-miner HOTKEY_NAME=default \
-  python safeguard-hitl-miner/main.py
-```
-
-The HITL miner is a FastAPI server that receives tasks from the validator via Epistula-signed HTTP. It registers on chain with `{"type": "hitl"}` so the validator can distinguish it from probe miners.
-
-**Web UI (recommended):** Open `http://localhost:8081` in a browser with the [polkadot.js extension](https://polkadot.js.org/extension/) installed. Import your HITL miner hotkey into the extension, connect your wallet, and label cases through the browser interface. Scores are hidden until after you submit to avoid anchoring bias.
-
-**Terminal fallback:** If no browser is connected, tasks appear in the terminal for labeling via stdin — the original CLI interface.
-
-When the validator detects miner-validator disagreement > 0.3 on a probe result, it escalates the case to all registered HITL miners. Your label (safety score, severity, categories, reasoning) feeds back into the canary bank and calibrates the automated validation tiers. See [HITL_DESIGN.md](HITL_DESIGN.md) for the full architecture.
+HITL labeling is built into the reference miner (`HITL_ENABLED=true` by default in `safeguard-miner/`). When the validator routes an edge case to HITL, the miner receives it at `POST /hitl_task` and queues it for human review at `/ui/hitl`. High-quality human labels earn contribution on the HITL mechanism independently of probe mining.
 
 ## Architecture
 
-| Component | File | Purpose |
+| Component | Location | Purpose |
 |---|---|---|
-| Validator | `validator.py` | Task dispatch, tiered validation, scoring, weight setting |
-| Example miner | `safeguard-example-miner/` | Reference red-team AI agent |
-| HITL miner | `safeguard-hitl-miner/` | Human safety labeling (web UI + terminal fallback) |
-| LLM judge | `llm_judge.py` | Tier 2/3 safety classification via Chutes |
-| Cross-subnet API | `cross_subnet_api.py` | `/register`, `/evaluate`, `/status` for client subnets |
-| HITL API | `hitl_api.py` | Serves cases to human miners, collects labels |
-| Feedback pipeline | `feedback_pipeline.py` | HITL labels → new canaries |
-| Report generator | `report_generator.py` | Evaluation log → markdown safety report |
+| Validator | `vali-django/` | Task dispatch, tiered audit, HITL routing, weight setting |
+| Reference miner | [`safeguard-miner`](https://github.com/MichaelTrestman/safeguard-miner) (separate repo) | Adversarial probe agent + HITL labeler |
 | Demo-client | `demo-client/` | Reference target subnet (miner + validator with relay) |
 | Knowledge base | `knowledge/` | Harm taxonomies, benchmarks, legal frameworks, research |
 

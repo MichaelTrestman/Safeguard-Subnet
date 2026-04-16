@@ -51,10 +51,12 @@ def catalog_view(request: HttpRequest) -> HttpResponse:
     selected_category = request.GET.get("category", "").strip() or None
     concerns = queries.list_public_concerns(category=selected_category)
     categories = queries.list_public_categories()
+    behaviors = queries.list_public_behaviors()
     return render(request, "public/catalog.html", {
         "concerns": concerns,
         "categories": categories,
         "selected_category": selected_category,
+        "behaviors": behaviors,
     })
 
 
@@ -104,8 +106,10 @@ def targets_view(request: HttpRequest) -> HttpResponse:
     """
     targets = queries.list_public_targets()
     target_names, heatmap = queries.get_concern_target_heatmap()
+    _, behavior_heatmap = queries.get_behavior_target_heatmap()
     return render(request, "public/targets.html", {
         "targets": targets,
         "target_names": target_names,
         "heatmap": heatmap,
+        "behavior_heatmap": behavior_heatmap,
     })

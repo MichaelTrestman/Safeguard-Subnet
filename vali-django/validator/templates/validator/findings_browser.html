@@ -116,6 +116,7 @@
         <th class="num">Severity</th>
         <th>Critical</th>
         <th class="num">Cues</th>
+        <th class="num">Behaviors</th>
         <th>Curated</th>
         <th>Summary</th>
         <th>Eval</th>
@@ -143,6 +144,7 @@
             {% if f.critical %}<span class="chip critical">critical</span>{% else %}<span class="muted small">—</span>{% endif %}
           </td>
           <td class="num">{{ f.matched_cues.count }}</td>
+          <td class="num">{{ f.evaluation.behavior_classifications.count }}</td>
           <td>
             {% if f.curated %}
               <span class="chip verified">curated</span>

@@ -1389,7 +1389,7 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
     qs = (
         findings_base
         .select_related("evaluation", "evaluation__target")
-        .prefetch_related("matched_cues")
+        .prefetch_related("matched_cues", "evaluation__behavior_classifications")
         .order_by("-severity")
     )
 
@@ -1979,7 +1979,8 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
             Q(behavior_text__icontains=behavior_q)
             | Q(source_ref__icontains=behavior_q)
         )
-    behavior_paginator = Paginator(unlinked_qs, 20)
+    per_page = min(max(int(request.GET.get("per_page", 20)), 10), 100)
+    behavior_paginator = Paginator(unlinked_qs, per_page)
     behavior_page = behavior_paginator.get_page(request.GET.get("behavior_page", 1))
     return render(request, "validator/concern_detail.html", {
         "concern": concern,
@@ -1989,6 +1990,7 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
         "recent_findings": recent_findings,
         "behavior_q": behavior_q,
         "behavior_page": behavior_page,
+        "per_page": per_page,
     })
 
 
@@ -2442,24 +2444,24 @@ def behavior_detail(request: HttpRequest, pk: int) -> HttpResponse:
     from .models import Behavior, Concern
 
     behavior = get_object_or_404(Behavior, pk=pk)
+    from django.core.paginator import Paginator
     concern_q = request.GET.get("concern_q", "").strip()
-    concern_search_results = []
+    per_page = min(max(int(request.GET.get("per_page", 20)), 10), 100)
+    already_linked = behavior.concerns.values_list("id", flat=True)
+    unlinked_qs = Concern.objects.exclude(id__in=already_linked).order_by("category", "id_slug")
     if concern_q:
-        already_linked = behavior.concerns.values_list("id", flat=True)
-        concern_search_results = list(
-            Concern.objects
-            .exclude(id__in=already_linked)
-            .filter(
-                Q(id_slug__icontains=concern_q)
-                | Q(title__icontains=concern_q)
-                | Q(category__icontains=concern_q)
-            )
-            .order_by("category", "id_slug")[:20]
+        unlinked_qs = unlinked_qs.filter(
+            Q(id_slug__icontains=concern_q)
+            | Q(title__icontains=concern_q)
+            | Q(category__icontains=concern_q)
         )
+    concern_paginator = Paginator(unlinked_qs, per_page)
+    concern_page = concern_paginator.get_page(request.GET.get("concern_page", 1))
     return render(request, "validator/behavior_detail.html", {
         "behavior": behavior,
         "concern_q": concern_q,
-        "concern_search_results": concern_search_results,
+        "concern_page": concern_page,
+        "per_page": per_page,
     })
 
 

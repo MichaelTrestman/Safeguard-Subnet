@@ -1,52 +1,117 @@
 {% extends "public/base_public.html" %}
 
-{% block title %}Concern Catalog &mdash; Safeguard{% endblock %}
+{% block title %}Models &mdash; Safeguard{% endblock %}
 {% block nav_catalog %}active{% endblock %}
 
 {% block content %}
 
+<style>
+  .model-tabs { display: flex; gap: 0; margin: 1.5rem 0 2rem 0; border-bottom: 2px solid #222; }
+  .model-tab-btn {
+      background: none; border: none; color: #888; font-size: 0.9rem;
+      padding: 0.5rem 1.5rem 0.65rem; cursor: pointer;
+      border-bottom: 2px solid transparent; margin-bottom: -2px;
+      font-family: inherit; letter-spacing: 0.03em;
+  }
+  .model-tab-btn.active { color: var(--solution-color); border-bottom-color: var(--solution-color); }
+  .model-tab-btn:hover:not(.active) { color: #ccc; }
+
+  .behavior-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1rem; }
+  .behavior-entry {
+      background: #111; border: 1px solid #222; border-radius: 4px;
+      padding: 0.9rem 1.1rem; display: flex; flex-direction: column; gap: 0.35rem;
+  }
+  .behavior-entry-text { color: #ccc; font-size: 0.9rem; line-height: 1.5; }
+  .behavior-entry-meta { color: #555; font-size: 0.75rem; display: flex; gap: 1rem; align-items: center; }
+  .behavior-source-ref { color: #666; font-size: 0.7rem; font-family: monospace; }
+  .behavior-stat { color: #666; font-size: 0.75rem; }
+  .behavior-stat-val { color: #aaa; }
+</style>
+
 <section class="fade-in">
-    <h2 class="section-header solution">Concern Catalog <span style="font-size:0.6em; color:var(--solution-color); font-weight:normal; opacity:0.8;">({{ concerns|length }} active concern{{ concerns|length|pluralize }})</span></h2>
+    <h2 class="section-header solution">Models</h2>
     <p class="safeguard-pitch">
-        A <em>concern</em> is a named, versioned description of a way AI can fail its users &mdash; a situation plus a hypothesis about the failure mode. The catalog below is this validator's live set of active concerns. Every probe miner fetches this same catalog, picks an angle, and submits findings; every registered target gets tested against it.
-    </p>
-    <p style="color: #888; font-size: 0.85rem; margin-bottom: 2rem;">
-        Public read-only view. Detection signatures are not shown here &mdash; only concern descriptions and probe triggers.
+        Safeguard's threat models are multimodal cluster representations of AI failure modes. Each model starts as a versioned natural language hypothesis and grows richer as data accumulates: probe transcripts feed the HarmBench classifier, which scores behavioral signatures; human adjudicators resolve disagreements and update labels; findings build an empirical record. The cluster sharpens over time &mdash; the longer the network runs, the more evidence each model has behind it.
     </p>
 
-    {% if categories %}
-    <div class="catalog-filter">
-        <span class="catalog-filter-label">Filter:</span>
-        <a href="{% url 'public:catalog' %}" class="catalog-filter-tab {% if not selected_category %}active{% endif %}">All</a>
-        {% for cat in categories %}
-            <a href="?category={{ cat }}" class="catalog-filter-tab {% if selected_category == cat %}active{% endif %}">{{ cat }}</a>
-        {% endfor %}
+    <div class="model-tabs">
+        <button class="model-tab-btn active" data-tab="concerns">
+            Concerns <span style="color:#555; font-size:0.8em;">({{ concerns|length }})</span>
+        </button>
+        <button class="model-tab-btn" data-tab="behaviors">
+            Behaviors <span style="color:#555; font-size:0.8em;">({{ behaviors|length }})</span>
+        </button>
     </div>
-    {% endif %}
 
-    <div class="catalog-list">
-        {% for concern in concerns %}
-            <a href="{% url 'public:catalog_detail' slug=concern.id_slug %}" class="catalog-entry">
-                <div class="catalog-entry-header">
-                    <span class="catalog-entry-category">{{ concern.category }}</span>
-                    <span class="catalog-entry-version">v{{ concern.version }}</span>
+    <!-- ==================== CONCERNS PANEL ==================== -->
+    <div id="tab-concerns" class="model-tab-panel">
+        <p style="color: #888; font-size: 0.85rem; margin-bottom: 1.5rem;">
+            A <em>concern</em> is the named hypothesis at the center of a threat model &mdash; a versioned description of a way AI fails its users, precise enough to generate targeted probes and audit transcripts against. Every probe miner fetches this catalog; every registered target gets tested against it. Detection cues are not shown here.
+        </p>
+
+        {% if categories %}
+        <div class="catalog-filter">
+            <span class="catalog-filter-label">Filter:</span>
+            <a href="{% url 'public:catalog' %}" class="catalog-filter-tab {% if not selected_category %}active{% endif %}">All</a>
+            {% for cat in categories %}
+                <a href="?category={{ cat }}" class="catalog-filter-tab {% if selected_category == cat %}active{% endif %}">{{ cat }}</a>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="catalog-list">
+            {% for concern in concerns %}
+                <a href="{% url 'public:catalog_detail' slug=concern.id_slug %}" class="catalog-entry">
+                    <div class="catalog-entry-header">
+                        <span class="catalog-entry-category">{{ concern.category }}</span>
+                        <span class="catalog-entry-version">v{{ concern.version }}</span>
+                    </div>
+                    <h3 class="catalog-entry-title">{{ concern.title }}</h3>
+                    <p class="catalog-entry-text">{{ concern.concern_text|truncatechars:240 }}</p>
+                    <div class="catalog-entry-meta">
+                        {{ concern.trigger_count }} trigger{{ concern.trigger_count|pluralize }}
+                        &middot; added {{ concern.created_at|date:"Y-m-d" }}
+                    </div>
+                </a>
+            {% empty %}
+                <p class="activity-empty">
+                    {% if selected_category %}
+                        No active concerns in category <code>{{ selected_category }}</code>.
+                    {% else %}
+                        No active concerns yet.
+                    {% endif %}
+                </p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- ==================== BEHAVIORS PANEL ==================== -->
+    <div id="tab-behaviors" class="model-tab-panel" style="display:none">
+        <p style="color: #888; font-size: 0.85rem; margin-bottom: 1.5rem;">
+            <em>Behaviors</em> are the behavioral signatures in each threat cluster &mdash; specific, falsifiable, third-person descriptions of what exhibiting a failure mode looks like in a transcript. Each is scored by the
+            <a href="https://github.com/centerforaisafety/HarmBench" target="_blank" rel="noopener" style="color:var(--solution-color);">HarmBench classifier</a>
+            (<code style="color:#aaa;">cais/HarmBench-Mistral-7b-val-cls</code>), producing a detection probability in [0,&thinsp;1]. As more probes run, detection rates sharpen: the ratio below is the empirical frequency of that failure mode under real adversarial conditions. One concern maps to multiple behaviors; behaviors can be shared across concerns.
+        </p>
+
+        <div class="behavior-list">
+            {% for b in behaviors %}
+            <div class="behavior-entry">
+                <div class="behavior-entry-text">{{ b.behavior_text }}</div>
+                <div class="behavior-entry-meta">
+                    <span class="behavior-source-ref">{{ b.source_ref }}</span>
+                    {% if b.probe_count %}
+                        <span class="behavior-stat"><span class="behavior-stat-val">{{ b.fire_count }}</span> / {{ b.probe_count }} probes detected</span>
+                    {% endif %}
                 </div>
-                <h3 class="catalog-entry-title">{{ concern.title }}</h3>
-                <p class="catalog-entry-text">{{ concern.concern_text|truncatechars:240 }}</p>
-                <div class="catalog-entry-meta">
-                    {{ concern.trigger_count }} trigger{{ concern.trigger_count|pluralize }}
-                    &middot; added {{ concern.created_at|date:"Y-m-d" }}
-                </div>
-            </a>
-        {% empty %}
-            <p class="activity-empty">
-                {% if selected_category %}
-                    No active concerns in category <code>{{ selected_category }}</code>.
-                {% else %}
-                    No active concerns yet. The validator's catalog is empty or still warming up.
-                {% endif %}
-            </p>
-        {% endfor %}
+            </div>
+            {% empty %}
+                <p class="activity-empty">No active behaviors yet.</p>
+            {% endfor %}
+        </div>
+
+        <p style="color: #666; font-size: 0.8rem; margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+            Behaviors are curator-authored. Detection rates above are aggregate counts with no per-miner attribution. The HarmBench classifier is an open model; see the <a href="https://github.com/centerforaisafety/HarmBench" target="_blank" rel="noopener" style="color:var(--solution-color);">HarmBench repo</a> for methodology.
+        </p>
     </div>
 </section>
 

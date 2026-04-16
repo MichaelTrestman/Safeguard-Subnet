@@ -40,6 +40,18 @@ const observer = new IntersectionObserver((entries) => {
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
 
+    // Model-page tab switching (Concerns | Behaviors).
+    const tabBtns = document.querySelectorAll('.model-tab-btn');
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = btn.dataset.tab;
+            tabBtns.forEach(b => b.classList.toggle('active', b === btn));
+            document.querySelectorAll('.model-tab-panel').forEach(panel => {
+                panel.style.display = panel.id === 'tab-' + target ? '' : 'none';
+            });
+        });
+    });
+
     // Fetch recent activity feed for the landing-page embed (Phase 2).
     const feedTarget = document.getElementById('activity-feed-embed');
     if (!feedTarget) return;

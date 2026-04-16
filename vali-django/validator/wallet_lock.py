@@ -50,10 +50,23 @@ def acquire(wallet_name: str, hotkey_name: str) -> Path:
     """Take an exclusive non-blocking flock on the sentinel file. Raises
     WalletLockError if another process holds it. The fd is intentionally
     leaked into module scope so the lock survives function return — it is
-    released only when this process exits."""
+    released only when this process exits.
+
+    Idempotent within the same process: if this process already holds the
+    lock (i.e. acquire() was called before but the caller retried after a
+    post-lock failure), skip re-acquisition. Re-opening the file and calling
+    flock(LOCK_EX|LOCK_NB) on a new open-file-description to the same file
+    raises BlockingIOError even from the same process — the two descriptions
+    conflict — so we must skip the flock, not repeat it.
+    """
     global _held_fd
 
     path = lock_path(wallet_name, hotkey_name)
+
+    if _held_fd is not None:
+        logger.debug("Wallet lock already held by this process — skipping re-acquire")
+        return path
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)

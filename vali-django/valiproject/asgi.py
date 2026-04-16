@@ -38,6 +38,7 @@ logger = logging.getLogger("vali.asgi")
 
 _django_app = get_asgi_application()
 _loop_task: asyncio.Task | None = None
+_startup_task: asyncio.Task | None = None  # _acquire_and_start_loop background task
 
 # Module-level state for the v2 /probe/relay view (sub-phase 2.9).
 # Set in lifespan startup, cleared in shutdown. The view reads these
@@ -59,48 +60,76 @@ def _build_relay_httpx_client() -> httpx.AsyncClient:
     )
 
 
-async def application(scope, receive, send):
+async def _acquire_and_start_loop() -> None:
+    """Background task: connect to subtensor (with exponential-backoff retry),
+    then start the validator loop.
+
+    Runs entirely in the background after lifespan startup.complete so the web
+    server is always reachable regardless of chain availability. WALLET and
+    RELAY_HTTPX remain None until this succeeds; /probe/relay already 503s on
+    None. The validator loop is only the concern of this task — the Django app
+    serves requests throughout.
+    """
     global _loop_task, RELAY_HTTPX, WALLET
+
+    from validator.loop import acquire_resources, run_validator_loop
+
+    delay = 5.0
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            logger.info(f"Acquiring validator resources (attempt {attempt})")
+            wallet, subtensor, metagraph, owner_uid, tempo = await acquire_resources()
+        except asyncio.CancelledError:
+            logger.info("_acquire_and_start_loop cancelled before acquiring resources")
+            raise
+        except Exception as e:
+            logger.warning(
+                f"acquire_resources failed (attempt {attempt}): {e}; "
+                f"retrying in {delay:.0f}s"
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                logger.info("_acquire_and_start_loop cancelled during retry sleep")
+                raise
+            delay = min(delay * 2, 300.0)  # cap at 5 min
+            continue
+
+        WALLET = wallet
+        RELAY_HTTPX = _build_relay_httpx_client()
+        logger.info("Built RELAY_HTTPX (timeouts from settings)")
+
+        logger.info("Starting background validator loop")
+        _loop_task = asyncio.create_task(
+            run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo)
+        )
+        return  # done — loop is running
+
+
+async def application(scope, receive, send):
+    global _loop_task, _startup_task, RELAY_HTTPX, WALLET
 
     if scope["type"] == "lifespan":
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
-                from validator.loop import acquire_resources, run_validator_loop
-                try:
-                    # Acquire wallet lock + load wallet + connect to chain +
-                    # fetch metagraph + resolve owner UID + fetch tempo
-                    # SYNCHRONOUSLY in startup. If any of these fail (e.g.
-                    # another vali-django on this host already holds the
-                    # wallet, or the chain is unreachable past the retry
-                    # budget), we send lifespan.startup.failed and the
-                    # process exits without ever serving an HTTP request.
-                    # This is what guarantees that a failed-to-start
-                    # instance does not run a zombie web server against a
-                    # DB it does not own.
-                    wallet, subtensor, metagraph, owner_uid, tempo = await acquire_resources()
-                except Exception as e:
-                    logger.error(f"Startup failed: {e}")
-                    await send({
-                        "type": "lifespan.startup.failed",
-                        "message": str(e),
-                    })
-                    return
-
-                # Stash the wallet + build the relay httpx client. Both
-                # are needed by the v2 /probe/relay view; both fail
-                # quietly to None if the lifespan didn't run, and the
-                # view returns 503 in that case.
-                WALLET = wallet
-                RELAY_HTTPX = _build_relay_httpx_client()
-                logger.info("Built RELAY_HTTPX (timeouts from settings)")
-
-                logger.info("Starting background validator loop")
-                _loop_task = asyncio.create_task(
-                    run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo)
-                )
+                # Fire-and-forget: acquire subtensor resources in background.
+                # The web server binds immediately regardless of chain state.
+                # WALLET + RELAY_HTTPX stay None until _acquire_and_start_loop
+                # succeeds; /probe/relay already 503s on None.
+                logger.info("Scheduling background validator acquisition task")
+                _startup_task = asyncio.create_task(_acquire_and_start_loop())
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
+                if _startup_task is not None and not _startup_task.done():
+                    logger.info("Cancelling background acquisition task")
+                    _startup_task.cancel()
+                    try:
+                        await _startup_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if _loop_task is not None:
                     logger.info("Cancelling background validator loop")
                     _loop_task.cancel()

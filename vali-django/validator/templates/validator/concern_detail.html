@@ -174,12 +174,12 @@
 <h3>Behaviors</h3>
 <div class="card" style="border-left:3px solid #744;">
   <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
-    <strong>Behaviors</strong> are HarmBench-shaped atomic harm descriptions used
-    as the <code>{behavior}</code> input to the HarmBench Tier 0 classifier.
-    Unlike cues and triggers, behaviors are a general catalog shared across
-    concerns &mdash; same behavior can be associated with multiple concerns.
-    Only behaviors that are <strong>active=yes</strong> count for this concern's
-    Tier 0 classification or are served to miners via <code>/api/concerns</code>.
+    <strong>Behaviors</strong> are declarative descriptions of specific AI failure
+    manifestations — fed as the <code>{behavior}</code> input to the HarmBench
+    classifier to score whether a transcript exhibits that behavior. One concern
+    can have many behaviors (each a distinct way the concern can manifest).
+    Only <strong>active=yes</strong> behaviors are served to miners or used by
+    the classifier.
   </p>
   {% if concern.behaviors.all %}
   <div style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
@@ -189,26 +189,25 @@
   <div{% if not b.active %} style="opacity:0.5;"{% endif %} style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;{% if not b.active %}opacity:0.5;{% endif %}">
     <div style="font-family:monospace;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ b.source_ref }}">{{ b.source_ref }}</div>
     <div style="font-size:0.8rem;">{{ b.behavior_text|truncatechars:160 }}</div>
-    <div style="font-size:0.7rem;color:#888;">{{ b.functional_category }}</div>
     <div style="font-size:0.8rem;">{{ b.probe_count }}</div>
     <div style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</div>
     <div style="white-space:nowrap;display:flex;gap:0.25rem;">
       {% if b.active %}
       <form method="post" action="{% url 'behavior_deactivate' b.id %}" style="display:inline;" data-ajax>
         {% csrf_token %}
-        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}{% if behavior_q %}?behavior_q={{ behavior_q }}{% endif %}">
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.number }}&per_page={{ per_page }}">
         <button type="submit" style="background:#933;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;" title="Flip active=False (affects all concerns this behavior is in)">Off</button>
       </form>
       {% else %}
       <form method="post" action="{% url 'behavior_activate' b.id %}" style="display:inline;" data-ajax>
         {% csrf_token %}
-        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}{% if behavior_q %}?behavior_q={{ behavior_q }}{% endif %}">
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.number }}&per_page={{ per_page }}">
         <button type="submit" style="background:#393;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;" title="Flip active=True (affects all concerns this behavior is in)">On</button>
       </form>
       {% endif %}
       <form method="post" action="{% url 'behavior_disassociate' concern.id_slug b.id %}" style="display:inline;" data-ajax title="Remove from this concern only; behavior is preserved and other associations are kept.">
         {% csrf_token %}
-        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}{% if behavior_q %}?behavior_q={{ behavior_q }}{% endif %}">
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.number }}&per_page={{ per_page }}">
         <button type="submit" style="background:#555;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;">Remove</button>
       </form>
     </div>
@@ -219,10 +218,16 @@
   {% endif %}
 
   <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Associate a Behavior</h4>
-  <form method="get" style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+  <form method="get" data-ajax style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
     <input type="text" name="behavior_q" value="{{ behavior_q }}" placeholder="Filter by text or ref slug" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;flex:1;font-size:0.8rem;">
+    <select name="per_page" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;font-size:0.8rem;" onchange="this.form.submit()">
+      <option value="10"{% if per_page == 10 %} selected{% endif %}>10/page</option>
+      <option value="20"{% if per_page == 20 %} selected{% endif %}>20/page</option>
+      <option value="50"{% if per_page == 50 %} selected{% endif %}>50/page</option>
+      <option value="100"{% if per_page == 100 %} selected{% endif %}>100/page</option>
+    </select>
     <button type="submit" style="background:#336;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Filter</button>
-    {% if behavior_q %}<a href="?" style="color:#888;font-size:0.8rem;padding:0.4rem;">Clear</a>{% endif %}
+    {% if behavior_q %}<a href="?per_page={{ per_page }}" style="color:#888;font-size:0.8rem;padding:0.4rem;">Clear</a>{% endif %}
     <a href="{% url 'behavior_create' %}" style="background:#555;color:#fff;padding:0.4rem 0.8rem;border-radius:4px;font-size:0.8rem;text-decoration:none;white-space:nowrap;">+ New behavior</a>
   </form>
 
@@ -233,12 +238,12 @@
     </div>
     {% for b in behavior_page %}
     <div style="display:grid;grid-template-columns:11rem 1fr 6rem;gap:0.5rem;align-items:center;padding:0.35rem 0.6rem;border-bottom:1px solid #1a1a1a;{% if not b.active %}opacity:0.55;{% endif %}">
-      <div style="font-family:monospace;font-size:0.7rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888;" title="{{ b.source_ref }}">{{ b.source_ref }}</div>
+      <div style="font-family:monospace;font-size:0.7rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ b.source_ref }}"><a href="{% url 'behavior_detail' b.id %}" style="color:#88f;">{{ b.source_ref }}</a></div>
       <div style="font-size:0.8rem;">{{ b.behavior_text|truncatechars:140 }}</div>
       <form method="post" action="{% url 'behavior_associate' concern.id_slug %}" data-ajax>
         {% csrf_token %}
         <input type="hidden" name="behavior_id" value="{{ b.id }}">
-        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}{% if behavior_q %}?behavior_q={{ behavior_q }}{% endif %}">
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.number }}&per_page={{ per_page }}">
         <button type="submit" style="background:#336;color:#fff;border:none;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;">Associate</button>
       </form>
     </div>
@@ -247,11 +252,11 @@
   {% if behavior_page.has_other_pages %}
   <div style="display:flex;gap:0.5rem;align-items:center;font-size:0.8rem;margin-bottom:0.5rem;">
     {% if behavior_page.has_previous %}
-    <a href="?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.previous_page_number }}" style="color:#88f;">&larr; Prev</a>
+    <a href="?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.previous_page_number }}&per_page={{ per_page }}" style="color:#88f;">&larr; Prev</a>
     {% endif %}
     <span style="color:#666;">{{ behavior_page.number }} / {{ behavior_page.paginator.num_pages }}</span>
     {% if behavior_page.has_next %}
-    <a href="?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.next_page_number }}" style="color:#88f;">Next &rarr;</a>
+    <a href="?behavior_q={{ behavior_q }}&behavior_page={{ behavior_page.next_page_number }}&per_page={{ per_page }}" style="color:#88f;">Next &rarr;</a>
     {% endif %}
   </div>
   {% endif %}
