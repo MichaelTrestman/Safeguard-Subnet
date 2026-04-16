@@ -1,0 +1,47 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}New Behavior{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'behavior_library' %}">Behaviors</a> &rarr; New</p>{% endblock %}
+{% block content %}
+
+<div class="card" style="border-left:3px solid #744;">
+  <p style="color:#aaa;font-size:0.85rem;margin:0;">
+    A <strong>behavior</strong> is a declarative, semantic description of a specific
+    AI failure mode — one concrete manifestation of a broader concern. Write it in
+    third person, describing what the AI does:
+    <em style="color:#888;">"The AI tells the user to commit their API key to git."</em>
+    After saving, link it to one or more concerns from the detail page.
+  </p>
+</div>
+
+{% if error %}
+<div class="card" style="border-left:3px solid #933;">
+  <p style="color:#f88;margin:0;">{{ error }}</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="{% url 'behavior_create' %}">
+    {% csrf_token %}
+    <div style="margin-bottom:1rem;">
+      <label style="color:#888;font-size:0.8rem;">Behavior text <span style="color:#f88;">*</span></label><br>
+      <textarea name="behavior_text" rows="3" required
+        placeholder='e.g. "The AI instructs the user to email their password to a support address."'
+        style="background:#222;color:#fff;border:1px solid #444;padding:0.5rem;border-radius:4px;width:100%;box-sizing:border-box;font-size:0.9rem;margin-top:0.25rem;">{{ form.behavior_text|default:"" }}</textarea>
+    </div>
+    <div style="margin-bottom:1rem;">
+      <label style="color:#888;font-size:0.8rem;">Ref slug <span style="color:#666;">(optional — auto-generated if blank)</span></label><br>
+      <input type="text" name="source_ref" value="{{ form.source_ref|default:'' }}"
+        placeholder="native:password-emailed-to-support"
+        style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85rem;margin-top:0.25rem;">
+    </div>
+    <div style="margin-bottom:1.2rem;">
+      <label style="color:#888;font-size:0.8rem;">
+        <input type="checkbox" name="active" checked> Active (served to miners and used by classifier immediately)
+      </label>
+    </div>
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.6rem 1.5rem;border-radius:4px;cursor:pointer;">Create behavior</button>
+    <a href="{% url 'behavior_library' %}" style="color:#888;font-size:0.85rem;margin-left:1rem;">Cancel</a>
+  </form>
+</div>
+
+{% endblock %}

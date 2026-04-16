@@ -99,7 +99,50 @@
       <a href="{% url 'login' %}">Sign In</a>
     {% endif %}
   </nav>
+  <div id="page-content">
   {% block nav %}{% endblock %}
   {% block content %}{% endblock %}
+  </div>
+  <script>
+  (function () {
+    // Lightweight PJAX: intercept forms with data-ajax, POST via fetch,
+    // then swap #page-content with the redirect target's content.
+    // No new endpoints needed; all server-side logic is unchanged.
+    async function ajaxSubmit(e) {
+      const form = e.currentTarget;
+      e.preventDefault();
+      const btn = form.querySelector('[type=submit]');
+      let origLabel;
+      if (btn) { origLabel = btn.textContent; btn.disabled = true; btn.textContent = '…'; }
+      try {
+        const resp = await fetch(form.action, {
+          method: (form.method || 'post').toUpperCase(),
+          body: new FormData(form),
+          redirect: 'follow',
+        });
+        const html = await resp.text();
+        const parser = new DOMParser();
+        const newDoc = parser.parseFromString(html, 'text/html');
+        const newSlot = newDoc.getElementById('page-content');
+        const curSlot = document.getElementById('page-content');
+        if (newSlot && curSlot) {
+          curSlot.replaceWith(newSlot);
+        } else if (resp.url) {
+          window.location.href = resp.url;
+        }
+        if (resp.url && resp.url !== window.location.href) {
+          history.replaceState(null, '', resp.url);
+        }
+      } catch (err) {
+        console.error('AJAX form error:', err);
+        if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+      }
+    }
+    // Event delegation so it works on dynamically swapped content too.
+    document.addEventListener('submit', function (e) {
+      if ('ajax' in e.target.dataset) ajaxSubmit(e);
+    });
+  })();
+  </script>
 </body>
 </html>

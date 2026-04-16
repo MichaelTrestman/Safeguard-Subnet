@@ -9,14 +9,6 @@
     <div class="value" style="font-size:0.85rem;font-family:monospace;">{{ behavior.source_ref }}</div>
   </div>
   <div class="card">
-    <h4>Semantic category</h4>
-    <div class="value" style="font-size:0.95rem;">{{ behavior.semantic_category|default:"—" }}</div>
-  </div>
-  <div class="card">
-    <h4>Functional type</h4>
-    <div class="value" style="font-size:0.95rem;">{{ behavior.functional_category }}</div>
-  </div>
-  <div class="card">
     <h4>Active</h4>
     <div class="value">{% if behavior.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
   </div>
@@ -37,15 +29,15 @@
 
 <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
   {% if behavior.active %}
-  <form method="post" action="{% url 'behavior_deactivate' behavior.id %}">
+  <form method="post" action="{% url 'behavior_deactivate' behavior.id %}" data-ajax>
     {% csrf_token %}
-    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}{% if concern_q %}?concern_q={{ concern_q }}{% endif %}">
     <button type="submit" style="background:#933;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Deactivate</button>
   </form>
   {% else %}
-  <form method="post" action="{% url 'behavior_activate' behavior.id %}">
+  <form method="post" action="{% url 'behavior_activate' behavior.id %}" data-ajax>
     {% csrf_token %}
-    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}{% if concern_q %}?concern_q={{ concern_q }}{% endif %}">
     <button type="submit" style="background:#393;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Activate</button>
   </form>
   {% endif %}
@@ -65,9 +57,9 @@
     </div>
     <div style="font-size:0.8rem;color:#888;">{{ c.category }}</div>
     <div>{% if c.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
-    <form method="post" action="{% url 'behavior_disassociate' c.id_slug behavior.id %}">
+    <form method="post" action="{% url 'behavior_disassociate' c.id_slug behavior.id %}" data-ajax>
       {% csrf_token %}
-      <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+      <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}{% if concern_q %}?concern_q={{ concern_q }}{% endif %}">
       <button type="submit" style="background:#555;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.72rem;">Remove</button>
     </form>
   </div>
@@ -92,7 +84,7 @@
         </div>
         <div style="font-size:0.75rem;color:#888;">{{ c.category }}</div>
         <div style="font-size:0.75rem;">{% if c.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
-        <form method="post" action="{% url 'behavior_associate' c.id_slug %}">
+        <form method="post" action="{% url 'behavior_associate' c.id_slug %}" data-ajax>
           {% csrf_token %}
           <input type="hidden" name="behavior_id" value="{{ behavior.id }}">
           <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}?concern_q={{ concern_q }}">

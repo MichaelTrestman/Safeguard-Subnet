@@ -1968,22 +1968,19 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
         .prefetch_related("matched_cues")
         .order_by("-id")[:20]
     )
-    # Behavior search — inline associate picker on the concern detail page.
+    # Behavior associate picker — paginated browse + optional search filter.
+    from django.core.paginator import Paginator
+    from django.db.models import Q
     behavior_q = request.GET.get("behavior_q", "").strip()
-    behavior_search_results = []
+    already_linked = concern.behaviors.values_list("id", flat=True)
+    unlinked_qs = Behavior.objects.exclude(id__in=already_linked).order_by("source_ref")
     if behavior_q:
-        from django.db.models import Q
-        already_linked = concern.behaviors.values_list("id", flat=True)
-        behavior_search_results = list(
-            Behavior.objects
-            .exclude(id__in=already_linked)
-            .filter(
-                Q(behavior_text__icontains=behavior_q)
-                | Q(semantic_category__icontains=behavior_q)
-                | Q(source_ref__icontains=behavior_q)
-            )
-            .order_by("semantic_category", "id")[:20]
+        unlinked_qs = unlinked_qs.filter(
+            Q(behavior_text__icontains=behavior_q)
+            | Q(source_ref__icontains=behavior_q)
         )
+    behavior_paginator = Paginator(unlinked_qs, 20)
+    behavior_page = behavior_paginator.get_page(request.GET.get("behavior_page", 1))
     return render(request, "validator/concern_detail.html", {
         "concern": concern,
         "revisions": revisions,
@@ -1991,7 +1988,7 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
         "related_ids": related_ids,
         "recent_findings": recent_findings,
         "behavior_q": behavior_q,
-        "behavior_search_results": behavior_search_results,
+        "behavior_page": behavior_page,
     })
 
 
@@ -2320,30 +2317,23 @@ def trigger_activate(request: HttpRequest, trigger_id: int) -> HttpResponse:
 
 @staff_required
 def behavior_library(request: HttpRequest) -> HttpResponse:
-    """List all Behavior rows, grouped by semantic_category.
+    """List all Behavior rows.
 
     Filters (query args):
-      ?semantic=<value>       — limit to one semantic_category
       ?active=1 / ?active=0   — filter by active state
-      ?source=harmbench       — prefix-match on source_ref
       ?concern=<slug>         — only behaviors associated with that concern
       ?q=<substr>             — case-insensitive substring match on behavior_text
     """
-    from .models import Behavior, Concern
+    from django.core.paginator import Paginator
+    from .models import Behavior
 
-    qs = Behavior.objects.prefetch_related("concerns").order_by("semantic_category", "source_ref")
+    qs = Behavior.objects.prefetch_related("concerns").order_by("source_ref")
 
-    semantic = request.GET.get("semantic", "")
-    if semantic:
-        qs = qs.filter(semantic_category=semantic)
     active_arg = request.GET.get("active", "")
     if active_arg == "1":
         qs = qs.filter(active=True)
     elif active_arg == "0":
         qs = qs.filter(active=False)
-    source = request.GET.get("source", "")
-    if source:
-        qs = qs.filter(source_ref__startswith=source)
     concern_slug = request.GET.get("concern", "")
     if concern_slug:
         qs = qs.filter(concerns__id_slug=concern_slug).distinct()
@@ -2351,30 +2341,19 @@ def behavior_library(request: HttpRequest) -> HttpResponse:
     if q:
         qs = qs.filter(behavior_text__icontains=q)
 
-    # Group by semantic_category for display (mirrors concern_library grouping)
-    semantic_groups: dict[str, list] = {}
-    for b in qs:
-        semantic_groups.setdefault(b.semantic_category or "(unspecified)", []).append(b)
-
-    # Total counts for header
     total = Behavior.objects.count()
     active_total = Behavior.objects.filter(active=True).count()
 
-    # All semantic categories, for the filter dropdown
-    all_semantic = sorted(set(
-        Behavior.objects.values_list("semantic_category", flat=True).distinct()
-    ))
+    paginator = Paginator(qs, 50)
+    page = paginator.get_page(request.GET.get("page", 1))
 
     return render(request, "validator/behavior_library.html", {
-        "semantic_groups": semantic_groups,
-        "semantic": semantic,
+        "page": page,
         "active_arg": active_arg,
-        "source": source,
         "concern_slug": concern_slug,
         "q": q,
         "total": total,
         "active_total": active_total,
-        "all_semantic": all_semantic,
         "nav_active": "behaviors",
     })
 
@@ -2481,6 +2460,50 @@ def behavior_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "behavior": behavior,
         "concern_q": concern_q,
         "concern_search_results": concern_search_results,
+    })
+
+
+@staff_required
+@require_http_methods(["GET", "POST"])
+def behavior_create(request: HttpRequest) -> HttpResponse:
+    """Create a new Behavior and redirect to its detail page."""
+    from django.utils.text import slugify
+    from .models import Behavior
+
+    if request.method == "POST":
+        behavior_text = request.POST.get("behavior_text", "").strip()
+        source_ref = request.POST.get("source_ref", "").strip()
+        active = request.POST.get("active") == "on"
+        if not behavior_text:
+            return render(request, "validator/behavior_create.html", {
+                "error": "Behavior text is required.",
+                "form": request.POST,
+            })
+        if not source_ref:
+            # Auto-generate a slug from the first ~8 words
+            words = behavior_text.split()[:8]
+            source_ref = "native:" + slugify(" ".join(words))
+        # Ensure uniqueness by appending a counter if needed
+        base_ref = source_ref
+        counter = 1
+        while Behavior.objects.filter(source_ref=source_ref).exists():
+            source_ref = f"{base_ref}-{counter}"
+            counter += 1
+        behavior = Behavior.objects.create(
+            behavior_text=behavior_text,
+            source_ref=source_ref,
+            active=active,
+        )
+        # Link to any concerns passed in POST
+        concern_slugs = request.POST.getlist("concern_slugs")
+        if concern_slugs:
+            from .models import Concern
+            concerns = Concern.objects.filter(id_slug__in=concern_slugs)
+            behavior.concerns.set(concerns)
+        return redirect("behavior_detail", pk=behavior.pk)
+
+    return render(request, "validator/behavior_create.html", {
+        "form": {},
     })
 
 

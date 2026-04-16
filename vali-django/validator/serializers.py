@@ -64,8 +64,6 @@ def serialize_concern(concern) -> dict:
                 "id": b.id,
                 "source_ref": b.source_ref,
                 "behavior_text": b.behavior_text,
-                "context_string": b.context_string,
-                "functional_category": b.functional_category,
             }
             for b in concern.behaviors.filter(active=True).order_by("id")
         ],

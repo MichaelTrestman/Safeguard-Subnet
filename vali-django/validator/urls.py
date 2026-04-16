@@ -51,6 +51,7 @@ urlpatterns = [
     # + per-concern M2M associate/disassociate. Declared BEFORE the concern
     # <slug> catch-all so "behaviors" path segments route correctly.
     path("behaviors/", views.behavior_library, name="behavior_library"),
+    path("behaviors/create/", views.behavior_create, name="behavior_create"),
     path("behaviors/<int:pk>/", views.behavior_detail, name="behavior_detail"),
     path("behaviors/<int:behavior_id>/activate/", views.behavior_activate, name="behavior_activate"),
     path("behaviors/<int:behavior_id>/deactivate/", views.behavior_deactivate, name="behavior_deactivate"),

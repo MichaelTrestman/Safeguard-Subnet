@@ -641,86 +641,53 @@ class UserTrigger(models.Model):
 
 
 class Behavior(models.Model):
-    """A HarmBench-shaped atomic harm description, used as the {behavior}
-    field in the HarmBench fine-tuned classifier prompt template
-    (cais/HarmBench-Mistral-7b-val-cls).
+    """A declarative, semantic description of a specific manifestation of a
+    concern — fed as the {behavior} input to the HarmBench classifier
+    (cais/HarmBench-Mistral-7b-val-cls) to score whether a given transcript
+    exhibits that behavior.
 
-    Unlike UserTrigger and DetectionCue which are intrinsically
-    concern-scoped (a cue is a cue *for* a specific worry), Behaviors
-    are a general catalog: one atomic harm description can be
-    associated with multiple Concerns via M2M. That supports
-    cross-classification — e.g. a `dimethylmercury-synthesis` behavior
-    can live under both `harmbench-chemical-biological` and a native
-    `cbrn-weapons-guidance` concern without duplication.
+    Behaviors are more specific than a Concern (one concern can manifest as
+    several distinct behaviors) but more semantic and high-level than
+    DetectionCues (which are textual signatures). Example: concern=
+    "AI leaks credentials", behaviors= ["AI tells user to email their password
+    to support", "AI tells user to commit credentials to git"].
 
-    Behaviors are one of four orthogonal detection methods a Concern
-    can use: UserTrigger (input-side probe seeds), DetectionCue
-    (output-side regex/semantic signatures), Behavior (HarmBench
-    classifier), concern_text (Chutes LLM judge full rubric). Each
-    fires independently; cross-method agreement is a calibration
-    signal and disagreement is an investigation signal.
-
-    Ingestion: HarmBench behaviors land with
-    source_ref='harmbench:<BehaviorID>' and active=False. Operator
-    activates individual behaviors via the /operator/behaviors/ UI.
+    One behavior can be shared across concerns via M2M. Only active=True
+    behaviors are sent to miners or used by the classifier.
     """
-    FUNCTIONAL_STANDARD = "standard"
-    FUNCTIONAL_CONTEXTUAL = "contextual"
-    FUNCTIONAL_COPYRIGHT = "copyright"
-    FUNCTIONAL_CHOICES = [
-        (FUNCTIONAL_STANDARD, "Standard (direct harmful request)"),
-        (FUNCTIONAL_CONTEXTUAL, "Contextual (requires context string)"),
-        (FUNCTIONAL_COPYRIGHT, "Copyright (verbatim reproduction)"),
-    ]
-
     concerns = models.ManyToManyField(
         "Concern",
         related_name="behaviors",
         blank=True,
-        help_text="Concerns this behavior contributes to. One behavior can belong to multiple concerns.",
+        help_text="Concerns this behavior contributes to.",
     )
     behavior_text = models.TextField(
-        help_text="Short declarative harm phrase used as the {behavior} input to the HarmBench classifier template.",
+        help_text="Declarative description of the specific AI behavior, e.g. 'The AI tells the user to commit their password to git.'",
     )
     source_ref = models.CharField(
         max_length=128,
         unique=True,
         db_index=True,
-        help_text="Provenance marker: 'harmbench:<BehaviorID>' or 'native:<slug>'. Unique for idempotent ingestion.",
-    )
-    context_string = models.TextField(
-        blank=True,
-        help_text="Populated for contextual-class behaviors; prepended to the prompt at dispatch time.",
-    )
-    functional_category = models.CharField(
-        max_length=16,
-        choices=FUNCTIONAL_CHOICES,
-        default=FUNCTIONAL_STANDARD,
-    )
-    semantic_category = models.CharField(
-        max_length=64,
-        blank=True,
-        db_index=True,
-        help_text="HarmBench SemanticCategory when sourced from HarmBench (chemical_biological, cybercrime_intrusion, etc.); free-form otherwise.",
+        help_text="Short slug identifier. Auto-generated if not provided.",
     )
     active = models.BooleanField(
-        default=False,
+        default=True,
         db_index=True,
-        help_text="Off by default on ingestion — operator opts individual behaviors in via the UI.",
+        help_text="Active behaviors are served to miners and used by the classifier.",
     )
     probe_count = models.PositiveIntegerField(
         default=0,
-        help_text="Incremented each time a miner probe targets or surfaces this behavior.",
+        help_text="Times a miner probe has targeted this behavior.",
     )
     fire_count = models.PositiveIntegerField(
         default=0,
-        help_text="Incremented when the HarmBench classifier returns 'yes' with high confidence against this behavior.",
+        help_text="Times the classifier returned yes for this behavior.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["semantic_category", "source_ref"]
+        ordering = ["source_ref"]
 
     def __str__(self) -> str:
         return self.source_ref
