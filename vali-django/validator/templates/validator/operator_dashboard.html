@@ -98,6 +98,24 @@
   </div>
 
   <div class="card">
+    <h4>Targets / Batch</h4>
+    <div class="value">{{ targets_per_batch }}</div>
+    <div class="sub">targets dispatched concurrently per cycle</div>
+    <div style="margin-top:8px;">
+      <input type="number" id="tpb-input" value="{{ targets_per_batch }}" min="0" max="20"
+             style="width:50px; background:#222; color:#ddd; border:1px solid #444;
+                    border-radius:3px; padding:2px 6px; margin-right:4px;">
+      <button class="chip success" style="cursor:pointer; border:none; padding:0.2rem 0.6rem;"
+              onclick="fetch('/control/targets-per-batch', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({value: parseInt(document.getElementById('tpb-input').value)})
+              }).then(r => r.ok ? location.reload() : r.text().then(t => alert('Failed: '+t)))">
+        Set
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
     <h4>Burn Floor</h4>
     <div class="value">
       {% if burn_share == 0 %}

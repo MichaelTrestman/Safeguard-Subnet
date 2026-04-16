@@ -56,7 +56,16 @@
       <tr>
         <th></th>
         {% for t in targets %}
-          <th><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></th>
+          <th>
+            <a href="{% url 'target_detail' t.name %}">{{ t.name }}</a>
+            <form method="post" action="{% url 'target_toggle_active' t.name %}" style="display:inline; margin-left:0.4rem;">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.path }}">
+              <button type="submit" style="font-size:0.65rem; padding:1px 5px; cursor:pointer; border-radius:3px; border:1px solid #555; background:{% if t.active %}#2a1a1a{% else %}#1a2a1a{% endif %}; color:{% if t.active %}#f88{% else %}#8f8{% endif %};">
+                {% if t.active %}pause{% else %}resume{% endif %}
+              </button>
+            </form>
+          </th>
         {% endfor %}
       </tr>
     </thead>

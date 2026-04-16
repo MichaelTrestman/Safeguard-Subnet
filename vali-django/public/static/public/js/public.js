@@ -52,6 +52,44 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Table pagination — any tbody[data-paginated] gets prev/next controls.
+    document.querySelectorAll('tbody[data-paginated]').forEach(tbody => {
+        const pageSize = parseInt(tbody.dataset.pageSize || '20', 10);
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        if (rows.length <= pageSize) return;  // no pagination needed
+
+        let page = 0;
+        const totalPages = Math.ceil(rows.length / pageSize);
+
+        function render() {
+            rows.forEach((r, i) => {
+                r.style.display = (i >= page * pageSize && i < (page + 1) * pageSize) ? '' : 'none';
+            });
+            info.textContent = `Rows ${page * pageSize + 1}–${Math.min((page + 1) * pageSize, rows.length)} of ${rows.length}`;
+            prev.disabled = page === 0;
+            next.disabled = page === totalPages - 1;
+        }
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'display:flex;align-items:center;gap:0.75rem;margin:0.5rem 0 1.5rem;font-size:0.8rem;color:#888;';
+
+        const prev = document.createElement('button');
+        prev.textContent = '← Prev';
+        prev.style.cssText = 'background:none;border:1px solid #444;color:#aaa;padding:2px 10px;cursor:pointer;border-radius:3px;';
+        prev.addEventListener('click', () => { page--; render(); });
+
+        const next = document.createElement('button');
+        next.textContent = 'Next →';
+        next.style.cssText = 'background:none;border:1px solid #444;color:#aaa;padding:2px 10px;cursor:pointer;border-radius:3px;';
+        next.addEventListener('click', () => { page++; render(); });
+
+        const info = document.createElement('span');
+
+        controls.append(prev, info, next);
+        tbody.closest('.compare-wrap').insertAdjacentElement('afterend', controls);
+        render();
+    });
+
     // Fetch recent activity feed for the landing-page embed (Phase 2).
     const feedTarget = document.getElementById('activity-feed-embed');
     if (!feedTarget) return;

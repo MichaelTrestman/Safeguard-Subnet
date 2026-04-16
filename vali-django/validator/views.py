@@ -726,6 +726,7 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
         },
         "nav_active": "operator",
         "probes_per_cycle": _get_probes_per_cycle(),
+        "targets_per_batch": _get_targets_per_batch(),
         "system_health": _get_system_health(),
     })
 
@@ -734,6 +735,14 @@ def _get_probes_per_cycle() -> int:
     try:
         from . import loop
         return loop.PROBES_PER_MINER_PER_CYCLE
+    except (ImportError, AttributeError):
+        return 1
+
+
+def _get_targets_per_batch() -> int:
+    try:
+        from . import loop
+        return loop.TARGETS_PER_BATCH
     except (ImportError, AttributeError):
         return 1
 
@@ -899,6 +908,20 @@ def _get_system_health() -> dict:
     from .models import Concern
     health["concerns_active"] = Concern.objects.filter(active=True).count()
     return health
+
+
+@staff_required
+def target_toggle_active(request: HttpRequest, name: str) -> HttpResponse:
+    """Toggle RegisteredTarget.active. POST only."""
+    from .models import RegisteredTarget
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    target = get_object_or_404(RegisteredTarget, name=name)
+    target.active = not target.active
+    target.save(update_fields=["active"])
+    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "targets_compare"
+    from django.shortcuts import redirect
+    return redirect(next_url)
 
 
 @staff_required
@@ -1138,6 +1161,23 @@ def control_probes_per_cycle(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "value must be >= 1"}, status=400)
     _loop.PROBES_PER_MINER_PER_CYCLE = new_val
     return JsonResponse({"status": "ok", "probes_per_miner_per_cycle": new_val})
+
+
+@staff_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def control_targets_per_batch(request: HttpRequest) -> JsonResponse:
+    """Update TARGETS_PER_BATCH at runtime without restarting.
+    Controls how many targets are dispatched concurrently per loop tick.
+    Immediately affects the next dispatch tick."""
+    from . import loop as _loop
+    import json as _json
+    body = _json.loads(request.body or b"{}")
+    new_val = int(body.get("value", 1))
+    if new_val < 0:
+        return JsonResponse({"error": "value must be >= 0"}, status=400)
+    _loop.TARGETS_PER_BATCH = new_val
+    return JsonResponse({"status": "ok", "targets_per_batch": new_val})
 
 
 # --- Health -------------------------------------------------------------

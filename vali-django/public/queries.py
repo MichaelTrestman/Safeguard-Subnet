@@ -927,11 +927,7 @@ def get_behavior_target_heatmap() -> tuple[List[str], List[PublicBehaviorHeatmap
             "n_detected": row["n_detected"],
         }
 
-    # Only include behaviors with at least one detection anywhere.
-    behaviors = sorted(
-        bt for bt, by_target in nested.items()
-        if any(d["n_detected"] > 0 for d in by_target.values())
-    )
+    behaviors = sorted(nested.keys())
 
     rows: List[PublicBehaviorHeatmapRow] = []
     for bt in behaviors:

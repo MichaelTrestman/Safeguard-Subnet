@@ -101,7 +101,7 @@
                     {% for tn in target_names %}<th>{{ tn }}</th>{% endfor %}
                 </tr>
             </thead>
-            <tbody>
+            <tbody data-paginated="true" data-page-size="20">
                 {% for row in heatmap %}
                 <tr>
                     <td class="metric-label">
@@ -143,7 +143,7 @@
                     {% for tn in target_names %}<th>{{ tn }}</th>{% endfor %}
                 </tr>
             </thead>
-            <tbody>
+            <tbody data-paginated="true" data-page-size="20">
                 {% for row in behavior_heatmap %}
                 <tr>
                     <td class="metric-label" style="min-width:280px; white-space:normal;">{{ row.behavior_text }}</td>

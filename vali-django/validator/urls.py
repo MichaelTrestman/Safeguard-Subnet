@@ -12,11 +12,13 @@ urlpatterns = [
     path("operator/", views.operator_dashboard, name="operator_dashboard"),
     path("targets/compare/", views.targets_compare, name="targets_compare"),
     path("targets/<str:name>/profile/", views.target_consistency_profile, name="target_consistency_profile"),
+    path("targets/<str:name>/toggle-active/", views.target_toggle_active, name="target_toggle_active"),
     path("targets/<str:name>/", views.target_detail, name="target_detail"),
     path("eval/<str:task_id>/", views.eval_detail, name="eval_detail"),
     path("runs/", views.runs_browser, name="runs_browser"),
     path("findings/", views.findings_browser, name="findings_browser"),
     path("control/probes-per-cycle", views.control_probes_per_cycle, name="control_probes_per_cycle"),
+    path("control/targets-per-batch", views.control_targets_per_batch, name="control_targets_per_batch"),
 
     # Customer dashboard (customer login)
     path("dashboard/", views.customer_dashboard, name="customer_dashboard"),

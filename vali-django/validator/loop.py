@@ -96,6 +96,12 @@ MAX_PROBE_CONCURRENCY = int(os.getenv("MAX_PROBE_CONCURRENCY", "8"))
 # scales ~linearly with total returned probes).
 PROBES_PER_MINER_PER_CYCLE = int(os.getenv("PROBES_PER_MINER_PER_CYCLE", "1"))
 
+# Number of targets to dispatch concurrently per loop tick. Each batch
+# is gathered in parallel (sharing MAX_PROBE_CONCURRENCY slots), then
+# persisted and audited before the next batch. Default 1 preserves
+# existing behaviour. Raise via /control/targets-per-batch at runtime.
+TARGETS_PER_BATCH = int(os.getenv("TARGETS_PER_BATCH", "1"))
+
 # Sub-phase 2.8 — per-miner retry cooldown. After a failed dispatch
 # attempt, this many seconds must pass before we try the same miner
 # again. No retry cap — we retry indefinitely on this cadence until
@@ -2518,65 +2524,70 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                     no_targets_logged = False
                     no_miners_logged = False
 
-                # Round-robin target selection. target_index persists
-                # across iterations within this loop instance, so we
-                # actually rotate over time.
-                target = targets[target_index % len(targets)]
-                target_index += 1
+                # Batch round-robin target selection. Pick
+                # TARGETS_PER_BATCH targets starting at target_index,
+                # capped to len(targets) to avoid duplicates within a
+                # batch. target_index advances by the actual batch size.
+                batch_size = min(TARGETS_PER_BATCH, len(targets))
+                batch = [
+                    targets[(target_index + i) % len(targets)]
+                    for i in range(batch_size)
+                ]
+                target_index += batch_size
 
-                # How many of the discovered miners are still on cooldown
-                # this tick — operator visibility for the dashboard log.
                 n_skipped = len(probe_miners) - len(eligible_miners)
                 logger.info(
                     f"Block {current_block}: dispatching to "
                     f"{len(eligible_miners)} eligible miners "
                     f"× {PROBES_PER_MINER_PER_CYCLE} probes/miner "
                     f"(skipped={n_skipped} on cooldown/tempo) "
-                    f"target={target.name}"
+                    f"targets={[t.name for t in batch]}"
                 )
 
-                n_dispatched, results = await _dispatch_target_to_miners(
-                    wallet, target, eligible_miners, metagraph, semaphore,
-                )
-                n_responded = len(results)
+                # Dispatch all targets in the batch concurrently.
+                # All share the same semaphore so MAX_PROBE_CONCURRENCY
+                # caps total in-flight probes across the whole batch.
+                batch_outcomes = await asyncio.gather(*[
+                    _dispatch_target_to_miners(
+                        wallet, t, eligible_miners, metagraph, semaphore,
+                    )
+                    for t in batch
+                ])
+
+                total_n_dispatched = sum(n for n, _ in batch_outcomes)
+                total_n_responded = sum(len(r) for _, r in batch_outcomes)
                 logger.info(
-                    f"Block {current_block}: {n_responded}/{n_dispatched} "
-                    f"probes returned"
+                    f"Block {current_block}: {total_n_responded}/{total_n_dispatched} "
+                    f"probes returned across {batch_size} targets"
                 )
 
                 # ----- Sub-phase 2.8: write per-miner dispatch outcomes -----
-                # Success → updates BOTH last_successful_dispatch_block
-                # and last_dispatch_attempt_at, kicking the miner out of
-                # "owed" state until the next tempo. Failure → updates
-                # only last_dispatch_attempt_at, putting the miner on a
-                # 5-minute cooldown before the next retry.
-                success_uids = [r["uid"] for r in results]
+                all_success_uids = [
+                    r["uid"] for _, results in batch_outcomes for r in results
+                ]
                 attempted_uids = list(eligible_miners.keys())
                 await _record_dispatch_outcomes(
-                    current_block, success_uids, attempted_uids,
+                    current_block, all_success_uids, attempted_uids,
                 )
 
-                if results:
+                # ----- Sub-phase 2.4: persist + audit per target -----
+                # Targets are processed sequentially so Chutes audit
+                # calls don't burst. Within each target, results are
+                # also audited sequentially for the same reason.
+                n_audited = 0
+                n_findings = 0
+                n_hitl = 0
+                total_contribution = 0.0
+                for t, (_, results) in zip(batch, batch_outcomes):
+                    if not results:
+                        continue
                     n_persisted = await _persist_in_progress_evaluations(
-                        target.id, results, current_block,
+                        t.id, results, current_block,
                     )
                     logger.info(
-                        f"Persisted {n_persisted} in-progress Evaluation rows"
+                        f"Persisted {n_persisted} in-progress Evaluation rows "
+                        f"for {t.name}"
                     )
-
-                    # ----- Sub-phase 2.4: audit each Evaluation -----
-                    # Run the tiered LLM judge on each row in
-                    # sequence (not gather — Chutes rate-limits
-                    # concurrent requests from the same key).
-                    # Each audit is ~3-30s of blocking httpx in a
-                    # worker thread. The audit backfills the row
-                    # in place, creates a Finding if accepted
-                    # severity crosses the threshold, and creates
-                    # a HitlCase on large miner/audit disagreement.
-                    n_audited = 0
-                    n_findings = 0
-                    n_hitl = 0
-                    total_contribution = 0.0
                     for r in results:
                         summary = await _audit_one_evaluation(
                             r["task_id"], bait_library,
@@ -2591,11 +2602,11 @@ async def run_validator_loop(wallet, subtensor, metagraph, owner_uid, tempo) -> 
                             n_findings += 1
                         if summary.get("hitl_routed"):
                             n_hitl += 1
-                    logger.info(
-                        f"Audited {n_audited}/{len(results)} rows: "
-                        f"findings={n_findings} hitl={n_hitl} "
-                        f"total_contribution={total_contribution:.3f}"
-                    )
+                logger.info(
+                    f"Audited {n_audited}/{total_n_responded} rows: "
+                    f"findings={n_findings} hitl={n_hitl} "
+                    f"total_contribution={total_contribution:.3f}"
+                )
 
             # ----- Sub-work A.2: HITL dispatch (background) -----
             # Outbound wire to registered HITL miners. Runs as a
