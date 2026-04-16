@@ -640,6 +640,175 @@ class UserTrigger(models.Model):
         return f"{self.concern.id_slug}:trigger{self.id}[{self.kind}]"
 
 
+class Behavior(models.Model):
+    """A HarmBench-shaped atomic harm description, used as the {behavior}
+    field in the HarmBench fine-tuned classifier prompt template
+    (cais/HarmBench-Mistral-7b-val-cls).
+
+    Unlike UserTrigger and DetectionCue which are intrinsically
+    concern-scoped (a cue is a cue *for* a specific worry), Behaviors
+    are a general catalog: one atomic harm description can be
+    associated with multiple Concerns via M2M. That supports
+    cross-classification — e.g. a `dimethylmercury-synthesis` behavior
+    can live under both `harmbench-chemical-biological` and a native
+    `cbrn-weapons-guidance` concern without duplication.
+
+    Behaviors are one of four orthogonal detection methods a Concern
+    can use: UserTrigger (input-side probe seeds), DetectionCue
+    (output-side regex/semantic signatures), Behavior (HarmBench
+    classifier), concern_text (Chutes LLM judge full rubric). Each
+    fires independently; cross-method agreement is a calibration
+    signal and disagreement is an investigation signal.
+
+    Ingestion: HarmBench behaviors land with
+    source_ref='harmbench:<BehaviorID>' and active=False. Operator
+    activates individual behaviors via the /operator/behaviors/ UI.
+    """
+    FUNCTIONAL_STANDARD = "standard"
+    FUNCTIONAL_CONTEXTUAL = "contextual"
+    FUNCTIONAL_COPYRIGHT = "copyright"
+    FUNCTIONAL_CHOICES = [
+        (FUNCTIONAL_STANDARD, "Standard (direct harmful request)"),
+        (FUNCTIONAL_CONTEXTUAL, "Contextual (requires context string)"),
+        (FUNCTIONAL_COPYRIGHT, "Copyright (verbatim reproduction)"),
+    ]
+
+    concerns = models.ManyToManyField(
+        "Concern",
+        related_name="behaviors",
+        blank=True,
+        help_text="Concerns this behavior contributes to. One behavior can belong to multiple concerns.",
+    )
+    behavior_text = models.TextField(
+        help_text="Short declarative harm phrase used as the {behavior} input to the HarmBench classifier template.",
+    )
+    source_ref = models.CharField(
+        max_length=128,
+        unique=True,
+        db_index=True,
+        help_text="Provenance marker: 'harmbench:<BehaviorID>' or 'native:<slug>'. Unique for idempotent ingestion.",
+    )
+    context_string = models.TextField(
+        blank=True,
+        help_text="Populated for contextual-class behaviors; prepended to the prompt at dispatch time.",
+    )
+    functional_category = models.CharField(
+        max_length=16,
+        choices=FUNCTIONAL_CHOICES,
+        default=FUNCTIONAL_STANDARD,
+    )
+    semantic_category = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text="HarmBench SemanticCategory when sourced from HarmBench (chemical_biological, cybercrime_intrusion, etc.); free-form otherwise.",
+    )
+    active = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Off by default on ingestion — operator opts individual behaviors in via the UI.",
+    )
+    probe_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Incremented each time a miner probe targets or surfaces this behavior.",
+    )
+    fire_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Incremented when the HarmBench classifier returns 'yes' with high confidence against this behavior.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["semantic_category", "source_ref"]
+
+    def __str__(self) -> str:
+        return self.source_ref
+
+
+class BehaviorClassification(models.Model):
+    """A single HarmBench classifier result for one (Evaluation, Behavior) pair.
+
+    Append-only ledger: every classification (live Tier 0 or a later backfill
+    run) writes a new row. Severity decisions on the parent Evaluation
+    (audit_score, accepted_severity, findings_reward, contribution) are
+    NEVER mutated by HarmBench classification — disagreement between
+    HarmBench and the recorded Chutes audit is surfaced for operator review
+    via the existing CurationAction path, not resolved automatically.
+
+    One Evaluation has N rows, one per active Behavior on its Concern at
+    classification time. The unique_together constraint on
+    (evaluation, behavior, source) makes re-running a given source-mode
+    idempotent: the DB rejects duplicates, the batch writer catches the
+    IntegrityError and skips.
+
+    See safeguard-ops/notes/plan-2026-04-15-harmbench-backfill.md for the
+    full rationale behind the side-table approach vs. denormalized fields
+    on Evaluation.
+    """
+    SOURCE_LIVE = "live"
+    SOURCE_BACKFILL_INITIAL = "backfill-initial"
+    SOURCE_BACKFILL_OUTAGE = "backfill-outage"
+    SOURCE_BACKFILL_TARGETED = "backfill-targeted"
+    SOURCE_CHOICES = [
+        (SOURCE_LIVE, "Live audit"),
+        (SOURCE_BACKFILL_INITIAL, "Initial backfill"),
+        (SOURCE_BACKFILL_OUTAGE, "Outage recovery"),
+        (SOURCE_BACKFILL_TARGETED, "Targeted retarget"),
+    ]
+
+    evaluation = models.ForeignKey(
+        "Evaluation",
+        on_delete=models.CASCADE,
+        related_name="behavior_classifications",
+    )
+    behavior = models.ForeignKey(
+        "Behavior",
+        on_delete=models.PROTECT,
+        related_name="classifications",
+        help_text="PROTECT — deleting a Behavior doesn't erase historical scoring evidence.",
+    )
+    score = models.FloatField(
+        help_text="softmax(yes, no)[yes] — unsafe probability in [0.0, 1.0].",
+    )
+    confidence = models.FloatField(
+        help_text="max(score, 1-score) on success (in [0.5, 1.0]); 0.0 on stub.",
+    )
+    fallback_reason = models.CharField(
+        max_length=128,
+        blank=True,
+        db_index=True,
+        help_text="Empty on success. 'harmbench-stub:<reason>' on failure, mirroring the Chutes stub fingerprint pattern so rollup views can exclude both uniformly.",
+    )
+    source = models.CharField(
+        max_length=32,
+        choices=SOURCE_CHOICES,
+        db_index=True,
+    )
+    classifier_version = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="e.g. 'harmbench-mistral-7b-val-cls@<endpoint-id>'. Lets a future classifier swap coexist with HarmBench rows.",
+    )
+    scored_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-scored_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["evaluation", "behavior", "source"],
+                name="behaviorclassification_eval_behavior_source_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["evaluation", "-scored_at"]),
+            models.Index(fields=["behavior", "-scored_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Eval#{self.evaluation_id}×Behavior#{self.behavior_id}[{self.source}]={self.score:.2f}"
+
+
 # ---------------------------------------------------------------------------
 # Curation — validator operator review of findings
 # ---------------------------------------------------------------------------

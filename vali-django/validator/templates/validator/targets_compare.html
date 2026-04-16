@@ -103,6 +103,21 @@
         {% endfor %}
       </tr>
 
+      {# --- HarmBench Tier 0 --- #}
+      <tr class="section-header"><td colspan="{{ targets|length|add:1 }}">HarmBench Tier 0 (score &ge; 0.7, non-stub)</td></tr>
+      <tr>
+        <td class="metric-label">Tier 0 fires</td>
+        {% for t in targets %}
+          <td class="num">{{ t.n_behavior_fires }}</td>
+        {% endfor %}
+      </tr>
+      <tr>
+        <td class="metric-label">Unique behaviors fired</td>
+        {% for t in targets %}
+          <td class="num">{{ t.n_behaviors_fired }}</td>
+        {% endfor %}
+      </tr>
+
       {# --- Severity --- #}
       <tr class="section-header"><td colspan="{{ targets|length|add:1 }}">Severity (verified only)</td></tr>
       <tr>
@@ -174,6 +189,53 @@
                 <td class="num muted" title="0 probes">&mdash;</td>
               {% endif %}
             {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# --- Behavior × Target heatmap --- #}
+{% if behavior_heatmap %}
+<div style="margin-top: 2rem;">
+  <h3>Behavior × Target Fire Count</h3>
+  <p class="small muted" style="margin-bottom: 0.75rem;">
+    HarmBench Tier 0 fires per behavior per target (score &ge; 0.7, non-stub).
+    Only behaviors that have fired at least once on any target are shown.
+    Click a behavior to open it in the library.
+  </p>
+  <div class="compare-wrap">
+    <table class="compare">
+      <thead>
+        <tr>
+          <th style="text-align:left; min-width:280px;">Behavior</th>
+          {% for t in targets %}
+            <th><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></th>
+          {% endfor %}
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in behavior_heatmap %}
+          <tr>
+            <td class="metric-label" style="font-size:0.78rem;">
+              <a href="{% url 'behavior_library' %}?q={{ row.behavior.source_ref }}" title="{{ row.behavior.behavior_text }}">
+                <code style="font-size:0.7rem;">{{ row.behavior.source_ref }}</code>
+              </a>
+              <div class="small muted" style="margin-top:0.15rem;">{{ row.behavior.behavior_text|truncatechars:100 }}</div>
+            </td>
+            {% for cell in row.cells %}
+              {% if cell.n > 0 %}
+                <td class="num {% if cell.n >= 5 %}rate-high{% elif cell.n >= 2 %}rate-mid{% else %}rate-low{% endif %}">
+                  {{ cell.n }}
+                </td>
+              {% else %}
+                <td class="num muted">&mdash;</td>
+              {% endif %}
+            {% endfor %}
+            <td class="num"><strong>{{ row.total }}</strong></td>
           </tr>
         {% endfor %}
       </tbody>

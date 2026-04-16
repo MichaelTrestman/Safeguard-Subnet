@@ -23,6 +23,7 @@
     .ok { color: #44cc44; }
     .warn { color: #ffcc44; }
     .err { color: #ff4444; }
+    .disabled { color: #888; font-style: italic; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #222; }
     th { color: #888; font-size: 0.8rem; text-transform: uppercase; }
@@ -78,6 +79,7 @@
       <a href="{% url 'runs_browser' %}"{% if nav_active == 'runs' %} class="active"{% endif %}>Runs</a>
       <a href="{% url 'findings_browser' %}"{% if nav_active == 'findings' %} class="active"{% endif %}>Findings</a>
       <a href="{% url 'concern_library' %}"{% if nav_active == 'concerns' %} class="active"{% endif %}>Concerns</a>
+      <a href="{% url 'behavior_library' %}"{% if nav_active == 'behaviors' %} class="active"{% endif %}>Behaviors</a>
       <a href="{% url 'curation_queue' %}"{% if nav_active == 'curation' %} class="active"{% endif %}>Curation</a>
       <a href="{% url 'experiment_list' %}"{% if nav_active == 'experiments' %} class="active"{% endif %}>Experiments</a>
     {% elif user.is_authenticated %}

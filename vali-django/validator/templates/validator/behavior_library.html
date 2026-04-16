@@ -1,0 +1,118 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Behavior Library{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'behavior_library' %}">Behaviors</a></p>{% endblock %}
+{% block content %}
+
+<div class="card" style="border-left:3px solid #744;">
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
+    <strong>Behaviors</strong> are HarmBench-shaped atomic harm descriptions &mdash;
+    short declarative phrases used as the <code>{behavior}</code> input to the
+    HarmBench fine-tuned classifier. Unlike cues and triggers (which are
+    concern-scoped), behaviors are a general catalog that can be associated
+    with multiple concerns via many-to-many. Only behaviors that are
+    <strong>active=yes</strong> are served to miners via <code>/api/concerns</code> and
+    used by HarmBench Tier 0 classification.
+  </p>
+  <p style="color:#aaa;font-size:0.85rem;margin-bottom:0;">
+    Total: <strong>{{ total }}</strong> &middot; Active: <strong class="ok">{{ active_total }}</strong>
+    &middot; Inactive: <strong class="warn">{{ total|add:"-"|add:active_total }}</strong>
+  </p>
+</div>
+
+<div class="card">
+  <form method="get" style="display:grid;grid-template-columns:1fr 10rem 8rem 10rem 10rem 5rem;gap:0.5rem;align-items:end;">
+    <div>
+      <label style="color:#888;font-size:0.75rem;">Search behavior_text</label><br>
+      <input type="text" name="q" value="{{ q }}" placeholder="substring search" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div>
+      <label style="color:#888;font-size:0.75rem;">Semantic</label><br>
+      <select name="semantic" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;">
+        <option value="">(all)</option>
+        {% for s in all_semantic %}
+        <option value="{{ s }}" {% if s == semantic %}selected{% endif %}>{{ s|default:"(unspecified)" }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label style="color:#888;font-size:0.75rem;">Active</label><br>
+      <select name="active" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;">
+        <option value="" {% if active_arg == "" %}selected{% endif %}>(any)</option>
+        <option value="1" {% if active_arg == "1" %}selected{% endif %}>active only</option>
+        <option value="0" {% if active_arg == "0" %}selected{% endif %}>inactive only</option>
+      </select>
+    </div>
+    <div>
+      <label style="color:#888;font-size:0.75rem;">Source prefix</label><br>
+      <input type="text" name="source" value="{{ source }}" placeholder="e.g. harmbench" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div>
+      <label style="color:#888;font-size:0.75rem;">Concern (slug)</label><br>
+      <input type="text" name="concern" value="{{ concern_slug }}" placeholder="harmbench-copyright" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;width:100%;box-sizing:border-box;">
+    </div>
+    <div>
+      <button type="submit" style="background:#336;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Filter</button>
+    </div>
+  </form>
+</div>
+
+{% if not semantic_groups %}
+  <p style="color:#888;">No behaviors match the current filters.</p>
+{% endif %}
+
+{% for semantic, behaviors in semantic_groups.items %}
+<h3>{{ semantic }} ({{ behaviors|length }})</h3>
+<div class="card">
+<table>
+  <tr>
+    <th>Source ref</th>
+    <th>Behavior text</th>
+    <th>Func.</th>
+    <th>Concerns</th>
+    <th>Probes</th>
+    <th>Fires</th>
+    <th>Active</th>
+    <th>Action</th>
+  </tr>
+  {% for b in behaviors %}
+  <tr{% if not b.active %} style="opacity:0.55;"{% endif %}>
+    <td style="font-family:monospace;font-size:0.75rem;max-width:14rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ b.source_ref }}"><a href="{% url 'behavior_detail' b.id %}" style="color:#88f;">{{ b.source_ref }}</a></td>
+    <td style="font-size:0.82rem;max-width:36rem;">
+      {{ b.behavior_text }}
+      {% if b.context_string %}
+      <div style="color:#666;font-size:0.7rem;margin-top:0.15rem;"><em>context:</em> {{ b.context_string|truncatechars:80 }}</div>
+      {% endif %}
+    </td>
+    <td style="font-size:0.75rem;color:#888;">{{ b.functional_category }}</td>
+    <td style="font-size:0.75rem;">
+      {% for c in b.concerns.all %}
+        <a href="{% url 'concern_detail' c.id_slug %}" style="color:#88f;">{{ c.id_slug }}</a>{% if not forloop.last %}, {% endif %}
+      {% empty %}
+        <span style="color:#666;">&mdash;</span>
+      {% endfor %}
+    </td>
+    <td style="font-size:0.8rem;">{{ b.probe_count }}</td>
+    <td style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</td>
+    <td>{% if b.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</td>
+    <td style="white-space:nowrap;">
+      {% if b.active %}
+      <form method="post" action="{% url 'behavior_deactivate' b.id %}" style="display:inline;">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" style="background:#933;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Deactivate</button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'behavior_activate' b.id %}" style="display:inline;">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" style="background:#393;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Activate</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endfor %}
+
+{% endblock %}

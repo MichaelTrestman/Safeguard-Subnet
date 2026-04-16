@@ -184,6 +184,10 @@
     <td><span class="{{ system_health.llm_judge_status|default:'err' }}">{{ system_health.llm_judge }}</span></td>
   </tr>
   <tr>
+    <td>HarmBench Tier 0</td>
+    <td><span class="{{ system_health.harmbench_status|default:'disabled' }}">{{ system_health.harmbench }}</span></td>
+  </tr>
+  <tr>
     <td>Database</td>
     <td>{% if system_health.database == 'connected' %}<span class="ok">connected</span>{% else %}<span class="err">{{ system_health.database }}</span>{% endif %}</td>
   </tr>

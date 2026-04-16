@@ -170,6 +170,85 @@
   </form>
 </div>
 
+{# --- Behaviors panel (HarmBench integration) ---------------------- #}
+<h3>Behaviors</h3>
+<div class="card" style="border-left:3px solid #744;">
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
+    <strong>Behaviors</strong> are HarmBench-shaped atomic harm descriptions used
+    as the <code>{behavior}</code> input to the HarmBench Tier 0 classifier.
+    Unlike cues and triggers, behaviors are a general catalog shared across
+    concerns &mdash; same behavior can be associated with multiple concerns.
+    Only behaviors that are <strong>active=yes</strong> count for this concern's
+    Tier 0 classification or are served to miners via <code>/api/concerns</code>.
+  </p>
+  {% if concern.behaviors.all %}
+  <div style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Source ref</div><div>Behavior text</div><div>Func.</div><div>Pr.</div><div>Fire</div><div>Actions</div>
+  </div>
+  {% for b in concern.behaviors.all %}
+  <div{% if not b.active %} style="opacity:0.5;"{% endif %} style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;{% if not b.active %}opacity:0.5;{% endif %}">
+    <div style="font-family:monospace;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ b.source_ref }}">{{ b.source_ref }}</div>
+    <div style="font-size:0.8rem;">{{ b.behavior_text|truncatechars:160 }}</div>
+    <div style="font-size:0.7rem;color:#888;">{{ b.functional_category }}</div>
+    <div style="font-size:0.8rem;">{{ b.probe_count }}</div>
+    <div style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</div>
+    <div style="white-space:nowrap;display:flex;gap:0.25rem;">
+      {% if b.active %}
+      <form method="post" action="{% url 'behavior_deactivate' b.id %}" style="display:inline;">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}">
+        <button type="submit" style="background:#933;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;" title="Flip active=False (affects all concerns this behavior is in)">Off</button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'behavior_activate' b.id %}" style="display:inline;">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{% url 'concern_detail' concern.id_slug %}">
+        <button type="submit" style="background:#393;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;" title="Flip active=True (affects all concerns this behavior is in)">On</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{% url 'behavior_disassociate' concern.id_slug b.id %}" style="display:inline;" title="Remove from this concern only; behavior is preserved and other associations are kept.">
+        {% csrf_token %}
+        <button type="submit" style="background:#555;color:#fff;border:none;padding:0.2rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.65rem;">Remove</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:#666;font-size:0.85rem;">No behaviors associated with this concern yet.</p>
+  {% endif %}
+
+  <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Associate a Behavior</h4>
+  <form method="get" style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+    <input type="text" name="behavior_q" value="{{ behavior_q }}" placeholder="Search by text, semantic category, or source ref" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;flex:1;font-size:0.8rem;">
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Search</button>
+    {% if behavior_q %}<a href="?" style="color:#888;font-size:0.8rem;padding:0.4rem;">Clear</a>{% endif %}
+  </form>
+  {% if behavior_q %}
+    {% if behavior_search_results %}
+    <div style="border:1px solid #333;border-radius:4px;margin-bottom:0.5rem;">
+      {% for b in behavior_search_results %}
+      <div style="display:grid;grid-template-columns:10rem 1fr 5rem 6rem;gap:0.5rem;align-items:center;padding:0.35rem 0.6rem;border-bottom:1px solid #1a1a1a;{% if not b.active %}opacity:0.55;{% endif %}">
+        <div style="font-family:monospace;font-size:0.7rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888;" title="{{ b.source_ref }}">{{ b.source_ref }}</div>
+        <div style="font-size:0.8rem;">{{ b.behavior_text|truncatechars:120 }}</div>
+        <div style="font-size:0.7rem;color:#888;">{{ b.semantic_category }}</div>
+        <form method="post" action="{% url 'behavior_associate' concern.id_slug %}">
+          {% csrf_token %}
+          <input type="hidden" name="behavior_id" value="{{ b.id }}">
+          <input type="hidden" name="next" value="?behavior_q={{ behavior_q }}">
+          <button type="submit" style="background:#336;color:#fff;border:none;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.72rem;white-space:nowrap;">Associate</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:#666;font-size:0.85rem;">No unlinked behaviors match &ldquo;{{ behavior_q }}&rdquo;.</p>
+    {% endif %}
+  {% endif %}
+  <p style="color:#666;font-size:0.75rem;margin-top:0.3rem;">
+    <a href="{% url 'behavior_library' %}" style="color:#88f;">&rarr; Browse full behavior library</a>
+  </p>
+</div>
+
 {# --- Concerns v2: recent findings from this concern ---------------- #}
 <h3>Recent findings from this concern ({{ recent_findings|length }})</h3>
 <div class="card">

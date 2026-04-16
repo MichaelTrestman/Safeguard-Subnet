@@ -1720,6 +1720,29 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
             "provenance_turns_verified",
         ])
 
+        # HarmBench Tier 0 ledger rows — persist inside the same
+        # transaction as the Evaluation save so ledger state and audit
+        # state commit atomically. ignore_conflicts handles the
+        # (evaluation, behavior, source) unique constraint on retry.
+        hb_classifications = getattr(result, "harmbench_classifications", None) or []
+        if hb_classifications:
+            from .models import BehaviorClassification
+            BehaviorClassification.objects.bulk_create(
+                [
+                    BehaviorClassification(
+                        evaluation=eval_row,
+                        behavior_id=b.behavior_id,
+                        score=b.score,
+                        confidence=b.confidence,
+                        fallback_reason=b.fallback_reason,
+                        source=BehaviorClassification.SOURCE_LIVE,
+                        classifier_version=b.classifier_version,
+                    )
+                    for b in hb_classifications
+                ],
+                ignore_conflicts=True,
+            )
+
         # Finding row: one per Evaluation whose accepted_severity
         # crosses the threshold. The Finding model carries the
         # customer-facing fields; the Evaluation carries the full
@@ -2301,6 +2324,11 @@ async def acquire_resources():
     # until the first audit fires and triggers the lazy loader in audit.py.
     from . import audit
     audit._ensure_llm_judge()
+
+    # Preload HarmBench Tier 0 classifier config. Same rationale — surface
+    # real endpoint state on the dashboard from boot, not after the first
+    # audit. Stub-mode if HARMBENCH_HF_ENDPOINT / HARMBENCH_HF_TOKEN unset.
+    audit._ensure_harmbench_classifier()
 
     return wallet, subtensor, metagraph, owner_uid, tempo
 

@@ -47,6 +47,15 @@ urlpatterns = [
     path("concerns/triggers/<int:trigger_id>/edit/", views.trigger_edit, name="trigger_edit"),
     path("concerns/triggers/<int:trigger_id>/retire/", views.trigger_retire, name="trigger_retire"),
     path("concerns/triggers/<int:trigger_id>/activate/", views.trigger_activate, name="trigger_activate"),
+    # Behaviors (HarmBench integration). Library page + per-behavior toggles
+    # + per-concern M2M associate/disassociate. Declared BEFORE the concern
+    # <slug> catch-all so "behaviors" path segments route correctly.
+    path("behaviors/", views.behavior_library, name="behavior_library"),
+    path("behaviors/<int:pk>/", views.behavior_detail, name="behavior_detail"),
+    path("behaviors/<int:behavior_id>/activate/", views.behavior_activate, name="behavior_activate"),
+    path("behaviors/<int:behavior_id>/deactivate/", views.behavior_deactivate, name="behavior_deactivate"),
+    path("concerns/<str:concern_slug>/behaviors/associate/", views.behavior_associate, name="behavior_associate"),
+    path("concerns/<str:concern_slug>/behaviors/<int:behavior_id>/disassociate/", views.behavior_disassociate, name="behavior_disassociate"),
     path("concerns/<str:slug>/", views.concern_detail, name="concern_detail"),
     path("concerns/<str:slug>/edit/", views.concern_edit, name="concern_edit"),
     path("concerns/<str:slug>/retire/", views.concern_retire, name="concern_retire"),

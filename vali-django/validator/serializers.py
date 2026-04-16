@@ -54,6 +54,21 @@ def serialize_concern(concern) -> dict:
             }
             for t in concern.triggers.filter(active=True).order_by("id")
         ],
+        # HarmBench integration: active behaviors are atomic harm
+        # descriptions the miner can target individually or weave across
+        # in multi-turn probes. Same trust model as triggers — these are
+        # input-side curated signals miners can see; DetectionCues stay
+        # private.
+        "behaviors": [
+            {
+                "id": b.id,
+                "source_ref": b.source_ref,
+                "behavior_text": b.behavior_text,
+                "context_string": b.context_string,
+                "functional_category": b.functional_category,
+            }
+            for b in concern.behaviors.filter(active=True).order_by("id")
+        ],
         "related_concerns": list(
             concern.related_concerns.values_list("id_slug", flat=True)
         ),

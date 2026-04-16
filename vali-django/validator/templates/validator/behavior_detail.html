@@ -1,0 +1,110 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}Behavior &rarr; {{ behavior.source_ref }}{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'behavior_library' %}">Behaviors</a> &rarr; {{ behavior.source_ref }}</p>{% endblock %}
+{% block content %}
+
+<div class="grid">
+  <div class="card">
+    <h4>Source ref</h4>
+    <div class="value" style="font-size:0.85rem;font-family:monospace;">{{ behavior.source_ref }}</div>
+  </div>
+  <div class="card">
+    <h4>Semantic category</h4>
+    <div class="value" style="font-size:0.95rem;">{{ behavior.semantic_category|default:"—" }}</div>
+  </div>
+  <div class="card">
+    <h4>Functional type</h4>
+    <div class="value" style="font-size:0.95rem;">{{ behavior.functional_category }}</div>
+  </div>
+  <div class="card">
+    <h4>Active</h4>
+    <div class="value">{% if behavior.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
+  </div>
+  <div class="card">
+    <h4>Probe / Fire</h4>
+    <div class="value">{{ behavior.probe_count }} / {% if behavior.fire_count %}<strong class="ok">{{ behavior.fire_count }}</strong>{% else %}0{% endif %}</div>
+  </div>
+</div>
+
+<div class="card" style="border-left:3px solid #744;">
+  <h4 style="color:#888;font-size:0.8rem;">Behavior text</h4>
+  <p style="white-space:pre-wrap;margin:0;">{{ behavior.behavior_text }}</p>
+  {% if behavior.context_string %}
+  <h4 style="color:#888;font-size:0.8rem;margin-top:1rem;">Context string (contextual behaviors)</h4>
+  <p style="white-space:pre-wrap;margin:0;color:#aaa;">{{ behavior.context_string }}</p>
+  {% endif %}
+</div>
+
+<div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+  {% if behavior.active %}
+  <form method="post" action="{% url 'behavior_deactivate' behavior.id %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+    <button type="submit" style="background:#933;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Deactivate</button>
+  </form>
+  {% else %}
+  <form method="post" action="{% url 'behavior_activate' behavior.id %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+    <button type="submit" style="background:#393;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Activate</button>
+  </form>
+  {% endif %}
+</div>
+
+{# --- Linked concerns -------------------------------------------------- #}
+<h3>Linked Concerns ({{ behavior.concerns.count }})</h3>
+<div class="card" style="border-left:3px solid #474;">
+  {% if behavior.concerns.all %}
+  <div style="display:grid;grid-template-columns:1fr 8rem 5rem 8rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Concern</div><div>Category</div><div>Active</div><div>Action</div>
+  </div>
+  {% for c in behavior.concerns.all %}
+  <div style="display:grid;grid-template-columns:1fr 8rem 5rem 8rem;gap:0.4rem;align-items:center;padding:0.35rem 0.4rem;border-bottom:1px solid #1a1a1a;{% if not c.active %}opacity:0.5;{% endif %}">
+    <div><a href="{% url 'concern_detail' c.id_slug %}" style="color:#88f;">{{ c.id_slug }}</a>
+      {% if c.title %}<span style="color:#666;font-size:0.75rem;margin-left:0.3rem;">{{ c.title }}</span>{% endif %}
+    </div>
+    <div style="font-size:0.8rem;color:#888;">{{ c.category }}</div>
+    <div>{% if c.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
+    <form method="post" action="{% url 'behavior_disassociate' c.id_slug behavior.id %}">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}">
+      <button type="submit" style="background:#555;color:#fff;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.72rem;">Remove</button>
+    </form>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:#666;font-size:0.85rem;">Not linked to any concerns yet.</p>
+  {% endif %}
+
+  <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Link to a Concern</h4>
+  <form method="get" style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+    <input type="text" name="concern_q" value="{{ concern_q }}" placeholder="Search by slug, title, or category" style="background:#222;color:#fff;border:1px solid #444;padding:0.4rem;border-radius:4px;flex:1;font-size:0.8rem;">
+    <button type="submit" style="background:#336;color:#fff;border:none;padding:0.4rem 1rem;border-radius:4px;cursor:pointer;">Search</button>
+    {% if concern_q %}<a href="?" style="color:#888;font-size:0.8rem;padding:0.4rem;">Clear</a>{% endif %}
+  </form>
+  {% if concern_q %}
+    {% if concern_search_results %}
+    <div style="border:1px solid #333;border-radius:4px;margin-bottom:0.5rem;">
+      {% for c in concern_search_results %}
+      <div style="display:grid;grid-template-columns:1fr 8rem 5rem 8rem;gap:0.5rem;align-items:center;padding:0.35rem 0.6rem;border-bottom:1px solid #1a1a1a;{% if not c.active %}opacity:0.55;{% endif %}">
+        <div style="font-size:0.8rem;"><a href="{% url 'concern_detail' c.id_slug %}" style="color:#aaf;">{{ c.id_slug }}</a>
+          {% if c.title %}<span style="color:#666;font-size:0.75rem;margin-left:0.3rem;">{{ c.title }}</span>{% endif %}
+        </div>
+        <div style="font-size:0.75rem;color:#888;">{{ c.category }}</div>
+        <div style="font-size:0.75rem;">{% if c.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</div>
+        <form method="post" action="{% url 'behavior_associate' c.id_slug %}">
+          {% csrf_token %}
+          <input type="hidden" name="behavior_id" value="{{ behavior.id }}">
+          <input type="hidden" name="next" value="{% url 'behavior_detail' behavior.id %}?concern_q={{ concern_q }}">
+          <button type="submit" style="background:#336;color:#fff;border:none;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.72rem;">Link</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:#666;font-size:0.85rem;">No unlinked concerns match &ldquo;{{ concern_q }}&rdquo;.</p>
+    {% endif %}
+  {% endif %}
+</div>
+
+{% endblock %}

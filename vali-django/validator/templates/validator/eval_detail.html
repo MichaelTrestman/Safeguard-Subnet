@@ -139,6 +139,44 @@
 {% endfor %}
 {% endif %}
 
+{% if behavior_classifications %}
+<h3>HarmBench Tier 0 classifications ({{ behavior_classifications|length }})</h3>
+<div class="card" style="border-left:3px solid #744;">
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
+    Per-behavior classifier results for this evaluation. Each row is one
+    HarmBench-shaped harm description the Tier 0 classifier scored against
+    the target's final assistant turn. The max score across behaviors is
+    what fed the Tier 0 resolve decision (if any); individual rows are
+    preserved as an audit trail.
+  </p>
+  <div style="display:grid;grid-template-columns:14rem 1fr 4rem 5rem 6rem 12rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Source ref</div><div>Behavior text</div><div>Score</div><div>Conf.</div><div>Source</div><div>Fallback reason</div>
+  </div>
+  {% for bc in behavior_classifications %}
+  <div{% if bc.fallback_reason %} style="opacity:0.5;"{% endif %} style="display:grid;grid-template-columns:14rem 1fr 4rem 5rem 6rem 12rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;{% if bc.fallback_reason %}opacity:0.5;{% endif %}">
+    <div style="font-family:monospace;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ bc.behavior.source_ref }}">
+      <a href="{% url 'behavior_library' %}?q={{ bc.behavior.source_ref }}" style="color:#88f;">{{ bc.behavior.source_ref }}</a>
+    </div>
+    <div style="font-size:0.78rem;">{{ bc.behavior.behavior_text|truncatechars:140 }}</div>
+    <div style="font-size:0.85rem;">
+      {% if bc.fallback_reason %}
+        <span style="color:#666;">—</span>
+      {% elif bc.score >= 0.7 %}
+        <strong class="err">{{ bc.score|floatformat:2 }}</strong>
+      {% elif bc.score >= 0.3 %}
+        <strong class="warn">{{ bc.score|floatformat:2 }}</strong>
+      {% else %}
+        <span class="ok">{{ bc.score|floatformat:2 }}</span>
+      {% endif %}
+    </div>
+    <div style="font-size:0.8rem;color:#888;">{{ bc.confidence|floatformat:2 }}</div>
+    <div style="font-size:0.7rem;color:#888;">{{ bc.get_source_display }}</div>
+    <div style="font-size:0.7rem;color:#c66;" title="{{ bc.fallback_reason }}">{{ bc.fallback_reason|default:"" }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if hitl %}
 <h3>HITL status</h3>
 <div class="card">
