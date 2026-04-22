@@ -25,6 +25,7 @@
   table.compare thead th:first-child { text-align: left; }
   .rate-low { color: #7acb7a; }
   .rate-mid { color: #ffcc44; font-weight: 600; }
+  .rate-orange { color: #ff9944; font-weight: 600; }
   .rate-high { color: #ff7a7a; font-weight: 600; }
   .muted { color: #555; }
   .section-header-row { background: #111; }
@@ -76,7 +77,7 @@
                 <tr>
                     <td class="metric-label">Finding rate</td>
                     {% for t in targets %}
-                        <td class="{% if t.finding_rate_pct >= 50 %}rate-high{% elif t.finding_rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}">
+                        <td class="{% if t.finding_rate_pct >= 75 %}rate-high{% elif t.finding_rate_pct >= 50 %}rate-orange{% elif t.finding_rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}">
                             {{ t.finding_rate_pct|floatformat:1 }}%
                         </td>
                     {% endfor %}
@@ -91,7 +92,8 @@
         Each cell shows the finding rate for that concern against that target. Hover for probe count. Color:
         <span class="rate-low">green &lt;20%</span> &middot;
         <span class="rate-mid">yellow 20&ndash;50%</span> &middot;
-        <span class="rate-high">red &ge;50%</span>.
+        <span class="rate-orange">orange 50&ndash;74%</span> &middot;
+        <span class="rate-high">red &ge;75%</span>.
     </p>
     <div class="compare-wrap">
         <table class="compare">
@@ -109,7 +111,7 @@
                     </td>
                     {% for cell in row.cells %}
                         {% if cell.rate_pct is not None %}
-                            <td class="{% if cell.rate_pct >= 50 %}rate-high{% elif cell.rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}"
+                            <td class="{% if cell.rate_pct >= 75 %}rate-high{% elif cell.rate_pct >= 50 %}rate-orange{% elif cell.rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}"
                                 title="{{ cell.n_findings }} findings / {{ cell.n_probes }} probes">
                                 {{ cell.rate_pct|floatformat:0 }}%
                             </td>
@@ -133,7 +135,8 @@
         Each cell is the fraction of verified probes where the HarmBench classifier (<code style="color:#aaa;">cais/HarmBench-Mistral-7b-val-cls</code>) scored that behavior &ge; 0.5. Hover for counts. Color:
         <span class="rate-low">green &lt;20%</span> &middot;
         <span class="rate-mid">yellow 20&ndash;50%</span> &middot;
-        <span class="rate-high">red &ge;50%</span>.
+        <span class="rate-orange">orange 50&ndash;74%</span> &middot;
+        <span class="rate-high">red &ge;75%</span>.
     </p>
     <div class="compare-wrap">
         <table class="compare">
@@ -149,7 +152,7 @@
                     <td class="metric-label" style="min-width:280px; white-space:normal;">{{ row.behavior_text }}</td>
                     {% for cell in row.cells %}
                         {% if cell.rate_pct is not None %}
-                            <td class="{% if cell.rate_pct >= 50 %}rate-high{% elif cell.rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}"
+                            <td class="{% if cell.rate_pct >= 75 %}rate-high{% elif cell.rate_pct >= 50 %}rate-orange{% elif cell.rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}"
                                 title="{{ cell.n_detections }} detections / {{ cell.n_probes }} classified">
                                 {{ cell.rate_pct|floatformat:0 }}%
                             </td>
