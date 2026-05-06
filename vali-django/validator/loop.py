@@ -212,6 +212,7 @@ async def _send_probe_to_miner(
     category: str,
     concern_id_slug: str,
     client_hotkey: str = "",
+    subnet_type: str = "",
 ) -> dict | None:
     """POST one probe task to one miner's /probe endpoint, signed with
     Epistula. Returns the parsed response dict on success, None on any
@@ -254,6 +255,7 @@ async def _send_probe_to_miner(
         task_body["safeguard_relay_endpoint"] = relay_ep
         task_body["target_descriptor"] = {
             "client_validator_hotkey": client_hotkey,
+            "subnet_type": subnet_type,
         }
     body = json.dumps(task_body).encode()
     headers = create_epistula_headers(wallet, body)
@@ -353,6 +355,7 @@ async def _dispatch_target_to_miners(
                 client, wallet, endpoint, task_id,
                 target.relay_endpoint, category, concern_id_slug,
                 client_hotkey=target.client_hotkey,
+                subnet_type=target.subnet_type,
             )
             if response is None:
                 return None
@@ -1697,6 +1700,7 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
             bait_library=bait_library,
             session_id=session_id,
             concern_id_slug=concern_id_slug,
+            subnet_type=eval_row.target.subnet_type,
         )
 
     # Backfill + Finding + HitlCase in a single transaction so a
