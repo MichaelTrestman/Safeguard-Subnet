@@ -2,6 +2,12 @@
 {% block subtitle %}Behavior Library{% endblock %}
 {% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'behavior_library' %}">Behaviors</a></p>{% endblock %}
 {% block content %}
+<style>
+  .sort-link { color: #666; text-decoration: none; font-size: 0.78rem; }
+  .sort-link.active { color: #88f; font-weight: bold; }
+  .sort-link:hover { color: #aaf; }
+  .muted { color: #555; }
+</style>
 
 <div class="card" style="border-left:3px solid #744;">
   <p style="color:#aaa;font-size:0.85rem;margin-top:0;">
@@ -14,6 +20,7 @@
   <p style="color:#aaa;font-size:0.85rem;margin-bottom:0;">
     Total: <strong>{{ total }}</strong> &middot; Active: <strong class="ok">{{ active_total }}</strong>
     &middot; <a href="{% url 'behavior_create' %}" style="background:#336;color:#fff;padding:0.25rem 0.8rem;border-radius:4px;font-size:0.8rem;text-decoration:none;">+ New behavior</a>
+    &middot; <a href="{% url 'behavior_coverage' %}" style="color:#88f;font-size:0.8rem;">HarmBench coverage &rarr;</a>
   </p>
 </div>
 
@@ -44,14 +51,19 @@
 {% if not page.object_list %}
   <p style="color:#888;">No behaviors match the current filters. <a href="{% url 'behavior_create' %}">Create one.</a></p>
 {% else %}
+
+{# Sort link helper — preserves existing filters #}
+{% with base_qs="q="|add:q|add:"&active="|add:active_arg|add:"&concern="|add:concern_slug %}
 <div class="card">
+<div class="table-wrap">
 <table>
   <tr>
-    <th>Ref</th>
+    <th><a href="?{{ base_qs }}&sort=source_ref" class="sort-link{% if sort == 'source_ref' %} active{% endif %}">Ref{% if sort == 'source_ref' %} ↑{% endif %}</a></th>
     <th>Behavior text</th>
     <th>Concerns</th>
-    <th>Probes</th>
-    <th>Fires</th>
+    <th class="num"><a href="?{{ base_qs }}&sort=-probe_count" class="sort-link{% if sort == '-probe_count' %} active{% endif %}">Probes{% if sort == '-probe_count' %} ↓{% endif %}</a></th>
+    <th class="num"><a href="?{{ base_qs }}&sort=-fire_count" class="sort-link{% if sort == '-fire_count' %} active{% endif %}">Fires{% if sort == '-fire_count' %} ↓{% endif %}</a></th>
+    <th class="num"><a href="?{{ base_qs }}&sort=-fire_rate" class="sort-link{% if sort == '-fire_rate' %} active{% endif %}">Fire rate{% if sort == '-fire_rate' %} ↓{% endif %}</a></th>
     <th>Active</th>
     <th>Action</th>
   </tr>
@@ -66,8 +78,15 @@
         <span style="color:#666;">&mdash;</span>
       {% endfor %}
     </td>
-    <td style="font-size:0.8rem;">{{ b.probe_count }}</td>
-    <td style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</td>
+    <td class="num" style="font-size:0.8rem;">{{ b.probe_count }}</td>
+    <td class="num" style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</td>
+    <td class="num" style="font-size:0.8rem;">
+      {% if b.fire_rate is not None %}
+        <span class="{% if b.fire_rate >= 0.3 %}ok{% elif b.fire_rate >= 0.1 %}warn{% else %}muted{% endif %}">{{ b.fire_rate|floatformat:0 }}%</span>
+      {% else %}
+        <span style="color:#444;">&mdash;</span>
+      {% endif %}
+    </td>
     <td>{% if b.active %}<span class="ok">yes</span>{% else %}<span class="warn">no</span>{% endif %}</td>
     <td style="white-space:nowrap;">
       {% if b.active %}
@@ -88,18 +107,20 @@
   {% endfor %}
 </table>
 </div>
+</div>
 
 {% if page.has_other_pages %}
 <div style="display:flex;gap:0.5rem;margin-top:1rem;align-items:center;font-size:0.85rem;">
   {% if page.has_previous %}
-  <a href="?q={{ q }}&active={{ active_arg }}&concern={{ concern_slug }}&page={{ page.previous_page_number }}" style="background:#222;color:#88f;padding:0.3rem 0.7rem;border-radius:4px;">&larr; Prev</a>
+  <a href="?{{ base_qs }}&sort={{ sort }}&page={{ page.previous_page_number }}" style="background:#222;color:#88f;padding:0.3rem 0.7rem;border-radius:4px;">&larr; Prev</a>
   {% endif %}
   <span style="color:#888;">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
   {% if page.has_next %}
-  <a href="?q={{ q }}&active={{ active_arg }}&concern={{ concern_slug }}&page={{ page.next_page_number }}" style="background:#222;color:#88f;padding:0.3rem 0.7rem;border-radius:4px;">Next &rarr;</a>
+  <a href="?{{ base_qs }}&sort={{ sort }}&page={{ page.next_page_number }}" style="background:#222;color:#88f;padding:0.3rem 0.7rem;border-radius:4px;">Next &rarr;</a>
   {% endif %}
 </div>
 {% endif %}
+{% endwith %}
 {% endif %}
 
 {% endblock %}

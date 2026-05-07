@@ -1,0 +1,168 @@
+{% extends "validator/base.html" %}
+{% block subtitle %}HarmBench Coverage{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'behavior_library' %}">Behaviors</a> &rarr; <a href="{% url 'behavior_coverage' %}">Coverage</a></p>{% endblock %}
+{% block content %}
+
+<style>
+  .chip { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px;
+          font-size: 0.68rem; text-transform: uppercase; font-weight: bold; vertical-align: middle; }
+  .chip.firing  { background: #0a3a0a; color: #44cc44; }
+  .chip.active  { background: #1a2a3a; color: #6699cc; }
+  .chip.stubbing{ background: #3a3a0a; color: #cccc44; }
+  .chip.dark    { background: #222; color: #555; }
+  .filter-form  { background: #0e0e0e; border: 1px solid #222; padding: 0.75rem 1rem;
+                  border-radius: 4px; margin-bottom: 1rem; display: flex;
+                  flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+  .filter-form label { display: flex; flex-direction: column; font-size: 0.8rem;
+                       color: #aaa; gap: 0.2rem; }
+  .filter-form select { background: #1a1a1a; color: #ddd; border: 1px solid #333;
+                        padding: 0.3rem 0.5rem; border-radius: 3px; font-family: inherit;
+                        font-size: 0.85rem; min-width: 10rem; }
+  .filter-form button { background: #224; color: #cce; border: 1px solid #446;
+                        padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer;
+                        font-family: inherit; font-size: 0.85rem; }
+  .filter-form a.clear { color: #666; font-size: 0.8rem; text-decoration: underline;
+                         padding-bottom: 0.5rem; }
+  table.cov { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.cov th { text-align: left; padding: 0.5rem; border-bottom: 1px solid #333;
+                 color: #888; font-weight: normal; }
+  table.cov td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  table.cov tr:hover td { background: #141414; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .sort-link { color: #666; text-decoration: none; }
+  .sort-link.active { color: #88f; font-weight: bold; }
+  .sort-link:hover { color: #aaf; }
+</style>
+
+<p style="color:#888;font-size:0.85rem;margin-bottom:1.5rem;">
+  Per-behavior HarmBench Tier 0 classification stats over the last 24 hours.
+  <strong>Firing</strong> = score ≥ 0.5 with no stub.
+  <strong>Stubbing</strong> = &gt;50% of calls returned a harmbench-stub error.
+  <strong>Dark</strong> = zero probes in the window.
+</p>
+
+{# Summary cards #}
+<div class="grid" style="margin-bottom:1.5rem;">
+  <div class="card">
+    <h4>Active behaviors</h4>
+    <div class="value">{{ n_total }}</div>
+    <div class="sub">{{ n_with_probes }} probed in 24h &middot; {{ n_dark }} dark</div>
+  </div>
+  <div class="card">
+    <h4>Concerns covered</h4>
+    <div class="value">{{ n_concerns_covered }}</div>
+    <div class="sub">concerns with ≥1 active behavior</div>
+  </div>
+  <div class="card">
+    <h4>Firing behaviors</h4>
+    <div class="value {% if n_firing > 0 %}ok{% else %}muted{% endif %}">{{ n_firing }}</div>
+    <div class="sub">behaviors with ≥1 fire in 24h</div>
+  </div>
+  <div class="card">
+    <h4>Overall fire rate</h4>
+    <div class="value {% if overall_fire_rate and overall_fire_rate >= 10 %}ok{% elif overall_fire_rate %}warn{% else %}muted{% endif %}">
+      {% if overall_fire_rate is not None %}{{ overall_fire_rate|floatformat:1 }}%{% else %}&mdash;{% endif %}
+    </div>
+    <div class="sub">fires / clean probes (24h)</div>
+  </div>
+</div>
+
+{# Filter form #}
+{% with base_qs="concern="|add:concern_slug|add:"&status="|add:status_filter %}
+<form class="filter-form" method="get" action="">
+  <label>
+    Concern
+    <select name="concern">
+      <option value="">— any —</option>
+      {% for slug in all_concern_slugs %}
+        <option value="{{ slug }}"{% if concern_slug == slug %} selected{% endif %}>{{ slug }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Status
+    <select name="status">
+      <option value=""{% if status_filter == "" %} selected{% endif %}>— any —</option>
+      <option value="firing"{% if status_filter == "firing" %} selected{% endif %}>firing</option>
+      <option value="active"{% if status_filter == "active" %} selected{% endif %}>active (no fires)</option>
+      <option value="stubbing"{% if status_filter == "stubbing" %} selected{% endif %}>stubbing</option>
+      <option value="dark"{% if status_filter == "dark" %} selected{% endif %}>dark (no probes)</option>
+    </select>
+  </label>
+  <label>
+    Sort
+    <select name="sort">
+      <option value="probes_24h"{% if sort == "probes_24h" %} selected{% endif %}>probes 24h ↓</option>
+      <option value="fires_24h"{% if sort == "fires_24h" %} selected{% endif %}>fires 24h ↓</option>
+      <option value="fire_rate"{% if sort == "fire_rate" %} selected{% endif %}>fire rate ↓</option>
+      <option value="source_ref"{% if sort == "source_ref" %} selected{% endif %}>ref A–Z</option>
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+  {% if concern_slug or status_filter or sort != "probes_24h" %}
+    <a class="clear" href="{% url 'behavior_coverage' %}">Clear</a>
+  {% endif %}
+</form>
+
+{# Results #}
+<div style="color:#aaa;font-size:0.85rem;margin-bottom:0.75rem;">
+  <strong>{{ behaviors|length }}</strong> behavior{{ behaviors|length|pluralize }}
+  {% if concern_slug %} · concern: <code>{{ concern_slug }}</code>{% endif %}
+  {% if status_filter %} · status: {{ status_filter }}{% endif %}
+</div>
+
+{% if behaviors %}
+<div class="table-wrap">
+<table class="cov">
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>Behavior text</th>
+      <th>Concerns</th>
+      <th class="num">Probes 24h</th>
+      <th class="num">Fires 24h</th>
+      <th class="num">Fire rate</th>
+      <th class="num">Stubs 24h</th>
+      <th class="num">All-time fires</th>
+      <th>Last fired</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for b in behaviors %}
+    <tr>
+      <td><span class="chip {{ b.status }}">{{ b.status }}</span></td>
+      <td style="font-size:0.78rem;max-width:38rem;">
+        <a href="{% url 'behavior_detail' b.id %}" style="color:#ccc;text-decoration:none;">{{ b.behavior_text|truncatechars:110 }}</a>
+      </td>
+      <td style="font-size:0.72rem;">
+        {% for c in b.concerns.all %}
+          <a href="{% url 'concern_detail' c.id_slug %}" style="color:#88f;">{{ c.id_slug }}</a>{% if not forloop.last %}, {% endif %}
+        {% empty %}
+          <span style="color:#444;">&mdash;</span>
+        {% endfor %}
+      </td>
+      <td class="num">{{ b.probes_24h }}</td>
+      <td class="num">{% if b.fires_24h %}<strong class="ok">{{ b.fires_24h }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td class="num">
+        {% if b.fire_rate_pct is not None %}
+          <span class="{% if b.fire_rate_pct >= 30 %}ok{% elif b.fire_rate_pct >= 10 %}warn{% else %}muted{% endif %}">{{ b.fire_rate_pct|floatformat:1 }}%</span>
+        {% else %}
+          <span style="color:#444;">&mdash;</span>
+        {% endif %}
+      </td>
+      <td class="num">{% if b.stubs_24h %}<span class="warn">{{ b.stubs_24h }}</span>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td class="num">{{ b.fire_count }}</td>
+      <td style="font-size:0.75rem;color:#666;">
+        {% if b.last_fired %}{{ b.last_fired|date:"M d H:i" }}{% else %}&mdash;{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p style="color:#555;text-align:center;padding:2rem;">No behaviors match the current filters.</p>
+{% endif %}
+{% endwith %}
+
+{% endblock %}

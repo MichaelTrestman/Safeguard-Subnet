@@ -181,16 +181,19 @@
     Only <strong>active=yes</strong> behaviors are served to miners or used by
     the classifier.
   </p>
-  {% if concern.behaviors.all %}
-  <div style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;font-size:0.75rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
-    <div>Source ref</div><div>Behavior text</div><div>Func.</div><div>Pr.</div><div>Fire</div><div>Actions</div>
+  {% if linked_behaviors %}
+  <div style="display:grid;grid-template-columns:12rem 1fr 4rem 4rem 4rem 4rem 5rem 8rem;gap:0.4rem;align-items:center;font-size:0.72rem;color:#888;padding:0.2rem 0.4rem;border-bottom:1px solid #222;text-transform:uppercase;">
+    <div>Source ref</div><div>Behavior text</div><div title="All-time probe count">Probes</div><div title="All-time fire count">Fires</div><div title="Probes in last 24h">24h Pr.</div><div title="Fires in last 24h">24h Fire</div><div title="Stubs (classifier failure) in last 24h">24h Stub</div><div>Actions</div>
   </div>
-  {% for b in concern.behaviors.all %}
-  <div{% if not b.active %} style="opacity:0.5;"{% endif %} style="display:grid;grid-template-columns:12rem 1fr 5rem 3rem 3rem 8rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;{% if not b.active %}opacity:0.5;{% endif %}">
+  {% for b in linked_behaviors %}
+  <div{% if not b.active %} style="opacity:0.5;"{% endif %} style="display:grid;grid-template-columns:12rem 1fr 4rem 4rem 4rem 4rem 5rem 8rem;gap:0.4rem;align-items:center;padding:0.3rem 0.4rem;border-bottom:1px solid #1a1a1a;">
     <div style="font-family:monospace;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ b.source_ref }}">{{ b.source_ref }}</div>
     <div style="font-size:0.8rem;">{{ b.behavior_text|truncatechars:160 }}</div>
-    <div style="font-size:0.8rem;">{{ b.probe_count }}</div>
-    <div style="font-size:0.8rem;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</div>
+    <div style="font-size:0.8rem;text-align:right;">{{ b.probe_count }}</div>
+    <div style="font-size:0.8rem;text-align:right;">{% if b.fire_count %}<strong class="ok">{{ b.fire_count }}</strong>{% else %}<span style="color:#666;">0</span>{% endif %}</div>
+    <div style="font-size:0.8rem;text-align:right;">{{ b.probes_24h }}</div>
+    <div style="font-size:0.8rem;text-align:right;">{% if b.fires_24h %}<strong class="ok">{{ b.fires_24h }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</div>
+    <div style="font-size:0.8rem;text-align:right;">{% if b.stubs_24h %}<span class="warn">{{ b.stubs_24h }}</span>{% else %}<span style="color:#444;">0</span>{% endif %}</div>
     <div style="white-space:nowrap;display:flex;gap:0.25rem;">
       {% if b.active %}
       <form method="post" action="{% url 'behavior_deactivate' b.id %}" style="display:inline;" data-ajax>
@@ -216,6 +219,7 @@
   {% else %}
   <p style="color:#666;font-size:0.85rem;">No behaviors associated with this concern yet.</p>
   {% endif %}
+  {# end linked_behaviors block #}
 
   <h4 style="color:#888;font-size:0.75rem;margin-top:1rem;">Associate a Behavior</h4>
   <form method="get" data-ajax style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">

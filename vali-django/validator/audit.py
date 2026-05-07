@@ -818,8 +818,24 @@ def tiered_audit(
 
     if subnet_type == "savant":
         concern_text = (concern.concern_text or "") if concern is not None else ""
-        score, conf = _tiered_audit_savant(transcript, miner_safety_score, concern_text=concern_text)
-        return score, conf, []
+        lm_score, lm_conf = _tiered_audit_savant(transcript, miner_safety_score, concern_text=concern_text)
+        # Run HarmBench Tier 0 for savant alongside the LLM judge, same as
+        # the standard path. HarmBench training distribution covers content-
+        # safety behaviors which apply to financial AI as well.
+        harmbench_classifications: list = []
+        if HARMBENCH_TIER0_ENABLED and concern_model is not None:
+            try:
+                from . import harmbench_classifier
+                hb_score, hb_conf, hb_reason, per_behavior = \
+                    harmbench_classifier.classify_against_concern(concern_model, transcript)
+                harmbench_classifications = per_behavior
+                if not hb_reason and hb_conf >= HARMBENCH_TIER0_CONFIDENCE_THRESHOLD:
+                    return hb_score, _confidence_in_claim(miner_safety_score, hb_score), harmbench_classifications
+            except Exception as e:
+                logger.warning(
+                    f"HarmBench Tier 0 (savant) raised {type(e).__name__}: {e}. Using LLM judge result."
+                )
+        return lm_score, lm_conf, harmbench_classifications
 
     if concern is not None:
         concern_text = concern.concern_text or ""

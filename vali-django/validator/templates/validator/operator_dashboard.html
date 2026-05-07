@@ -224,7 +224,7 @@
 {% if targets %}
 <div class="table-wrap">
 <table>
-  <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th class="num">Evals</th><th class="num">Findings</th><th class="num">Rate</th><th>Registered</th></tr>
+  <tr><th>Name</th><th>Client hotkey</th><th>Relay</th><th class="num">Evals</th><th class="num">Findings</th><th class="num">Rate</th><th class="num">24h probes</th><th class="num">24h verified</th><th>Registered</th></tr>
   {% for t in targets %}
   <tr>
     <td><a href="{% url 'target_detail' t.name %}">{{ t.name }}</a></td>
@@ -233,6 +233,16 @@
     <td class="num">{{ t.n_evals }}</td>
     <td class="num">{{ t.n_findings }}</td>
     <td class="num {% if t.finding_rate >= 50 %}err{% elif t.finding_rate >= 20 %}warn{% else %}ok{% endif %}">{{ t.finding_rate|floatformat:1 }}%</td>
+    <td class="num">{{ t.probes_24h }}</td>
+    <td class="num">
+      {% if t.verification_rate_24h is not None %}
+        <span class="{% if t.verification_rate_24h >= 80 %}ok{% elif t.verification_rate_24h >= 40 %}warn{% else %}err{% endif %}">
+          {{ t.verified_24h }}/{{ t.probes_24h }} ({{ t.verification_rate_24h|floatformat:0 }}%)
+        </span>
+      {% else %}
+        <span style="color:#444;">&mdash;</span>
+      {% endif %}
+    </td>
     <td>{{ t.registered_at|date:"Y-m-d H:i" }}</td>
   </tr>
   {% endfor %}

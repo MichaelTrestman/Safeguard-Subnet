@@ -1,48 +1,165 @@
 {% extends "validator/base.html" %}
 {% block subtitle %}Concern Library{% endblock %}
-{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a>{% if filter_arg %} &rarr; filter: {{ filter_arg }}{% endif %}</p>{% endblock %}
+{% block nav %}<p><a href="{% url 'operator_dashboard' %}">Operator</a> &rarr; <a href="{% url 'concern_library' %}">Concerns</a>{% if filter_arg %} &rarr; {{ filter_arg }}{% endif %}</p>{% endblock %}
 {% block content %}
-<p>
-  <a href="{% url 'concern_create' %}" style="background:#336;color:#fff;padding:0.4rem 1rem;border-radius:4px;display:inline-block;">+ Add Concern</a>
-  &nbsp;
-  <a href="{% url 'concern_library' %}" style="color:#88f;">all</a>
-  &middot;
-  <a href="{% url 'concern_library' %}?filter=pending-customer" style="color:#88f;">pending-customer</a>
-</p>
 
-{% for category, concerns in categories.items %}
-<h3>{{ category }} ({{ concerns|length }})</h3>
-<table>
-  <tr>
-    <th>ID</th>
-    <th>Title</th>
-    <th>Version</th>
-    <th>Prior</th>
-    <th>Active</th>
-    <th title="Detection cues">Cues</th>
-    <th title="User triggers">Triggers</th>
-    <th title="Total cue hits across all cues on this concern">Hits</th>
-    <th>Updated</th>
-  </tr>
-  {% for c in concerns %}
-  <tr>
-    <td><a href="{% url 'concern_detail' c.id_slug %}"><code>{{ c.id_slug }}</code></a></td>
-    <td>{{ c.title }}</td>
-    <td>v{{ c.version }}</td>
-    <td>{{ c.severity_prior }}</td>
-    <td>{% if c.active %}<span class="ok">active</span>{% else %}<span class="warn">retired</span>{% endif %}</td>
-    <td>{{ c.n_cues }}</td>
-    <td>{{ c.n_triggers }}</td>
-    <td>
-      {% if c.total_hits %}
-        <strong>{{ c.total_hits }}</strong>
-      {% else %}
-        <span style="color:#666;">0</span>
-      {% endif %}
-    </td>
-    <td>{{ c.updated_at|date:"M d H:i" }}</td>
-  </tr>
+<style>
+  .filter-form { background: #0e0e0e; border: 1px solid #222; padding: 0.75rem 1rem;
+                 border-radius: 4px; margin-bottom: 1rem; display: flex;
+                 flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+  .filter-form label { display: flex; flex-direction: column; font-size: 0.8rem;
+                       color: #aaa; gap: 0.2rem; }
+  .filter-form select, .filter-form input[type="text"] {
+    background: #1a1a1a; color: #ddd; border: 1px solid #333; padding: 0.3rem 0.5rem;
+    border-radius: 3px; font-family: inherit; font-size: 0.85rem; min-width: 8rem; }
+  .filter-form .checkbox-wrap { flex-direction: row; align-items: center; gap: 0.4rem;
+                                padding-bottom: 0.4rem; }
+  .filter-form button { background: #224; color: #cce; border: 1px solid #446;
+                        padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer;
+                        font-family: inherit; font-size: 0.85rem; }
+  .filter-form button:hover { background: #335; }
+  .filter-form a.clear { color: #666; font-size: 0.8rem; text-decoration: underline;
+                         padding-bottom: 0.5rem; }
+  table.concern-tbl { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  table.concern-tbl th { text-align: left; padding: 0.5rem; border-bottom: 1px solid #333;
+                         color: #888; font-weight: normal; }
+  table.concern-tbl td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1a; }
+  table.concern-tbl tr:hover td { background: #141414; }
+  .sort-link { color: #666; text-decoration: none; font-size: 0.75rem; }
+  .sort-link.active { color: #88f; }
+</style>
+
+<div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1rem;">
+  <a href="{% url 'concern_create' %}" style="background:#336;color:#fff;padding:0.4rem 1rem;border-radius:4px;text-decoration:none;font-size:0.85rem;">+ Add Concern</a>
+  <a href="{% url 'concern_library' %}?filter=pending-customer" style="color:#88f;font-size:0.85rem;">pending-customer</a>
+</div>
+
+<form class="filter-form" method="get" action="">
+  <label>
+    Search
+    <input type="text" name="q" value="{{ q }}" placeholder="title, slug, or text">
+  </label>
+  <label>
+    Category
+    <select name="category">
+      <option value="">— any —</option>
+      {% for cat in all_categories %}
+        <option value="{{ cat }}"{% if category_arg == cat %} selected{% endif %}>{{ cat }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Active
+    <select name="active">
+      <option value=""{% if active_arg == "" %} selected{% endif %}>— any —</option>
+      <option value="1"{% if active_arg == "1" %} selected{% endif %}>active only</option>
+      <option value="0"{% if active_arg == "0" %} selected{% endif %}>retired only</option>
+    </select>
+  </label>
+  <label>
+    Sort
+    <select name="sort">
+      <option value="category"{% if sort_arg == "category" %} selected{% endif %}>category</option>
+      <option value="id_slug"{% if sort_arg == "id_slug" %} selected{% endif %}>slug</option>
+      <option value="updated_at"{% if sort_arg == "updated_at" %} selected{% endif %}>recently updated</option>
+      <option value="n_behaviors"{% if sort_arg == "n_behaviors" %} selected{% endif %}>most behaviors</option>
+    </select>
+  </label>
+  <label class="checkbox-wrap">
+    <input type="checkbox" name="has_behaviors" value="1"{% if has_behaviors_arg == "1" %} checked{% endif %}>
+    Has behaviors
+  </label>
+  <button type="submit">Filter</button>
+  {% if filters_active %}
+    <a class="clear" href="{% url 'concern_library' %}">Clear</a>
+  {% endif %}
+</form>
+
+{% if filters_active %}
+  {# Flat list when filters/sort active #}
+  {% if concern_list %}
+  <div style="color:#aaa;font-size:0.85rem;margin-bottom:0.75rem;">
+    <strong>{{ concern_list|length }}</strong> concern{{ concern_list|length|pluralize }} matching
+  </div>
+  <div class="table-wrap">
+  <table class="concern-tbl">
+    <thead>
+      <tr>
+        <th>Slug</th>
+        <th>Title</th>
+        <th>Category</th>
+        <th>v</th>
+        <th>Prior</th>
+        <th>Active</th>
+        <th class="num">Behaviors</th>
+        <th class="num">Cues</th>
+        <th class="num">Triggers</th>
+        <th class="num">Hits</th>
+        <th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for c in concern_list %}
+    <tr>
+      <td><a href="{% url 'concern_detail' c.id_slug %}" style="font-family:monospace;font-size:0.78rem;color:#88f;">{{ c.id_slug }}</a></td>
+      <td>{{ c.title }}</td>
+      <td style="font-size:0.75rem;color:#888;">{{ c.category }}</td>
+      <td style="font-size:0.75rem;color:#666;">{{ c.version }}</td>
+      <td class="num" style="font-size:0.75rem;">{{ c.severity_prior }}</td>
+      <td>{% if c.active %}<span class="ok">active</span>{% else %}<span class="warn">retired</span>{% endif %}</td>
+      <td class="num">{% if c.n_behaviors %}<strong>{{ c.n_behaviors }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td class="num">{{ c.n_cues }}</td>
+      <td class="num">{{ c.n_triggers }}</td>
+      <td class="num">{% if c.total_hits %}<strong>{{ c.total_hits }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td style="font-size:0.75rem;color:#666;">{{ c.updated_at|date:"M d H:i" }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="11" style="text-align:center;color:#555;padding:1rem;">No concerns match.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+{% else %}
+  {# Grouped by category when no filters #}
+  {% for category, concerns in grouped.items %}
+  <h3>{{ category }} <span style="color:#555;font-size:0.8rem;font-weight:normal;">({{ concerns|length }})</span></h3>
+  <div class="table-wrap">
+  <table class="concern-tbl">
+    <thead>
+      <tr>
+        <th>Slug</th>
+        <th>Title</th>
+        <th>v</th>
+        <th>Prior</th>
+        <th>Active</th>
+        <th class="num">Behaviors</th>
+        <th class="num">Cues</th>
+        <th class="num">Triggers</th>
+        <th class="num">Hits</th>
+        <th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for c in concerns %}
+    <tr>
+      <td><a href="{% url 'concern_detail' c.id_slug %}" style="font-family:monospace;font-size:0.78rem;color:#88f;">{{ c.id_slug }}</a></td>
+      <td>{{ c.title }}</td>
+      <td style="font-size:0.75rem;color:#666;">{{ c.version }}</td>
+      <td class="num" style="font-size:0.75rem;">{{ c.severity_prior }}</td>
+      <td>{% if c.active %}<span class="ok">active</span>{% else %}<span class="warn">retired</span>{% endif %}</td>
+      <td class="num">{% if c.n_behaviors %}<strong>{{ c.n_behaviors }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td class="num">{{ c.n_cues }}</td>
+      <td class="num">{{ c.n_triggers }}</td>
+      <td class="num">{% if c.total_hits %}<strong>{{ c.total_hits }}</strong>{% else %}<span style="color:#444;">0</span>{% endif %}</td>
+      <td style="font-size:0.75rem;color:#666;">{{ c.updated_at|date:"M d H:i" }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
   {% endfor %}
-</table>
-{% endfor %}
+{% endif %}
+
 {% endblock %}

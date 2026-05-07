@@ -15,7 +15,8 @@ import time
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Avg, Count, Max, Q, Sum
+from django.db.models import Avg, Case, Count, F, FloatField, Max, Q, Sum, Value, When
+from django.db.models.functions import Cast
 from functools import wraps
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -619,10 +620,17 @@ def operator_dashboard(request: HttpRequest) -> HttpResponse:
             filter=Q(evaluations__provenance_verified=True) & ~_stub_audit_q("evaluations__"),
         ),
     ).order_by("-registered_at")
-    # Per-target finding counts (need Finding traversal)
+    # Per-target finding counts + 24h provenance breakdown
+    cutoff_24h = djtz.now() - timedelta(hours=24)
     for t in targets:
         t.n_findings = _real_findings_qs().filter(evaluation__target=t).count()
         t.finding_rate = (t.n_findings / t.n_scored * 100) if t.n_scored else 0
+        evals_24h = Evaluation.objects.filter(target=t, timestamp__gte=cutoff_24h)
+        t.probes_24h = evals_24h.count()
+        t.verified_24h = evals_24h.filter(provenance_verified=True).count()
+        t.verification_rate_24h = (
+            t.verified_24h / t.probes_24h * 100 if t.probes_24h else None
+        )
 
     now = djtz.now()
     weight_age = None
@@ -1949,41 +1957,81 @@ def _curator_hotkey_for(request: HttpRequest) -> str:
 
 @staff_required
 def concern_library(request: HttpRequest) -> HttpResponse:
-    """List all Concern rows grouped by category.
+    """List all Concern rows with search, filter, and sort support.
 
-    Supports an optional ?filter=pending-customer query arg that
-    restricts to customer-authored concerns still awaiting
-    operator activation (active=False, curator_user is a
-    customer-profile holder). DESIGN.md §2 "customer-authored
-    concerns pass through validator curation before active".
+    Query params:
+      ?q=<text>            — search title, slug, concern_text
+      ?category=<cat>      — filter by category
+      ?active=1/0          — filter by active state
+      ?has_behaviors=1     — only concerns with linked active behaviors
+      ?sort=<field>        — category (default), id_slug, updated_at, n_behaviors
+      ?filter=pending-customer — legacy: customer-authored awaiting curation
     """
     from .models import Concern, CustomerProfile
-    # Concerns v2 — annotate each concern with the counts an operator
-    # needs at a glance: how many cues, how many triggers, and the
-    # total cue-hit count across all cues. Operators use the last
-    # number to tell "which concerns are actually producing findings"
-    # without clicking into each one.
+
+    q = request.GET.get("q", "").strip()
+    category_arg = request.GET.get("category", "")
+    active_arg = request.GET.get("active", "")
+    has_behaviors_arg = request.GET.get("has_behaviors", "")
+    sort_arg = request.GET.get("sort", "category")
+    filter_arg = request.GET.get("filter", "")
+
     qs = (
         Concern.objects
         .annotate(
+            n_behaviors=Count("behaviors", filter=Q(behaviors__active=True), distinct=True),
             n_cues=Count("cues", distinct=True),
             n_triggers=Count("triggers", distinct=True),
             total_hits=Sum("cues__hit_count"),
         )
-        .order_by("category", "id_slug")
     )
-    filter_arg = request.GET.get("filter", "")
-    if filter_arg == "pending-customer":
-        customer_user_ids = CustomerProfile.objects.values_list(
-            "user_id", flat=True,
-        )
-        qs = qs.filter(active=False, curator_user_id__in=list(customer_user_ids))
 
-    categories: dict[str, list] = {}
-    for c in qs:
-        categories.setdefault(c.category, []).append(c)
+    if filter_arg == "pending-customer":
+        customer_user_ids = CustomerProfile.objects.values_list("user_id", flat=True)
+        qs = qs.filter(active=False, curator_user_id__in=list(customer_user_ids))
+    if q:
+        qs = qs.filter(
+            Q(title__icontains=q) | Q(id_slug__icontains=q) | Q(concern_text__icontains=q)
+        )
+    if category_arg:
+        qs = qs.filter(category=category_arg)
+    if active_arg == "1":
+        qs = qs.filter(active=True)
+    elif active_arg == "0":
+        qs = qs.filter(active=False)
+    if has_behaviors_arg == "1":
+        qs = qs.filter(n_behaviors__gt=0)
+
+    order = {"category": ["category", "id_slug"], "id_slug": ["id_slug"],
+             "updated_at": ["-updated_at"], "n_behaviors": ["-n_behaviors", "id_slug"]}
+    qs = qs.order_by(*order.get(sort_arg, ["category", "id_slug"]))
+
+    all_categories = list(
+        Concern.objects.values_list("category", flat=True).distinct().order_by("category")
+    )
+
+    filters_active = bool(q or category_arg or active_arg or has_behaviors_arg
+                          or filter_arg or sort_arg not in ("", "category"))
+
+    if not filters_active:
+        grouped: dict[str, list] = {}
+        for c in qs:
+            grouped.setdefault(c.category, []).append(c)
+        concern_list = None
+    else:
+        grouped = None
+        concern_list = list(qs)
+
     return render(request, "validator/concern_library.html", {
-        "categories": categories,
+        "grouped": grouped,
+        "concern_list": concern_list,
+        "filters_active": filters_active,
+        "all_categories": all_categories,
+        "q": q,
+        "category_arg": category_arg,
+        "active_arg": active_arg,
+        "has_behaviors_arg": has_behaviors_arg,
+        "sort_arg": sort_arg,
         "filter_arg": filter_arg,
         "nav_active": "concerns",
     })
@@ -2008,9 +2056,32 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
         .prefetch_related("matched_cues")
         .order_by("-id")[:20]
     )
-    # Behavior associate picker — paginated browse + optional search filter.
+    # Linked behaviors annotated with 24h HarmBench classification stats.
     from django.core.paginator import Paginator
-    from django.db.models import Q
+    cutoff_24h = djtz.now() - timedelta(hours=24)
+    linked_behaviors = concern.behaviors.annotate(
+        probes_24h=Count(
+            "behaviorclassification",
+            filter=Q(behaviorclassification__scored_at__gte=cutoff_24h),
+        ),
+        fires_24h=Count(
+            "behaviorclassification",
+            filter=Q(
+                behaviorclassification__scored_at__gte=cutoff_24h,
+                behaviorclassification__score__gte=0.5,
+                behaviorclassification__fallback_reason="",
+            ),
+        ),
+        stubs_24h=Count(
+            "behaviorclassification",
+            filter=Q(
+                behaviorclassification__scored_at__gte=cutoff_24h,
+                behaviorclassification__fallback_reason__gt="",
+            ),
+        ),
+    ).order_by("source_ref")
+
+    # Behavior associate picker — paginated browse + optional search filter.
     behavior_q = request.GET.get("behavior_q", "").strip()
     already_linked = concern.behaviors.values_list("id", flat=True)
     unlinked_qs = Behavior.objects.exclude(id__in=already_linked).order_by("source_ref")
@@ -2028,6 +2099,7 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
         "all_other": all_other,
         "related_ids": related_ids,
         "recent_findings": recent_findings,
+        "linked_behaviors": linked_behaviors,
         "behavior_q": behavior_q,
         "behavior_page": behavior_page,
         "per_page": per_page,
@@ -2361,15 +2433,29 @@ def trigger_activate(request: HttpRequest, trigger_id: int) -> HttpResponse:
 def behavior_library(request: HttpRequest) -> HttpResponse:
     """List all Behavior rows.
 
-    Filters (query args):
-      ?active=1 / ?active=0   — filter by active state
-      ?concern=<slug>         — only behaviors associated with that concern
-      ?q=<substr>             — case-insensitive substring match on behavior_text
+    Filters:
+      ?active=1/0      — filter by active state
+      ?concern=<slug>  — only behaviors associated with that concern
+      ?q=<substr>      — substring match on behavior_text
+      ?sort=<field>    — source_ref (default), -probe_count, -fire_count,
+                         -fire_rate, -created_at
     """
     from django.core.paginator import Paginator
     from .models import Behavior
 
-    qs = Behavior.objects.prefetch_related("concerns").order_by("source_ref")
+    sort = request.GET.get("sort", "source_ref")
+
+    qs = Behavior.objects.prefetch_related("concerns").annotate(
+        fire_rate=Case(
+            When(
+                probe_count__gt=0,
+                then=Cast(F("fire_count"), output_field=FloatField())
+                     / Cast(F("probe_count"), output_field=FloatField()),
+            ),
+            default=Value(None),
+            output_field=FloatField(),
+        )
+    )
 
     active_arg = request.GET.get("active", "")
     if active_arg == "1":
@@ -2383,6 +2469,10 @@ def behavior_library(request: HttpRequest) -> HttpResponse:
     if q:
         qs = qs.filter(behavior_text__icontains=q)
 
+    valid_sorts = {"source_ref", "-probe_count", "-fire_count", "-fire_rate", "-created_at"}
+    order_by = sort if sort in valid_sorts else "source_ref"
+    qs = qs.order_by(order_by)
+
     total = Behavior.objects.count()
     active_total = Behavior.objects.filter(active=True).count()
 
@@ -2394,8 +2484,126 @@ def behavior_library(request: HttpRequest) -> HttpResponse:
         "active_arg": active_arg,
         "concern_slug": concern_slug,
         "q": q,
+        "sort": sort,
         "total": total,
         "active_total": active_total,
+        "nav_active": "behaviors",
+    })
+
+
+@staff_required
+def behavior_coverage(request: HttpRequest) -> HttpResponse:
+    """HarmBench pipeline health: per-behavior 24h classification stats.
+
+    Answers: is HarmBench actually firing? Which behaviors are producing
+    signal? Which concerns have zero coverage?
+
+    Query params:
+      ?concern=<slug>           — filter to behaviors linked to that concern
+      ?status=firing|stubbing|dark — firing (fire_rate>0), stubbing
+                                     (stub_rate>50%), dark (zero probes 24h)
+      ?sort=probes_24h|fires_24h|fire_rate|source_ref
+    """
+    from .models import Behavior, BehaviorClassification
+
+    cutoff_24h = djtz.now() - timedelta(hours=24)
+
+    concern_slug = request.GET.get("concern", "")
+    status_filter = request.GET.get("status", "")
+    sort = request.GET.get("sort", "probes_24h")
+
+    qs = Behavior.objects.filter(active=True).prefetch_related("concerns").annotate(
+        probes_24h=Count(
+            "behaviorclassification",
+            filter=Q(behaviorclassification__scored_at__gte=cutoff_24h),
+        ),
+        fires_24h=Count(
+            "behaviorclassification",
+            filter=Q(
+                behaviorclassification__scored_at__gte=cutoff_24h,
+                behaviorclassification__score__gte=0.5,
+                behaviorclassification__fallback_reason="",
+            ),
+        ),
+        stubs_24h=Count(
+            "behaviorclassification",
+            filter=Q(
+                behaviorclassification__scored_at__gte=cutoff_24h,
+                behaviorclassification__fallback_reason__gt="",
+            ),
+        ),
+        last_fired=Max(
+            "behaviorclassification__scored_at",
+            filter=Q(
+                behaviorclassification__fallback_reason="",
+                behaviorclassification__score__gte=0.5,
+            ),
+        ),
+    )
+
+    if concern_slug:
+        qs = qs.filter(concerns__id_slug=concern_slug).distinct()
+
+    valid_sorts = {"probes_24h", "fires_24h", "fire_rate", "source_ref"}
+    sort_col = sort if sort in valid_sorts else "probes_24h"
+    if sort_col == "fire_rate":
+        # Computed in Python below; sort DB by fires_24h as proxy then re-sort
+        qs = qs.order_by("-fires_24h", "-probes_24h", "source_ref")
+    elif sort_col == "source_ref":
+        qs = qs.order_by("source_ref")
+    else:
+        qs = qs.order_by(f"-{sort_col}", "source_ref")
+
+    behaviors = list(qs)
+    for b in behaviors:
+        clean = b.probes_24h - b.stubs_24h
+        b.fire_rate_pct = (b.fires_24h / clean * 100) if clean > 0 else None
+        stub_rate = (b.stubs_24h / b.probes_24h * 100) if b.probes_24h > 0 else 0
+        if b.probes_24h == 0:
+            b.status = "dark"
+        elif stub_rate > 50:
+            b.status = "stubbing"
+        elif b.fires_24h > 0:
+            b.status = "firing"
+        else:
+            b.status = "active"
+
+    if sort_col == "fire_rate":
+        behaviors.sort(key=lambda b: (b.fire_rate_pct is None, -(b.fire_rate_pct or 0)))
+
+    if status_filter:
+        behaviors = [b for b in behaviors if b.status == status_filter]
+
+    # Summary stats
+    n_total = len(behaviors)
+    n_with_probes = sum(1 for b in behaviors if b.probes_24h > 0)
+    n_firing = sum(1 for b in behaviors if b.fires_24h > 0)
+    n_dark = sum(1 for b in behaviors if b.probes_24h == 0)
+    all_fires = sum(b.fires_24h for b in behaviors)
+    all_clean = sum(b.probes_24h - b.stubs_24h for b in behaviors)
+    overall_fire_rate = (all_fires / all_clean * 100) if all_clean > 0 else None
+
+    from .models import Concern
+    n_concerns_covered = Concern.objects.filter(
+        active=True, behaviors__active=True
+    ).distinct().count()
+
+    all_concern_slugs = list(
+        Concern.objects.filter(active=True).values_list("id_slug", flat=True).order_by("id_slug")
+    )
+
+    return render(request, "validator/behavior_coverage.html", {
+        "behaviors": behaviors,
+        "concern_slug": concern_slug,
+        "status_filter": status_filter,
+        "sort": sort,
+        "n_total": n_total,
+        "n_with_probes": n_with_probes,
+        "n_firing": n_firing,
+        "n_dark": n_dark,
+        "overall_fire_rate": overall_fire_rate,
+        "n_concerns_covered": n_concerns_covered,
+        "all_concern_slugs": all_concern_slugs,
         "nav_active": "behaviors",
     })
 
