@@ -169,6 +169,18 @@ class Evaluation(models.Model):
     provenance_verified = models.BooleanField(null=True, blank=True, db_index=True)
     provenance_turns_verified = models.IntegerField(default=0)
 
+    # Reasoning fields — anchored arguments from each side of the audit.
+    # audit_reasoning: the validator judge's one-sentence justification for
+    #   its score. Populated from the LLM response's "reasoning" field when
+    #   the Tier 2 or Tier 1 judge fires. Empty string for Tier 0 (HarmBench)
+    #   exits and for legacy v1 rows.
+    # miner_rationale: the miner's argument for why this transcript demonstrates
+    #   the concern. Submitted by the miner alongside miner_safety_score.
+    #   Empty string for pre-rationale miners and for miners that don't submit
+    #   one. Named in DESIGN.md §3 "Miners mine findings that match concerns".
+    audit_reasoning = models.TextField(blank=True, default="")
+    miner_rationale = models.TextField(blank=True, default="")
+
 
 class Finding(models.Model):
     """A single accepted finding extracted from an Evaluation."""

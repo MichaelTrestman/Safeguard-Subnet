@@ -88,6 +88,26 @@
 <h3>Summary</h3>
 <div class="card"><p>{{ finding.summary|default:"No summary." }}</p></div>
 
+<h3>Reasoning</h3>
+<div class="grid">
+  <div class="card" style="border-left:3px solid #47a;">
+    <h4>Validator audit reasoning</h4>
+    {% if eval.audit_reasoning %}
+    <p style="margin:0;white-space:pre-wrap;">{{ eval.audit_reasoning }}</p>
+    {% else %}
+    <p style="margin:0;color:#666;">Not recorded (HarmBench Tier 0 exit, opsafety path, or pre-reasoning probe)</p>
+    {% endif %}
+  </div>
+  <div class="card" style="border-left:3px solid #474;">
+    <h4>Miner rationale</h4>
+    {% if eval.miner_rationale %}
+    <p style="margin:0;white-space:pre-wrap;">{{ eval.miner_rationale }}</p>
+    {% else %}
+    <p style="margin:0;color:#666;">Not submitted (pre-rationale miner build)</p>
+    {% endif %}
+  </div>
+</div>
+
 <h3>Transcript</h3>
 <div class="card">
 {% for turn in finding.evaluation.transcript %}

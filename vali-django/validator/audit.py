@@ -86,8 +86,8 @@ def _ensure_llm_judge():
             f"Could not import llm_judge_impl: {e}. "
             f"Audit will use (0.5, 0.0) stubs — NO real LLM scoring."
         )
-        classify_transcript = lambda transcript, **kw: (0.5, 0.0)
-        judge_transcript = lambda transcript, **kw: (0.5, 0.0)
+        classify_transcript = lambda transcript, **kw: (0.5, 0.0, "")
+        judge_transcript = lambda transcript, **kw: (0.5, 0.0, "")
         judge_bait_patterns = lambda transcript, patterns, **kw: 0
 
     # Opsafety functions — optional, only in llm_judge_impl if defined.
@@ -99,7 +99,7 @@ def _ensure_llm_judge():
         classify_opsafety_transcript = _cot
         judge_opsafety_transcript = _jot
     except (ImportError, AttributeError):
-        classify_opsafety_transcript = lambda transcript, model=None: (0.5, 0.0)
+        classify_opsafety_transcript = lambda transcript, model=None: (0.5, 0.0, "")
         judge_opsafety_transcript = lambda transcript, model=None: (0.5, 0.0, "NONE", [], "")
 
     # Code-safety functions — for subnet_type=code-agent targets.
@@ -581,6 +581,11 @@ class AuditResult:
     # transaction that writes the Evaluation. Empty when Tier 0 is
     # disabled or the concern has no active behaviors.
     harmbench_classifications: list = field(default_factory=list)
+    # One-sentence justification from the LLM judge that produced the
+    # audit_score. Populated from the judge's "reasoning" response field
+    # when Tier 1 or Tier 2 fires. Empty string for HarmBench Tier 0 exits,
+    # opsafety/codesafety/savant paths, and provenance-failure short-circuits.
+    audit_reasoning: str = ""
 
 
 def verify_transcript_provenance(
@@ -767,10 +772,10 @@ def tiered_audit(
     matched_cue_texts: list[str] | None = None,
     concern_model=None,
     subnet_type: str = "",
-) -> tuple[float, float, list]:
+) -> tuple[float, float, list, str]:
     """Run Tier 0 (HarmBench, when enabled + applicable), then Tier 1
     classifier, then Tier 2 judge if no earlier tier was confident
-    enough. Returns (audit_score, confidence_in_claim, harmbench_classifications).
+    enough. Returns (audit_score, confidence_in_claim, harmbench_classifications, audit_reasoning).
 
     Mirrors TieredValidator.audit() in safeguard/validator.py:624-674,
     but without the HITL escalation side-effect — the caller decides
@@ -808,17 +813,17 @@ def tiered_audit(
     pass the underlying ORM object.
     """
     if category == "operational-safety":
-        score, conf = _tiered_audit_opsafety(transcript, miner_safety_score)
-        return score, conf, []
+        score, conf, reasoning = _tiered_audit_opsafety(transcript, miner_safety_score)
+        return score, conf, [], reasoning
 
     if subnet_type == "code-agent":
         concern_text = (concern.concern_text or "") if concern is not None else ""
-        score, conf = _tiered_audit_codesafety(transcript, miner_safety_score, concern_text=concern_text)
-        return score, conf, []
+        score, conf, reasoning = _tiered_audit_codesafety(transcript, miner_safety_score, concern_text=concern_text)
+        return score, conf, [], reasoning
 
     if subnet_type == "savant":
         concern_text = (concern.concern_text or "") if concern is not None else ""
-        lm_score, lm_conf = _tiered_audit_savant(transcript, miner_safety_score, concern_text=concern_text)
+        lm_score, lm_conf, lm_reasoning = _tiered_audit_savant(transcript, miner_safety_score, concern_text=concern_text)
         # Run HarmBench Tier 0 for savant alongside the LLM judge, same as
         # the standard path. HarmBench training distribution covers content-
         # safety behaviors which apply to financial AI as well.
@@ -829,13 +834,11 @@ def tiered_audit(
                 hb_score, hb_conf, hb_reason, per_behavior = \
                     harmbench_classifier.classify_against_concern(concern_model, transcript)
                 harmbench_classifications = per_behavior
-                if not hb_reason and hb_conf >= HARMBENCH_TIER0_CONFIDENCE_THRESHOLD:
-                    return hb_score, _confidence_in_claim(miner_safety_score, hb_score), harmbench_classifications
             except Exception as e:
                 logger.warning(
                     f"HarmBench Tier 0 (savant) raised {type(e).__name__}: {e}. Using LLM judge result."
                 )
-        return lm_score, lm_conf, harmbench_classifications
+        return lm_score, lm_conf, harmbench_classifications, lm_reasoning
 
     if concern is not None:
         concern_text = concern.concern_text or ""
@@ -850,64 +853,55 @@ def tiered_audit(
             hb_score, hb_conf, hb_reason, per_behavior = \
                 harmbench_classifier.classify_against_concern(concern_model, transcript)
             harmbench_classifications = per_behavior
-            if not hb_reason and hb_conf >= HARMBENCH_TIER0_CONFIDENCE_THRESHOLD:
-                # Tier 0 resolved confidently. Ledger rows will still be
-                # persisted by the caller (loop.py) from
-                # harmbench_classifications; we're just short-circuiting
-                # the downstream Chutes call.
-                return hb_score, _confidence_in_claim(miner_safety_score, hb_score), harmbench_classifications
         except Exception as e:
-            # Tier 0 must never block the audit pipeline. Stub fingerprint
-            # rows are still persisted (if the classifier got that far
-            # before failing); the Chutes path takes over.
             logger.warning(
                 f"HarmBench Tier 0 raised {type(e).__name__}: {e}. Falling through to Chutes."
             )
 
-    t1_score, t1_conf = _classify_with_concern(transcript, concern_text)
+    t1_score, t1_conf, t1_reasoning = _classify_with_concern(transcript, concern_text)
     if t1_conf >= CLASSIFIER_THRESHOLD:
-        return t1_score, _confidence_in_claim(miner_safety_score, t1_score), harmbench_classifications
+        return t1_score, _confidence_in_claim(miner_safety_score, t1_score), harmbench_classifications, t1_reasoning
 
-    t2_score, t2_conf = _judge_with_concern(
+    t2_score, t2_conf, t2_reasoning = _judge_with_concern(
         transcript, concern_text, cue_texts=matched_cue_texts,
     )
     if t2_conf >= CLASSIFIER_THRESHOLD:
-        return t2_score, _confidence_in_claim(miner_safety_score, t2_score), harmbench_classifications
+        return t2_score, _confidence_in_claim(miner_safety_score, t2_score), harmbench_classifications, t2_reasoning
 
     pending_score = (t1_score + t2_score) / 2.0
-    return pending_score, _confidence_in_claim(miner_safety_score, pending_score), harmbench_classifications
+    return pending_score, _confidence_in_claim(miner_safety_score, pending_score), harmbench_classifications, t2_reasoning
 
 
 def _tiered_audit_opsafety(
     transcript: list[dict],
     miner_safety_score: float,
-) -> tuple[float, float]:
+) -> tuple[float, float, str]:
     """Operational-safety audit path: inverted rubric judges.
 
     HarmBench Tier 0 does NOT run here — HarmBench is trained on
     content-safety (harmful output), not operational-safety (things
     an AI agent shouldn't DO in tool-use contexts). Returns the
-    2-tuple; the caller wraps it in an empty harmbench list.
+    3-tuple; the caller wraps it in an empty harmbench list.
     """
     _ensure_llm_judge()
-    t1_score, t1_conf = classify_opsafety_transcript(transcript)
+    t1_score, t1_conf, t1_reasoning = classify_opsafety_transcript(transcript)
     if t1_conf >= CLASSIFIER_THRESHOLD:
-        return t1_score, _confidence_in_claim(miner_safety_score, t1_score)
+        return t1_score, _confidence_in_claim(miner_safety_score, t1_score), t1_reasoning
 
     t2_result = judge_opsafety_transcript(transcript)
-    t2_score, t2_conf = t2_result[0], t2_result[1]
+    t2_score, t2_conf, t2_reasoning = t2_result[0], t2_result[1], t2_result[4]
     if t2_conf >= CLASSIFIER_THRESHOLD:
-        return t2_score, _confidence_in_claim(miner_safety_score, t2_score)
+        return t2_score, _confidence_in_claim(miner_safety_score, t2_score), t2_reasoning
 
     pending_score = (t1_score + t2_score) / 2.0
-    return pending_score, _confidence_in_claim(miner_safety_score, pending_score)
+    return pending_score, _confidence_in_claim(miner_safety_score, pending_score), t2_reasoning
 
 
 def _tiered_audit_codesafety(
     transcript: list[dict],
     miner_safety_score: float,
     concern_text: str = "",
-) -> tuple[float, float]:
+) -> tuple[float, float, str]:
     """Code-safety audit path for subnet_type=code-agent targets.
 
     Evaluates the assistant's code output (diff/patch/fragment) for
@@ -918,27 +912,27 @@ def _tiered_audit_codesafety(
 
     HarmBench Tier 0 does NOT run here — HarmBench's training set is
     content-safety (harmful chat responses), not code-security.
-    Returns the 2-tuple; the caller wraps it in an empty harmbench list.
+    Returns the 3-tuple; the caller wraps it in an empty harmbench list.
     """
     _ensure_llm_judge()
-    t1_score, t1_conf = classify_codesafety_transcript(transcript)
+    t1_score, t1_conf, t1_reasoning = classify_codesafety_transcript(transcript)
     if t1_conf >= CLASSIFIER_THRESHOLD:
-        return t1_score, _confidence_in_claim(miner_safety_score, t1_score)
+        return t1_score, _confidence_in_claim(miner_safety_score, t1_score), t1_reasoning
 
     t2_result = judge_codesafety_transcript(transcript, concern_text=concern_text)
-    t2_score, t2_conf = t2_result[0], t2_result[1]
+    t2_score, t2_conf, t2_reasoning = t2_result[0], t2_result[1], t2_result[4]
     if t2_conf >= CLASSIFIER_THRESHOLD:
-        return t2_score, _confidence_in_claim(miner_safety_score, t2_score)
+        return t2_score, _confidence_in_claim(miner_safety_score, t2_score), t2_reasoning
 
     pending_score = (t1_score + t2_score) / 2.0
-    return pending_score, _confidence_in_claim(miner_safety_score, pending_score)
+    return pending_score, _confidence_in_claim(miner_safety_score, pending_score), t2_reasoning
 
 
 def _tiered_audit_savant(
     transcript: list[dict],
     miner_safety_score: float,
     concern_text: str = "",
-) -> tuple[float, float]:
+) -> tuple[float, float, str]:
     """Financial-AI safety audit path for subnet_type=savant targets.
 
     Evaluates Savant (tao.app analytics AI) transcripts for financial-AI
@@ -948,21 +942,21 @@ def _tiered_audit_savant(
     AI output, not generic harmful content.
 
     HarmBench Tier 0 does NOT run here — HarmBench is trained on generic
-    content-safety, not financial-AI safety. Returns the 2-tuple; the
+    content-safety, not financial-AI safety. Returns the 3-tuple; the
     caller wraps it in an empty harmbench list.
     """
     _ensure_llm_judge()
-    t1_score, t1_conf = classify_savant_transcript(transcript)
+    t1_score, t1_conf, t1_reasoning = classify_savant_transcript(transcript)
     if t1_conf >= CLASSIFIER_THRESHOLD:
-        return t1_score, _confidence_in_claim(miner_safety_score, t1_score)
+        return t1_score, _confidence_in_claim(miner_safety_score, t1_score), t1_reasoning
 
     t2_result = judge_savant_transcript(transcript, concern_text=concern_text)
-    t2_score, t2_conf = t2_result[0], t2_result[1]
+    t2_score, t2_conf, t2_reasoning = t2_result[0], t2_result[1], t2_result[4]
     if t2_conf >= CLASSIFIER_THRESHOLD:
-        return t2_score, _confidence_in_claim(miner_safety_score, t2_score)
+        return t2_score, _confidence_in_claim(miner_safety_score, t2_score), t2_reasoning
 
     pending_score = (t1_score + t2_score) / 2.0
-    return pending_score, _confidence_in_claim(miner_safety_score, pending_score)
+    return pending_score, _confidence_in_claim(miner_safety_score, pending_score), t2_reasoning
 
 
 def score_transcript(
@@ -1074,7 +1068,7 @@ def score_transcript(
     # plus the list of matched cue texts as positive-evidence
     # signatures. The 3rd return value is the list of BehaviorScore
     # dataclasses for persistence by the caller.
-    audit_score, confidence, harmbench_classifications = tiered_audit(
+    audit_score, confidence, harmbench_classifications, audit_reasoning = tiered_audit(
         transcript,
         miner_safety_score,
         category=category,
@@ -1174,6 +1168,7 @@ def score_transcript(
         provenance_turns_verified=provenance_turns_verified,
         matched_cue_ids=[c.id for c in matched_cue_entries],
         harmbench_classifications=harmbench_classifications,
+        audit_reasoning=audit_reasoning,
     )
 
 

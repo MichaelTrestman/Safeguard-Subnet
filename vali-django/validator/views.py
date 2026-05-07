@@ -2061,22 +2061,22 @@ def concern_detail(request: HttpRequest, slug: str) -> HttpResponse:
     cutoff_24h = djtz.now() - timedelta(hours=24)
     linked_behaviors = concern.behaviors.annotate(
         probes_24h=Count(
-            "behaviorclassification",
-            filter=Q(behaviorclassification__scored_at__gte=cutoff_24h),
+            "classifications",
+            filter=Q(classifications__scored_at__gte=cutoff_24h),
         ),
         fires_24h=Count(
-            "behaviorclassification",
+            "classifications",
             filter=Q(
-                behaviorclassification__scored_at__gte=cutoff_24h,
-                behaviorclassification__score__gte=0.5,
-                behaviorclassification__fallback_reason="",
+                classifications__scored_at__gte=cutoff_24h,
+                classifications__score__gte=0.5,
+                classifications__fallback_reason="",
             ),
         ),
         stubs_24h=Count(
-            "behaviorclassification",
+            "classifications",
             filter=Q(
-                behaviorclassification__scored_at__gte=cutoff_24h,
-                behaviorclassification__fallback_reason__gt="",
+                classifications__scored_at__gte=cutoff_24h,
+                classifications__fallback_reason__gt="",
             ),
         ),
     ).order_by("source_ref")

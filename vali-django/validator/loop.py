@@ -1717,6 +1717,7 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
         eval_row.hitl_routed = result.hitl_routed
         eval_row.provenance_verified = result.provenance_verified
         eval_row.provenance_turns_verified = result.provenance_turns_verified
+        eval_row.audit_reasoning = getattr(result, "audit_reasoning", "") or ""
         eval_row.save(update_fields=[
             "audit_score",
             "confidence_in_claim",
@@ -1728,6 +1729,7 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
             "hitl_routed",
             "provenance_verified",
             "provenance_turns_verified",
+            "audit_reasoning",
         ])
 
         # HarmBench Tier 0 ledger rows — persist inside the same
@@ -2042,6 +2044,7 @@ def _persist_in_progress_evaluations(
                     "miner_hotkey": r["hotkey"],
                     "category": r["category"],
                     "miner_safety_score": miner_safety_score,
+                    "miner_rationale": response.get("miner_rationale", "") or "",
                     "transcript": transcript,
                     "cycle_block_at_creation": cycle_block_at_creation,
                     "concern_id_slug": concern_id_slug,
