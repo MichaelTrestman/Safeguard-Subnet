@@ -168,7 +168,7 @@
           </td>
           <td>
             {% if e.provenance_verified is None %}
-              <span class="chip legacy">legacy</span>
+              <span class="chip legacy">unverified</span>
             {% elif e.provenance_verified %}
               <span class="chip verified">ok {{ e.provenance_turns_verified }}</span>
             {% else %}

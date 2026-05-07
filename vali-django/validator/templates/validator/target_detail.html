@@ -35,7 +35,7 @@
   <div class="card">
     <h4>Evaluations</h4>
     <div class="value">{{ stats.n_verified }}</div>
-    <div class="sub">verified &middot; {{ stats.n_legacy }} legacy &middot; {{ stats.n_evals }} total</div>
+    <div class="sub">verified &middot; {{ stats.n_legacy }} unverified &middot; {{ stats.n_evals }} total</div>
   </div>
 
   <div class="card">
@@ -150,7 +150,7 @@
           </td>
           <td>
             {% if e.provenance_verified is None %}
-              <span class="chip legacy">legacy</span>
+              <span class="chip legacy">unverified</span>
             {% elif e.provenance_verified %}
               <span class="chip verified">ok {{ e.provenance_turns_verified }}</span>
             {% else %}

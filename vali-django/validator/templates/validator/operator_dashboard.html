@@ -166,7 +166,7 @@
       {% endif %}
     </div>
     <div class="sub">
-      {{ prov_legacy }} legacy (no commitments) · {{ relay_sessions }} sessions · {{ relay_commitments }} commitments
+      {{ prov_legacy }} unverified (no commitments) · {{ relay_sessions }} sessions · {{ relay_commitments }} commitments
     </div>
   </div>
 </div>
@@ -359,7 +359,7 @@
     {% elif f.evaluation.provenance_verified == False %}
       <span class="chip fabricated">FABRICATED</span>
     {% else %}
-      <span class="chip legacy">LEGACY</span>
+      <span class="chip legacy">UNVERIFIED</span>
     {% endif %}
     <strong>{{ f.category }}</strong>
     · severity <strong>{{ f.severity|floatformat:3 }}</strong>

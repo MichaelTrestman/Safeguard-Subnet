@@ -237,7 +237,7 @@
     <div>
       {% if ts.provenance_verified %}<span class="chip verified">Provenance OK</span>
       {% elif ts.provenance_verified == False %}<span class="chip fabricated">Provenance Failed</span>
-      {% else %}<span class="chip legacy">Legacy</span>
+      {% else %}<span class="chip legacy">Unverified</span>
       {% endif %}
       <span class="small">contribution: {{ ts.contribution|floatformat:3 }}</span>
     </div>
