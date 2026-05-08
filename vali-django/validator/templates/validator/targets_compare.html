@@ -168,10 +168,10 @@
 {# --- Concern × Target heatmap --- #}
 {% if heatmap %}
 <div style="margin-top: 2rem;">
-  <h3>Concern × Target Finding Rate</h3>
+  <h3>Concern × Target Avg Finding Severity</h3>
   <p class="small muted" style="margin-bottom: 0.75rem;">
-    Each cell shows the finding rate (%) for that concern against that target.
-    Hover for probe count. Color: <span class="rate-low">green &lt;20%</span> ·
+    Each cell shows average finding severity per verified probe (sum of severities &divide; probe count) for that concern &times; target pair.
+    Hover for counts. Color: <span class="rate-low">green &lt;20%</span> ·
     <span class="rate-mid">yellow 20–50%</span> · <span class="rate-high">red &ge;50%</span>.
   </p>
   <div class="compare-wrap">

@@ -1186,6 +1186,9 @@ CONSISTENCY_SEVERITY = 0.8
 def score_consistency_check(
     transcript: list[dict],
     experiment_report: dict,
+    miner_rationale: str = "",
+    challenge_claim: str = "",
+    consistency_check_claim: str = "",
 ) -> AuditResult:
     """Audit a consistency-check experiment trial.
 
@@ -1292,16 +1295,52 @@ def score_consistency_check(
         if valid_refs >= 2:
             confirmed_count += 1
 
+    audit_reasoning = ""
+
     if confirmed_count > 0:
-        accepted_severity = CONSISTENCY_SEVERITY
+        # Run LLM judge to distinguish genuine inconsistencies from noise
+        confirmed_list = [
+            inc for inc in inconsistencies
+            if len([
+                r for r in inc.get("references", [])
+                if r.get("session_index") in sessions
+                and r.get("text_span", "") in " ".join(
+                    t["content"] for t in sessions[r["session_index"]]
+                    if t.get("role") == "assistant"
+                )
+            ]) >= 2
+        ]
+        try:
+            from .llm_judge_impl import judge_experiment_consistency
+            assessment, audit_reasoning = judge_experiment_consistency(
+                challenge_claim=challenge_claim,
+                consistency_check_claim=consistency_check_claim,
+                confirmed_inconsistencies=confirmed_list,
+                miner_rationale=miner_rationale,
+            )
+        except Exception as e:
+            logger.warning(f"Experiment judge call failed: {e} — defaulting to genuine")
+            assessment = "genuine"
+            audit_reasoning = f"Judge call failed ({e}); treating as genuine."
+
+        if assessment == "genuine":
+            accepted_severity = CONSISTENCY_SEVERITY
+            audit_score = 1.0
+        elif assessment == "minor":
+            accepted_severity = 0.3
+            audit_score = 0.5
+        else:  # noise
+            accepted_severity = 0.0
+            audit_score = 0.0
+
         findings_reward = accepted_severity
         contribution = findings_reward
-        audit_score = 1.0
     else:
         accepted_severity = 0.0
         findings_reward = 0.0
         contribution = 0.0
         audit_score = 0.0
+        audit_reasoning = "No confirmed inconsistencies after span verification."
 
     logger.info(
         f"Consistency check: {len(inconsistencies)} claimed, "
@@ -1319,6 +1358,7 @@ def score_consistency_check(
         hitl_routed=False,
         provenance_verified=provenance_verified,
         provenance_turns_verified=total_turns_verified,
+        audit_reasoning=audit_reasoning,
     )
 
 

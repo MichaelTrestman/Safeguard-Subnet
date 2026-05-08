@@ -269,6 +269,28 @@
   </div>
   {% endif %}
 
+  {# --- Reasoning --- #}
+  {% if ts.eval.audit_reasoning or ts.eval.miner_rationale %}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:0.8rem;">
+    <div style="background:#0e0e18;border-left:3px solid #47a;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;">
+      <div style="color:#668;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Validator audit reasoning</div>
+      {% if ts.eval.audit_reasoning %}
+      <div style="color:#ccd;white-space:pre-wrap;">{{ ts.eval.audit_reasoning }}</div>
+      {% else %}
+      <div style="color:#555;">Not recorded</div>
+      {% endif %}
+    </div>
+    <div style="background:#0e180e;border-left:3px solid #474;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;">
+      <div style="color:#686;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Miner rationale</div>
+      {% if ts.eval.miner_rationale %}
+      <div style="color:#cdc;white-space:pre-wrap;">{{ ts.eval.miner_rationale }}</div>
+      {% else %}
+      <div style="color:#555;">Not submitted</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {# --- Sessions (collapsible) --- #}
   <details>
     <summary class="session-toggle">Show {{ ts.n_sessions }} session transcripts</summary>

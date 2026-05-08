@@ -568,6 +568,7 @@ async def dispatch_experiment(
                     # v2: miner's structured claims (projection written
                     # in audit pipeline below)
                     extracted_claims=data.get("extracted_claims", []),
+                    miner_rationale=data.get("miner_rationale", "") or "",
                     cycle_block_at_creation=current_block,
                 )
 
@@ -1688,9 +1689,13 @@ def _audit_one_evaluation(task_id: str, bait_library) -> dict | None:
     # the consistency-check audit instead of the adversarial audit.
     if eval_row.experiment_id is not None:
         from .audit import score_consistency_check
+        exp = eval_row.experiment
         result = score_consistency_check(
             transcript=transcript,
             experiment_report=eval_row.experiment_report or {},
+            miner_rationale=eval_row.miner_rationale or "",
+            challenge_claim=exp.challenge_claim if exp else "",
+            consistency_check_claim=exp.consistency_check_claim if exp else "",
         )
     else:
         result = score_transcript(

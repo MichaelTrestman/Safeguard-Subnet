@@ -41,10 +41,10 @@
 <section class="fade-in">
     <h2 class="section-header solution">Multi-Variant Fuzz Testing</h2>
     <p class="safeguard-pitch">
-        The same concern catalog, the same probe miners, the same audit rubric &mdash; applied against different variants of a target service at the same time. The grid below shows how a minor prompt-engineering change to a service shifts its safety posture. Green cells hold up; red cells fail the probe.
+        The same concern catalog, the same probe miners, the same audit rubric &mdash; applied against different variants of a target service at the same time. The grid below shows how a minor prompt-engineering change to a service shifts its safety posture.
     </p>
     <p style="color: #888; font-size: 0.85rem; margin-bottom: 2rem;">
-        Finding rate is findings / verified probes per (concern, target). Legacy evaluations (no provenance commitment) and unverified rows are excluded.
+        Cells show <strong style="color:#aaa;">average finding severity per probe</strong> &mdash; sum of finding severities divided by verified probe count. Weights by harm: a rare critical finding scores higher than a frequent low-severity one. Legacy evaluations (no provenance commitment) and unverified rows are excluded.
     </p>
 
     {% if targets %}
@@ -75,7 +75,7 @@
                     {% endfor %}
                 </tr>
                 <tr>
-                    <td class="metric-label">Finding rate</td>
+                    <td class="metric-label">Avg finding severity</td>
                     {% for t in targets %}
                         <td class="{% if t.finding_rate_pct >= 75 %}rate-high{% elif t.finding_rate_pct >= 50 %}rate-orange{% elif t.finding_rate_pct >= 20 %}rate-mid{% else %}rate-low{% endif %}">
                             {{ t.finding_rate_pct|floatformat:1 }}%
@@ -87,9 +87,9 @@
     </div>
 
     {% if heatmap %}
-    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 2.5rem; margin-bottom: 0.5rem;">Concern &times; Target finding rate</h3>
+    <h3 style="color: var(--solution-color); font-family: 'Orbitron', sans-serif; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 2.5rem; margin-bottom: 0.5rem;">Concern &times; Target avg finding severity</h3>
     <p style="color: #888; font-size: 0.85rem; margin-bottom: 0.8rem;">
-        Each cell shows the finding rate for that concern against that target. Hover for probe count. Color:
+        Each cell shows average finding severity per verified probe for that concern &times; target pair (sum of severities &divide; probe count). Hover for counts. Color:
         <span class="rate-low">green &lt;20%</span> &middot;
         <span class="rate-mid">yellow 20&ndash;50%</span> &middot;
         <span class="rate-orange">orange 50&ndash;74%</span> &middot;
@@ -170,6 +170,81 @@
     <p style="color: #666; font-size: 0.8rem; margin-top: 2.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
         Per-finding detail, miner attribution, and full transcripts are operator-only. The aggregates above are computed from verified probes only &mdash; legacy evaluations without provenance commitments are excluded.
     </p>
+
+{% if user.is_staff %}
+<div style="margin-top:3rem;border-top:2px solid #333;padding-top:1.5rem;">
+  <h3 style="color:#888;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:1.5rem;">Stats visibility &mdash; staff only</h3>
+
+  <style>
+    .vis-table { width:100%; border-collapse:collapse; font-size:0.82rem; margin-bottom:2rem; }
+    .vis-table th { color:#666; font-weight:normal; text-align:left; padding:0.4rem 0.6rem;
+                    border-bottom:1px solid #222; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; }
+    .vis-table td { padding:0.35rem 0.6rem; border-bottom:1px solid #1a1a1a; vertical-align:middle; }
+    .vis-table tr:hover td { background:#111; }
+    .vis-btn { border:none; padding:0.25rem 0.65rem; border-radius:3px; cursor:pointer;
+               font-family:inherit; font-size:0.78rem; }
+    .vis-btn-on  { background:#1a3a1a; color:#6c6; border:1px solid #3a6a3a; }
+    .vis-btn-on:hover  { background:#224a22; }
+    .vis-btn-off { background:#2a1a1a; color:#c66; border:1px solid #6a3a3a; }
+    .vis-btn-off:hover { background:#3a2222; }
+    .vis-inactive { color:#555; font-size:0.75rem; }
+  </style>
+
+  <h4 style="color:#aaa;font-size:0.85rem;margin-bottom:0.5rem;">Targets</h4>
+  <table class="vis-table">
+    <thead><tr><th>Name</th><th>Active</th><th>Stats visibility</th></tr></thead>
+    <tbody>
+      {% for t in all_targets_visibility %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td class="vis-inactive">{% if t.active %}active{% else %}inactive{% endif %}</td>
+        <td>
+          {% if t.show_on_stats %}
+            <form method="post" action="{% url 'target_stats_visibility' t.name %}" style="display:inline">
+              {% csrf_token %}<input type="hidden" name="show_on_stats" value="0">
+              <button class="vis-btn vis-btn-on" type="submit">Public</button>
+            </form>
+          {% else %}
+            <form method="post" action="{% url 'target_stats_visibility' t.name %}" style="display:inline">
+              {% csrf_token %}<input type="hidden" name="show_on_stats" value="1">
+              <button class="vis-btn vis-btn-off" type="submit">Hidden</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h4 style="color:#aaa;font-size:0.85rem;margin-bottom:0.5rem;">Concerns</h4>
+  <table class="vis-table">
+    <thead><tr><th>Slug</th><th>Title</th><th>Active</th><th>Stats visibility</th></tr></thead>
+    <tbody>
+      {% for c in all_concerns_visibility %}
+      <tr>
+        <td style="font-family:monospace;color:#aaa;font-size:0.78rem;">{{ c.id_slug }}</td>
+        <td style="color:#ccc;">{{ c.title }}</td>
+        <td class="vis-inactive">{% if c.active %}active{% else %}inactive{% endif %}</td>
+        <td>
+          {% if c.show_on_stats %}
+            <form method="post" action="{% url 'concern_stats_visibility' c.id_slug %}" style="display:inline">
+              {% csrf_token %}<input type="hidden" name="show_on_stats" value="0">
+              <button class="vis-btn vis-btn-on" type="submit">Public</button>
+            </form>
+          {% else %}
+            <form method="post" action="{% url 'concern_stats_visibility' c.id_slug %}" style="display:inline">
+              {% csrf_token %}<input type="hidden" name="show_on_stats" value="1">
+              <button class="vis-btn vis-btn-off" type="submit">Hidden</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 </section>
 
 {% endblock %}

@@ -586,7 +586,7 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
         _plant(cls.t2, "heatmap-concern-a", has_finding=False)
 
     def test_targets_page_omits_all_forbidden_markers(self):
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         self.assertEqual(response.status_code, 200)
         body = response.content.decode("utf-8")
         for marker in TARGETS_FORBIDDEN_MARKERS:
@@ -597,13 +597,13 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
             )
 
     def test_targets_page_shows_target_names(self):
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         body = response.content.decode("utf-8")
         self.assertIn("target-alpha", body)
         self.assertIn("target-beta", body)
 
     def test_targets_page_shows_concern_title_in_heatmap(self):
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         body = response.content.decode("utf-8")
         self.assertIn("Heatmap concern A", body)
 
@@ -611,7 +611,7 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
         """target-alpha: 2 verified probes × 1 finding = 50% for
         concern-a. target-beta: 2 probes × 0 findings = 0%. The cell
         for target-alpha should render '50%' and target-beta '0%'."""
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         body = response.content.decode("utf-8")
         self.assertIn("50%", body)
         # target-beta cell value
@@ -623,7 +623,7 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
         # Retire heatmap-concern-a
         self.concern.active = False
         self.concern.save()
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         body = response.content.decode("utf-8")
         self.assertNotIn("Heatmap concern A", body)
 
@@ -634,7 +634,7 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
         Finding.objects.all().delete()
         RegisteredTarget.objects.all().delete()
         Concern.objects.all().delete()
-        response = Client().get("/targets/")
+        response = Client().get("/stats/")
         self.assertEqual(response.status_code, 200)
         body = response.content.decode("utf-8")
         self.assertIn("No registered targets yet", body)

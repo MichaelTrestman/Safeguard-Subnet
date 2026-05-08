@@ -107,9 +107,21 @@ def targets_view(request: HttpRequest) -> HttpResponse:
     targets = queries.list_public_targets()
     target_names, heatmap = queries.get_concern_target_heatmap()
     _, behavior_heatmap = queries.get_behavior_target_heatmap()
-    return render(request, "public/targets.html", {
+
+    ctx = {
         "targets": targets,
         "target_names": target_names,
         "heatmap": heatmap,
         "behavior_heatmap": behavior_heatmap,
-    })
+    }
+
+    if request.user.is_staff:
+        from validator.models import Concern, RegisteredTarget
+        ctx["all_concerns_visibility"] = list(
+            Concern.objects.order_by("id_slug").values("id_slug", "title", "show_on_stats", "active")
+        )
+        ctx["all_targets_visibility"] = list(
+            RegisteredTarget.objects.order_by("name").values("name", "show_on_stats", "active")
+        )
+
+    return render(request, "public/targets.html", ctx)

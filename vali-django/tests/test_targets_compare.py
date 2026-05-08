@@ -74,10 +74,10 @@ class TargetsCompareTests(TestCase):
     def test_finding_rate_computed(self):
         resp = self.client.get(reverse("targets_compare"))
         body = resp.content.decode("utf-8")
-        # Target A: 1 finding / 2 verified = 50%
-        self.assertIn("50.0%", body)
-        # Target B: 1 finding / 1 verified = 100%
-        self.assertIn("100.0%", body)
+        # Target A: severity 0.5 / 2 probes = 25%
+        self.assertIn("25.0%", body)
+        # Target B: severity 0.8 / 1 probe = 80%
+        self.assertIn("80.0%", body)
 
     def test_critical_findings_shown(self):
         resp = self.client.get(reverse("targets_compare"))

@@ -763,12 +763,12 @@ def list_public_targets() -> List[PublicTargetSummary]:
     never reads them. This matters: a future field added to
     RegisteredTarget cannot leak through this function.
     """
-    from django.db.models import Count, Q
+    from django.db.models import Count, Q, Sum
     from validator.models import Finding, RegisteredTarget
 
     targets = (
         RegisteredTarget.objects
-        .filter(active=True)
+        .filter(show_on_stats=True)
         .annotate(
             n_verified=Count(
                 "evaluations",
@@ -784,8 +784,9 @@ def list_public_targets() -> List[PublicTargetSummary]:
         findings_qs = Finding.objects.filter(evaluation__target__name=t["name"])
         n_findings = findings_qs.count()
         n_critical = findings_qs.filter(critical=True).count()
+        sum_sev = findings_qs.aggregate(s=Sum("severity"))["s"] or 0.0
         rate = (
-            100.0 * n_findings / t["n_verified"]
+            100.0 * sum_sev / t["n_verified"]
             if t["n_verified"] else 0.0
         )
         summaries.append(PublicTargetSummary(
@@ -805,10 +806,11 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
     concern; each cell in the row corresponds to one target (aligned
     with `target_names_in_order`). Only active concerns are included.
     """
+    from django.db.models import Sum
     from validator.models import Concern, Evaluation, Finding, RegisteredTarget
 
     target_names = list(
-        RegisteredTarget.objects.filter(active=True).order_by("name").values_list("name", flat=True)
+        RegisteredTarget.objects.filter(show_on_stats=True).order_by("name").values_list("name", flat=True)
     )
 
     # Only concerns that have AT LEAST ONE finding against any listed
@@ -823,7 +825,7 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
 
     concerns = list(
         Concern.objects
-        .filter(id_slug__in=concern_slugs_with_findings, active=True)
+        .filter(id_slug__in=concern_slugs_with_findings, show_on_stats=True)
         .order_by("id_slug")
         .values("id_slug", "title")
     )
@@ -837,11 +839,13 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
                 concern_id_slug=c["id_slug"],
                 provenance_verified=True,
             ).count()
-            n_findings = Finding.objects.filter(
+            findings_qs = Finding.objects.filter(
                 evaluation__target__name=tn,
                 evaluation__concern_id_slug=c["id_slug"],
-            ).count()
-            rate = (100.0 * n_findings / n_probes) if n_probes else None
+            )
+            n_findings = findings_qs.count()
+            sum_sev = findings_qs.aggregate(s=Sum("severity"))["s"] or 0.0
+            rate = (100.0 * sum_sev / n_probes) if n_probes else None
             cells.append(PublicHeatmapCell(
                 rate_pct=rate,
                 n_probes=n_probes,
@@ -900,7 +904,7 @@ def get_behavior_target_heatmap() -> tuple[List[str], List[PublicBehaviorHeatmap
     from validator.models import BehaviorClassification, RegisteredTarget
 
     target_names = list(
-        RegisteredTarget.objects.filter(active=True).order_by("name").values_list("name", flat=True)
+        RegisteredTarget.objects.filter(show_on_stats=True).order_by("name").values_list("name", flat=True)
     )
 
     # Single aggregation: (behavior_text, target_name) → total + detections.

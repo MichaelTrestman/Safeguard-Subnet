@@ -48,6 +48,11 @@ class RegisteredTarget(models.Model):
         db_index=True,
         help_text="Inactive targets receive no new probes and are hidden from public views. Historical data is preserved.",
     )
+    show_on_stats = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Controls whether this target appears on the public stats/ heatmap. Independent of active.",
+    )
     registered_at = models.DateTimeField(auto_now_add=True)
     last_probed_at = models.DateTimeField(null=True, blank=True)
     evaluations_completed = models.PositiveIntegerField(default=0)
@@ -495,6 +500,11 @@ class Concern(models.Model):
         related_name="curated_concerns",
     )
     active = models.BooleanField(default=True, db_index=True)
+    show_on_stats = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Controls whether this concern appears on the public stats/ heatmap. Independent of active.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

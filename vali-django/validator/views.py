@@ -1122,7 +1122,8 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
             "total": sum(fire_by_behavior[bid].values()),
         })
 
-    # Concern×target heatmap: finding rate per (concern, target) pair.
+    # Concern×target heatmap: avg finding severity per probe per (concern, target) pair.
+    from django.db.models import Sum as _Sum
     all_concern_slugs = sorted(set(
         _real_findings_qs()
         .filter(evaluation__target__in=targets)
@@ -1137,10 +1138,12 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
             n_probes = _real_evals_qs(
                 Evaluation.objects.filter(target=t, concern_id_slug=slug)
             ).count()
-            n_findings = _real_findings_qs().filter(
+            findings_qs = _real_findings_qs().filter(
                 evaluation__target=t, evaluation__concern_id_slug=slug,
-            ).count()
-            rate = (n_findings / n_probes * 100) if n_probes else None
+            )
+            n_findings = findings_qs.count()
+            sum_sev = findings_qs.aggregate(s=_Sum("severity"))["s"] or 0.0
+            rate = (sum_sev / n_probes * 100) if n_probes else None
             row["cells"].append({"rate": rate, "n": n_probes, "findings": n_findings})
         heatmap.append(row)
 
@@ -1434,11 +1437,26 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
     # who want to see them explicitly can pass ?include_stubbed=1.
     include_stubbed = request.GET.get("include_stubbed") == "1"
     findings_base = Finding.objects.all() if include_stubbed else _real_findings_qs()
+
+    _SORT_MAP = {
+        ("severity", "desc"): "-severity",
+        ("severity", "asc"):  "severity",
+        ("date",     "desc"): "-evaluation__timestamp",
+        ("date",     "asc"):  "evaluation__timestamp",
+    }
+    q_sort = request.GET.get("sort", "severity")
+    q_dir  = request.GET.get("dir",  "desc")
+    if q_sort not in ("severity", "date"):
+        q_sort = "severity"
+    if q_dir not in ("asc", "desc"):
+        q_dir = "desc"
+    order_by = _SORT_MAP[(q_sort, q_dir)]
+
     qs = (
         findings_base
         .select_related("evaluation", "evaluation__target")
         .prefetch_related("matched_cues", "evaluation__behavior_classifications")
-        .order_by("-severity")
+        .order_by(order_by)
     )
 
     q_target = (request.GET.get("target") or "").strip()
@@ -1466,6 +1484,23 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
         except ValueError:
             pass
 
+    q_date_from = (request.GET.get("date_from") or "").strip()
+    q_date_to   = (request.GET.get("date_to")   or "").strip()
+    from django.utils.dateparse import parse_datetime, parse_date
+    from datetime import datetime, time as dt_time
+    if q_date_from:
+        try:
+            dt_from = datetime.combine(parse_date(q_date_from), dt_time.min)
+            qs = qs.filter(evaluation__timestamp__gte=djtz.make_aware(dt_from))
+        except (TypeError, ValueError):
+            q_date_from = ""
+    if q_date_to:
+        try:
+            dt_to = datetime.combine(parse_date(q_date_to), dt_time.max)
+            qs = qs.filter(evaluation__timestamp__lte=djtz.make_aware(dt_to))
+        except (TypeError, ValueError):
+            q_date_to = ""
+
     PAGE_SIZE = 100
     try:
         page = max(1, int(request.GET.get("page", "1")))
@@ -1492,6 +1527,11 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
     base_qs = urlencode({
         k: v for k, v in request.GET.items() if k != "page" and v
     })
+    # Sort links need base params without sort/dir/page so they can set their own.
+    sort_base_qs = urlencode({
+        k: v for k, v in request.GET.items()
+        if k not in ("page", "sort", "dir") and v
+    })
 
     return render(request, "validator/findings_browser.html", {
         "rows": rows,
@@ -1506,6 +1546,7 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
         "categories": categories,
         "concerns": concerns,
         "base_qs": base_qs,
+        "sort_base_qs": sort_base_qs,
         "q": {
             "target": q_target,
             "category": q_category,
@@ -1513,6 +1554,10 @@ def findings_browser(request: HttpRequest) -> HttpResponse:
             "critical": q_critical,
             "curated": q_curated,
             "min_severity": q_min_sev,
+            "date_from": q_date_from,
+            "date_to": q_date_to,
+            "sort": q_sort,
+            "dir": q_dir,
         },
         "nav_active": "findings",
     })
@@ -2217,6 +2262,28 @@ def concern_activate(request: HttpRequest, slug: str) -> HttpResponse:
             editor=request.user,
         )
     return redirect("concern_detail", slug=slug)
+
+
+@staff_required
+@require_http_methods(["POST"])
+def set_concern_stats_visibility(request: HttpRequest, slug: str) -> HttpResponse:
+    """Toggle whether a concern appears on the public stats/ heatmap."""
+    from .models import Concern
+    concern = get_object_or_404(Concern, id_slug=slug)
+    concern.show_on_stats = request.POST.get("show_on_stats") == "1"
+    concern.save(update_fields=["show_on_stats"])
+    return redirect("public:targets")
+
+
+@staff_required
+@require_http_methods(["POST"])
+def set_target_stats_visibility(request: HttpRequest, name: str) -> HttpResponse:
+    """Toggle whether a target appears on the public stats/ heatmap."""
+    from .models import RegisteredTarget
+    target = get_object_or_404(RegisteredTarget, name=name)
+    target.show_on_stats = request.POST.get("show_on_stats") == "1"
+    target.save(update_fields=["show_on_stats"])
+    return redirect("public:targets")
 
 
 @staff_required

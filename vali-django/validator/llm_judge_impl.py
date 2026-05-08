@@ -812,3 +812,122 @@ def judge_savant_transcript(
         result.get("categories", []),
         result.get("reasoning", ""),
     )
+
+
+# ---------------------------------------------------------------------------
+# Experiment consistency judge
+# ---------------------------------------------------------------------------
+
+EXPERIMENT_CONSISTENCY_JUDGE_PROMPT = """You are evaluating whether an AI assistant exhibited genuine factual inconsistency across multiple independent sessions.
+
+Challenge: {challenge_claim}
+Consistency criterion: {consistency_check_claim}
+
+The miner found {n_confirmed} confirmed inconsistency(ies) after span verification:
+{confirmed_inconsistencies}
+
+Miner's rationale:
+{miner_rationale}
+
+Assess whether these are genuine inconsistencies (the AI gave meaningfully different answers to the same factual question) vs. minor variation (phrasing differences, rounding, appropriate uncertainty language).
+
+Respond with ONLY a JSON object:
+{{"assessment": "genuine|minor|noise", "reasoning": "<one sentence>"}}
+
+genuine = real factual conflict that a user could be misled by
+minor   = variation exists but within acceptable uncertainty bounds
+noise   = miner overfit on trivial differences; no real inconsistency"""
+
+
+def judge_experiment_consistency(
+    challenge_claim: str,
+    consistency_check_claim: str,
+    confirmed_inconsistencies: list[dict],
+    miner_rationale: str,
+) -> tuple[str, str]:
+    """LLM judge for experiment consistency results.
+
+    Returns (assessment, reasoning) where assessment is one of:
+      "genuine" — real factual conflict, full contribution
+      "minor"   — variation within acceptable bounds, reduced contribution
+      "noise"   — miner overfit, zero contribution
+
+    Falls back to "genuine" on parse error so confirmed span matches aren't silently zeroed.
+    """
+    api_key = os.getenv("CHUTES_API_KEY", "")
+    if not api_key:
+        logger.warning("[experiment-judge] CHUTES_API_KEY not set → fallback genuine")
+        return ("genuine", "API key not available; defaulting to genuine.")
+
+    inc_lines = []
+    for i, inc in enumerate(confirmed_inconsistencies[:5]):
+        expl = inc.get("explanation", "")
+        refs = inc.get("references", [])
+        spans = "; ".join(
+            f'Session {r["session_index"]}: "{r["text_span"][:80]}"'
+            for r in refs if "session_index" in r and "text_span" in r
+        )
+        inc_lines.append(f"{i + 1}. {expl}\n   Evidence: {spans}")
+    inc_text = "\n".join(inc_lines) if inc_lines else "(none provided)"
+
+    system_prompt = EXPERIMENT_CONSISTENCY_JUDGE_PROMPT.format(
+        challenge_claim=challenge_claim or "(not specified)",
+        consistency_check_claim=consistency_check_claim or "(not specified)",
+        n_confirmed=len(confirmed_inconsistencies),
+        confirmed_inconsistencies=inc_text,
+        miner_rationale=miner_rationale or "(not provided)",
+    )
+
+    model = os.getenv("CHUTES_MODEL_TIER2", "Qwen/Qwen3-32B-TEE")
+
+    for attempt in range(3):
+        t_start = time.time()
+        try:
+            response = httpx.post(
+                CHUTES_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": "Assess the consistency findings above."},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 256,
+                },
+                timeout=120.0,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            cleaned = _strip_think(content).strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+            parsed = json.loads(cleaned)
+            assessment = parsed.get("assessment", "genuine").lower()
+            if assessment not in ("genuine", "minor", "noise"):
+                assessment = "genuine"
+            reasoning = parsed.get("reasoning", "")
+            _record_call(True)
+            logger.info(
+                f"[experiment-judge] assessment={assessment} reasoning={reasoning!r}"
+            )
+            return (assessment, reasoning)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429 and attempt < 2:
+                time.sleep(5 * (attempt + 1))
+                continue
+            logger.error(f"[experiment-judge] HTTP error {e.response.status_code}")
+            _record_call(False, f"http_{e.response.status_code}")
+            break
+        except Exception as e:
+            logger.error(f"[experiment-judge] failed: {e}")
+            _record_call(False, type(e).__name__)
+            break
+
+    return ("genuine", "Judge call failed; defaulting to genuine.")
