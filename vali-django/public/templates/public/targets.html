@@ -40,6 +40,16 @@
 
 <section class="fade-in">
     <h2 class="section-header solution">Multi-Variant Fuzz Testing</h2>
+
+    {% if stats_from or stats_to %}
+    <p style="color:#888;font-size:0.82rem;margin-bottom:1.2rem;border-left:3px solid #555;padding-left:0.75rem;">
+      Data filtered to:
+      {% if stats_from %}from {{ stats_from }}{% endif %}
+      {% if stats_from and stats_to %}&ndash;{% endif %}
+      {% if stats_to %}{{ stats_to }}{% endif %}
+    </p>
+    {% endif %}
+
     <p class="safeguard-pitch">
         The same concern catalog, the same probe miners, the same audit rubric &mdash; applied against different variants of a target service at the same time. The grid below shows how a minor prompt-engineering change to a service shifts its safety posture.
     </p>
@@ -189,6 +199,24 @@
     .vis-btn-off:hover { background:#3a2222; }
     .vis-inactive { color:#555; font-size:0.75rem; }
   </style>
+
+  <h4 style="color:#aaa;font-size:0.85rem;margin-bottom:0.5rem;">Stats date window</h4>
+  <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:1.5rem;">
+    <form method="post" action="{% url 'set_stats_date_filter' %}" style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+      {% csrf_token %}
+      <label style="color:#aaa;font-size:0.82rem;">From <input type="date" name="stats_from" value="{{ stats_from|date:'Y-m-d' }}" style="background:#111;border:1px solid #333;color:#ccc;padding:0.25rem 0.4rem;border-radius:3px;font-family:inherit;font-size:0.82rem;margin-left:0.3rem;"></label>
+      <label style="color:#aaa;font-size:0.82rem;">To <input type="date" name="stats_to" value="{{ stats_to|date:'Y-m-d' }}" style="background:#111;border:1px solid #333;color:#ccc;padding:0.25rem 0.4rem;border-radius:3px;font-family:inherit;font-size:0.82rem;margin-left:0.3rem;"></label>
+      <button type="submit" class="vis-btn vis-btn-on">Apply</button>
+    </form>
+    {% if stats_from or stats_to %}
+    <form method="post" action="{% url 'set_stats_date_filter' %}">
+      {% csrf_token %}
+      <input type="hidden" name="stats_from" value="">
+      <input type="hidden" name="stats_to" value="">
+      <button type="submit" class="vis-btn vis-btn-off">Clear</button>
+    </form>
+    {% endif %}
+  </div>
 
   <h4 style="color:#aaa;font-size:0.85rem;margin-bottom:0.5rem;">Targets</h4>
   <table class="vis-table">

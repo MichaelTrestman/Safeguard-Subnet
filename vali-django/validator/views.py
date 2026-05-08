@@ -1048,8 +1048,9 @@ def targets_compare(request: HttpRequest) -> HttpResponse:
         findings_qs = _real_findings_qs().filter(evaluation__target=t)
         t.n_findings = findings_qs.count()
         t.n_critical = findings_qs.filter(critical=True).count()
+        sum_sev = findings_qs.aggregate(s=Sum("severity"))["s"] or 0.0
         t.finding_rate = (
-            t.n_findings / t.n_scored * 100 if t.n_scored else 0
+            sum_sev / t.n_verified * 100 if t.n_verified else 0
         )
         with_cues = (
             findings_qs.filter(matched_cues__isnull=False).distinct().count()
@@ -2283,6 +2284,30 @@ def set_target_stats_visibility(request: HttpRequest, name: str) -> HttpResponse
     target = get_object_or_404(RegisteredTarget, name=name)
     target.show_on_stats = request.POST.get("show_on_stats") == "1"
     target.save(update_fields=["show_on_stats"])
+    return redirect("public:targets")
+
+
+@staff_required
+@require_http_methods(["POST"])
+def set_stats_date_filter(request: HttpRequest) -> HttpResponse:
+    """Set the global stats date window (stats_from / stats_to).
+    Blank values clear the bound. Staff-only, redirects to public stats."""
+    from .models import SiteSettings
+    from datetime import date as _date
+    settings = SiteSettings.get()
+
+    raw_from = (request.POST.get("stats_from") or "").strip()
+    raw_to = (request.POST.get("stats_to") or "").strip()
+
+    def _parse(s):
+        try:
+            return _date.fromisoformat(s) if s else None
+        except ValueError:
+            return None
+
+    settings.stats_from = _parse(raw_from)
+    settings.stats_to = _parse(raw_to)
+    settings.save()
     return redirect("public:targets")
 
 

@@ -753,7 +753,7 @@ class PublicHeatmapRow:
     cells: List[PublicHeatmapCell]
 
 
-def list_public_targets() -> List[PublicTargetSummary]:
+def list_public_targets(stats_from=None, stats_to=None) -> List[PublicTargetSummary]:
     """All RegisteredTargets with aggregated verified-probe / finding
     counts. Never emits client_hotkey, relay_endpoint, or any
     per-evaluation field.
@@ -766,13 +766,19 @@ def list_public_targets() -> List[PublicTargetSummary]:
     from django.db.models import Count, Q, Sum
     from validator.models import Finding, RegisteredTarget
 
+    date_q = Q()
+    if stats_from:
+        date_q &= Q(evaluations__timestamp__date__gte=stats_from)
+    if stats_to:
+        date_q &= Q(evaluations__timestamp__date__lte=stats_to)
+
     targets = (
         RegisteredTarget.objects
         .filter(show_on_stats=True)
         .annotate(
             n_verified=Count(
                 "evaluations",
-                filter=Q(evaluations__provenance_verified=True),
+                filter=Q(evaluations__provenance_verified=True) & date_q,
             ),
         )
         .order_by("name")
@@ -782,6 +788,10 @@ def list_public_targets() -> List[PublicTargetSummary]:
     summaries: List[PublicTargetSummary] = []
     for t in targets:
         findings_qs = Finding.objects.filter(evaluation__target__name=t["name"])
+        if stats_from:
+            findings_qs = findings_qs.filter(evaluation__timestamp__date__gte=stats_from)
+        if stats_to:
+            findings_qs = findings_qs.filter(evaluation__timestamp__date__lte=stats_to)
         n_findings = findings_qs.count()
         n_critical = findings_qs.filter(critical=True).count()
         sum_sev = findings_qs.aggregate(s=Sum("severity"))["s"] or 0.0
@@ -799,7 +809,7 @@ def list_public_targets() -> List[PublicTargetSummary]:
     return summaries
 
 
-def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
+def get_concern_target_heatmap(stats_from=None, stats_to=None) -> tuple[List[str], List[PublicHeatmapRow]]:
     """Build the concern × target finding-rate heatmap.
 
     Returns (target_names_in_order, rows). Each row corresponds to one
@@ -813,19 +823,24 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
         RegisteredTarget.objects.filter(show_on_stats=True).order_by("name").values_list("name", flat=True)
     )
 
-    # Only concerns that have AT LEAST ONE finding against any listed
-    # target are included — avoids a grid full of empty rows.
-    concern_slugs_with_findings = set(
+    # Only concerns that have AT LEAST ONE finding in the date window against
+    # any listed target are included — avoids a grid full of empty rows.
+    findings_base = (
         Finding.objects
         .filter(evaluation__target__name__in=target_names)
         .exclude(evaluation__concern_id_slug="")
-        .values_list("evaluation__concern_id_slug", flat=True)
-        .distinct()
+    )
+    if stats_from:
+        findings_base = findings_base.filter(evaluation__timestamp__date__gte=stats_from)
+    if stats_to:
+        findings_base = findings_base.filter(evaluation__timestamp__date__lte=stats_to)
+    concern_slugs_with_findings = set(
+        findings_base.values_list("evaluation__concern_id_slug", flat=True).distinct()
     )
 
     concerns = list(
         Concern.objects
-        .filter(id_slug__in=concern_slugs_with_findings, show_on_stats=True)
+        .filter(id_slug__in=concern_slugs_with_findings, show_on_stats=True, active=True)
         .order_by("id_slug")
         .values("id_slug", "title")
     )
@@ -834,15 +849,24 @@ def get_concern_target_heatmap() -> tuple[List[str], List[PublicHeatmapRow]]:
     for c in concerns:
         cells: List[PublicHeatmapCell] = []
         for tn in target_names:
-            n_probes = Evaluation.objects.filter(
+            probes_qs = Evaluation.objects.filter(
                 target__name=tn,
                 concern_id_slug=c["id_slug"],
                 provenance_verified=True,
-            ).count()
+            )
+            if stats_from:
+                probes_qs = probes_qs.filter(timestamp__date__gte=stats_from)
+            if stats_to:
+                probes_qs = probes_qs.filter(timestamp__date__lte=stats_to)
+            n_probes = probes_qs.count()
             findings_qs = Finding.objects.filter(
                 evaluation__target__name=tn,
                 evaluation__concern_id_slug=c["id_slug"],
             )
+            if stats_from:
+                findings_qs = findings_qs.filter(evaluation__timestamp__date__gte=stats_from)
+            if stats_to:
+                findings_qs = findings_qs.filter(evaluation__timestamp__date__lte=stats_to)
             n_findings = findings_qs.count()
             sum_sev = findings_qs.aggregate(s=Sum("severity"))["s"] or 0.0
             rate = (100.0 * sum_sev / n_probes) if n_probes else None
@@ -892,7 +916,7 @@ class PublicBehaviorHeatmapRow:
     cells: List[PublicBehaviorHeatmapCell]
 
 
-def get_behavior_target_heatmap() -> tuple[List[str], List[PublicBehaviorHeatmapRow]]:
+def get_behavior_target_heatmap(stats_from=None, stats_to=None) -> tuple[List[str], List[PublicBehaviorHeatmapRow]]:
     """Build the behavior × target HarmBench detection-rate heatmap.
 
     Returns (target_names_in_order, rows). Each row is one behavior;
@@ -920,6 +944,10 @@ def get_behavior_target_heatmap() -> tuple[List[str], List[PublicBehaviorHeatmap
             n_detected=Count("id", filter=Q(score__gte=0.5)),
         )
     )
+    if stats_from:
+        agg = agg.filter(evaluation__timestamp__date__gte=stats_from)
+    if stats_to:
+        agg = agg.filter(evaluation__timestamp__date__lte=stats_to)
 
     # Pivot into nested dict: behavior_text → target_name → counts.
     nested: dict = {}

@@ -1169,3 +1169,28 @@ class ExtractedClaim(models.Model):
             f"Claim(exp={self.experiment_id} "
             f"{self.entity_key}.{self.field_name}={self.value_text[:40]})"
         )
+
+
+class SiteSettings(models.Model):
+    """Singleton (pk=1) for operator-controlled global settings.
+
+    Currently holds the public stats date window. Enforced singleton:
+    save() always writes pk=1 so there is never more than one row.
+    """
+    stats_from = models.DateField(
+        null=True, blank=True,
+        help_text="Exclude evaluations before this date from public stats. Null = no lower bound.",
+    )
+    stats_to = models.DateField(
+        null=True, blank=True,
+        help_text="Exclude evaluations after this date from public stats. Null = no upper bound.",
+    )
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

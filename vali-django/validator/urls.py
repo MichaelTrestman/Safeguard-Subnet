@@ -66,6 +66,7 @@ urlpatterns = [
     path("concerns/<str:slug>/activate/", views.concern_activate, name="concern_activate"),
     path("concerns/<str:slug>/stats-visibility/", views.set_concern_stats_visibility, name="concern_stats_visibility"),
     path("targets/<str:name>/stats-visibility/", views.set_target_stats_visibility, name="target_stats_visibility"),
+    path("stats/date-filter/", views.set_stats_date_filter, name="set_stats_date_filter"),
 
     # Experiments (staff only) — DESIGN.md §10
     # Mounted under /operator/ because bare /experiments/ is the public

@@ -104,15 +104,22 @@ def targets_view(request: HttpRequest) -> HttpResponse:
     testing visible to anyone. Aggregates only: per-(concern, target)
     rate, probe count, finding count. No per-finding detail.
     """
-    targets = queries.list_public_targets()
-    target_names, heatmap = queries.get_concern_target_heatmap()
-    _, behavior_heatmap = queries.get_behavior_target_heatmap()
+    from validator.models import SiteSettings
+    settings = SiteSettings.get()
+    stats_from = settings.stats_from
+    stats_to = settings.stats_to
+
+    targets = queries.list_public_targets(stats_from=stats_from, stats_to=stats_to)
+    target_names, heatmap = queries.get_concern_target_heatmap(stats_from=stats_from, stats_to=stats_to)
+    _, behavior_heatmap = queries.get_behavior_target_heatmap(stats_from=stats_from, stats_to=stats_to)
 
     ctx = {
         "targets": targets,
         "target_names": target_names,
         "heatmap": heatmap,
         "behavior_heatmap": behavior_heatmap,
+        "stats_from": stats_from,
+        "stats_to": stats_to,
     }
 
     if request.user.is_staff:

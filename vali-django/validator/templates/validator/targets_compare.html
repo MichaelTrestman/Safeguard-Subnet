@@ -98,7 +98,7 @@
         {% endfor %}
       </tr>
       <tr>
-        <td class="metric-label">Finding rate (verified)</td>
+        <td class="metric-label">Avg finding severity</td>
         {% for t in targets %}
           <td class="num {% if t.finding_rate >= 50 %}rate-high{% elif t.finding_rate >= 20 %}rate-mid{% else %}rate-low{% endif %}">
             {{ t.finding_rate|floatformat:1 }}%

@@ -35,7 +35,7 @@ class TargetsCompareTests(TestCase):
             task_id="ta1", target=cls.target_a, miner_uid=1,
             miner_hotkey="hk1", category="cat-x",
             provenance_verified=True, accepted_severity=0.5,
-            audit_score=0.5,
+            audit_score=0.7,  # 0.5 matches the stub fingerprint; use 0.7
         )
         Evaluation.objects.create(
             task_id="ta2", target=cls.target_a, miner_uid=1,

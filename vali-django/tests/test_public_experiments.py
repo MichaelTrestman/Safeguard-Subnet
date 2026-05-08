@@ -608,12 +608,13 @@ class PublicTargetsHeatmapSafetyTests(TestCase):
         self.assertIn("Heatmap concern A", body)
 
     def test_targets_page_computes_finding_rate(self):
-        """target-alpha: 2 verified probes × 1 finding = 50% for
-        concern-a. target-beta: 2 probes × 0 findings = 0%. The cell
-        for target-alpha should render '50%' and target-beta '0%'."""
+        """target-alpha: 2 verified probes, 1 finding w/ severity=66666.22222
+        → avg severity = 66666.22222/2*100 = 3333311.1%. target-beta: 2
+        probes, 0 findings → 0%."""
         response = Client().get("/stats/")
         body = response.content.decode("utf-8")
-        self.assertIn("50%", body)
+        # Non-zero severity rate for target-alpha
+        self.assertIn("3333311", body)
         # target-beta cell value
         self.assertIn("0%", body)
 
